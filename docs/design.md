@@ -82,13 +82,31 @@ HAL 的 TX 路径（`uart.rs` `write_byte`）：轮询 `FIFO_STATUS.tx_fifo_full
 | 外设 | 状态 | 说明 |
 |------|------|------|
 | CPU (rv32imfc) / 内存 / 复位 / ELF 载入 | ✅ 真实 | — |
+| **xlinx 自定义 ISA** | ✅ 真实 | HiSilicon riscv31 私有指令（l.li/\*shf/b\*i/muliadd/jal16/ldmia/push-pop/压缩 lbu-sb…），**厂商 gcc 固件必需**；见 [xlinx-isa.md](xlinx-isa.md) |
 | UART0/1/2 | ✅ 真实 | 自定义 HiSilicon 寄存器；TX 输出到 chardev，最小 RX |
 | TIMER ×3 | ✅ 真实 | 下数计数器 + 中断（26/27/28），周期重载 |
 | GPIO0/1/2 | ✅ 真实 | 输出 set/clr、输入读、边沿/电平中断 + 输出→输入回环（可自触发 IRQ） |
 | SYS_CTL0 | ✅ 真实(部分) | 仅时钟状态（TCXO/PLL 锁）；其余读 0 |
+| **TCXO 时钟/计数器** | ✅ 真实(部分) | `0x440004C0`：bit4 count-valid + 64 位单调计数（+0x04/+0x08），供 bootloader us 级延时 |
+| **PPB（核内私有外设总线）** | 🟡 RAM 吸收 | `0xE0000000` FlashPatch 单元 + Cortex-M 式 SCS（`0xE000E000`）；加载已打补丁镜像故补丁单元无意义 |
 | 中断控制器 | ✅ 真实 | IRQ 26–31（mie 类）+ ≥32（自定义 LOCIxx，target/riscv 补丁）均完整投递；优先级阈值未强制 |
-| CLDO_CRG / TCXO | 🟡 吸收 | `init_clocks` 只写不读关键位，吸收即可 |
-| I2C0/1, SPI0/1, PWM, I2S, LSADC, EFUSE, WDT, RTC, DMA, SDMA, SPACC/PKE/KM/TRNG, SFC | ⬜ 吸收 | catch-all 接受读写、读返回 0；按地址可追踪。尚无固件驱动它们；按本仓 device 模式可逐个增量建模 |
+| CLDO_CRG | 🟡 吸收 | `init_clocks` 只写不读关键位，吸收即可 |
+| **SFC（Flash 控制器）** | ⬜ 吸收 | bootloader flash init 会失败但优雅报错；建模它（+ flash 后端）可让 flashboot 加载 app —— 下一步 |
+| I2C0/1, SPI0/1, PWM, I2S, LSADC, EFUSE, WDT, RTC, DMA, SDMA, SPACC/PKE/KM/TRNG | ⬜ 吸收 | catch-all 接受读写、读返回 0；按地址可追踪。按本仓 device 模式可逐个增量建模 |
+
+## 运行厂商 C SDK 固件（多角度对齐）
+
+除了 ws63-rs（Rust，标准 rv32imfc），本仿真器现在也能运行 **fbb_ws63 C SDK** 厂商 gcc 编译的固件
+——这需要实现 HiSilicon 的 **xlinx 自定义 ISA**（[xlinx-isa.md](xlinx-isa.md)）。两侧固件对照可交叉验证
+内存映射、启动、外设寄存器时序与驱动逻辑。
+
+| C SDK 镜像 | 现状 | 边界 |
+|------------|------|------|
+| `flashboot` / `loaderboot`（bootloader，**零掩膜 ROM 依赖**）| ✅ 跑出 UART 输出（时钟 bring-up→flash init）| 下一阻塞 = SFC Flash 控制器（未建模，flash init 优雅失败不挂死）|
+| `ws63-liteos-app`（主应用）| ✅ 正确执行数百万条指令（relocation/dyn_mem_cfg/patch_init/驱动初始化）| 受阻于**掩膜 ROM 边界**：调用 53 个固化在硅片 ROM（`0x109000–0x14C000`）的函数（`vsnprintf_s`/SFC/pin/timer…，ABI 见 `rom_config/acore/acore.sym`），SDK 不提供 ROM 二进制 |
+
+构建 C SDK：`cd fbb_ws63/src && python3 build.py ws63-liteos-app -ninja`（厂商工具链已内置）。
+运行：`qemu-system-riscv32 -M ws63 -nographic -serial mon:stdio -kernel <image>.elf`。
 
 ## 可观察的验证目标（均已实测 PASS，见 `scripts/smoke-test.sh`）
 
