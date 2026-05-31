@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  QEMU_TAG: v9.2.4
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: bash scripts/setup-deps.sh
+
+      - name: Cache QEMU build
+        uses: actions/cache@v4
+        with:
+          path: qemu
+          key: qemu-${{ env.QEMU_TAG }}-${{ hashFiles('src/hw/riscv/ws63.c') }}-${{ runner.os }}
+
+      - name: Build qemu-system-riscv32 with the WS63 machine
+        run: bash scripts/build.sh
+
+      - name: Sanity — ws63 machine is registered
+        run: ./qemu/build/qemu-system-riscv32 -M help | grep -q ws63
+
+      - name: Install ws63 Rust toolchain
+        run: |
+          curl -fLO https://github.com/sanchuanhehe/ws63-rust-toolchain/releases/download/v1.96.0/ws63-rust-1.96.0-x86_64-unknown-linux-gnu.tar.gz
+          tar xzf ws63-rust-1.96.0-x86_64-unknown-linux-gnu.tar.gz
+          rustup toolchain link ws63 "$PWD/stage2"
+
+      - name: Checkout ws63-rs (firmware source)
+        uses: actions/checkout@v4
+        with:
+          repository: sanchuanhehe/ws63-rs
+          submodules: recursive
+          path: ws63-rs
+
+      - name: Build example firmware
+        working-directory: ws63-rs
+        run: |
+          cargo build -p blinky --release
+          cargo build -p uart_hello --release || echo "uart_hello not yet in ws63-rs (skipped)"
+
+      - name: Smoke test (run firmware on the WS63 machine)
+        run: WS63_RS="$PWD/ws63-rs" bash scripts/smoke-test.sh
