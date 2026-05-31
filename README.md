@@ -25,7 +25,11 @@ cd ../ws63-rs && cargo build -p blinky --release && cd -
 # 4. 运行
 bash scripts/run.sh                 # 默认跑 ws63-rs 的 blinky
 bash scripts/run.sh ../ws63-rs/target/riscv32imfc-unknown-none-elf/release/uart_hello
+bash scripts/run.sh ../ws63-rs/target/riscv32imfc-unknown-none-elf/release/timer_irq  # 定时器中断
 #   退出 QEMU：Ctrl-A 然后 X
+
+# 5. 一键冒烟（blinky + uart_hello + timer_irq）
+WS63_RS=../ws63-rs bash scripts/smoke-test.sh
 ```
 
 直接调用：
@@ -47,10 +51,13 @@ DEBUG=1 bash scripts/run.sh <firmware.elf>   # 写 qemu.log
 | 方面 | 说明 |
 |------|------|
 | 机器 | `-M ws63`：单 **RV32IMFC** hart（由可配置 rv32 核精确设为 I/M/F/C，关 A/D），WS63 内存映射，复位到 ELF entry |
-| UART0 | `0x4401_0000` 的**自定义 HiSilicon UART**（非 16550）；TX 直接输出到 `-serial` |
+| UART0/1/2 | **自定义 HiSilicon UART**（非 16550）；TX 直接输出到 `-serial` |
+| TIMER ×3 | 下数计数器 + 中断（IRQ 26/27/28），周期重载 |
+| GPIO0/1/2 | 输出 set/clr、输入、中断寄存器 |
+| SYS_CTL0 | 时钟状态（TCXO/PLL 锁），使 `init_clocks()` 跑通 |
+| 中断控制器 | 自定义 `LOCIxx` CSR + IRQ 路由；**IRQ 26–31 完整投递**（timer 已验证），≥32 仅建模 CSR 状态（见 [design](docs/design.md)） |
 | 内存 | BOOTROM/ROM/ITCM/DTCM/FLASH/SRAM，按 `ws63-rt/memory.x` 布局（见 [docs/memory-map.md](docs/memory-map.md)） |
-| 其它外设 | `create_unimplemented_device` 吸收（GPIO/Timer/SPI/I2C/…），`-d unimp` 可追踪 |
-| 中断 | 未建模（WS63 自定义 SYS_CTL1，非 CLINT/PLIC）——blinky 与轮询 UART 无需中断 |
+| 其它外设 | `create_unimplemented_device` 吸收（I2C/SPI/PWM/…），`-d unimp` 按地址可追踪 |
 
 ## 目录结构
 

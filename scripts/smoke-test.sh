@@ -18,6 +18,22 @@ trap 'rm -rf "$TMP"' EXIT
 fail=0
 [ -x "$QEMU_BIN" ] || { echo "FATAL: QEMU not built ($QEMU_BIN)"; exit 2; }
 
+# ---- timer_irq: interrupt delivery ----
+TIMER_ELF="$TARGET_DIR/timer_irq"
+if [ -f "$TIMER_ELF" ]; then
+    echo "==> timer_irq: expecting TIMER_0 interrupts (IRQ 26) to be delivered"
+    timeout 5 "$QEMU_BIN" -M ws63 -nographic -serial mon:stdio \
+        -kernel "$TIMER_ELF" >"$TMP/timer.out" 2>/dev/null
+    if grep -q "OK: timer interrupts delivered" "$TMP/timer.out"; then
+        echo "    PASS: $(grep -c 'timer irq #' "$TMP/timer.out") interrupts seen"
+    else
+        echo "    FAIL: interrupts not delivered. Got:"; head -4 "$TMP/timer.out" | sed 's/^/      /'
+        fail=1
+    fi
+else
+    echo "==> timer_irq: SKIP (build it: cargo build -p timer_irq --release)"
+fi
+
 # ---- uart_hello: serial output ----
 UART_ELF="$TARGET_DIR/uart_hello"
 if [ -f "$UART_ELF" ]; then
@@ -42,11 +58,14 @@ if [ -f "$BLINKY_ELF" ]; then
         -d int,unimp,guest_errors -D "$TMP/blinky.log" \
         -kernel "$BLINKY_ELF" >/dev/null 2>&1
     traps=$(grep -c illegal_instruction "$TMP/blinky.log" 2>/dev/null)
-    gpio=$(grep -c '0x4028030\|0x4028034\|0x4028004' "$TMP/blinky.log" 2>/dev/null)
+    # GPIO is a real device now; it logs output changes via qemu_log (-d on).
+    gpio=$(grep -c 'ws63-gpio: \(SET\|CLR\)' "$TMP/blinky.log" 2>/dev/null)
+    toggled=$(grep -c 'ws63-gpio: SET -> out=0x00000001' "$TMP/blinky.log" 2>/dev/null)
     traps=${traps:-0}
     gpio=${gpio:-0}
-    if [ "$traps" -eq 0 ] && [ "$gpio" -gt 0 ]; then
-        echo "    PASS: $gpio GPIO0 accesses, 0 illegal-instruction traps"
+    toggled=${toggled:-0}
+    if [ "$traps" -eq 0 ] && [ "$gpio" -gt 0 ] && [ "$toggled" -gt 0 ]; then
+        echo "    PASS: $gpio GPIO toggles (pin0 high seen), 0 illegal-instruction traps"
     else
         echo "    FAIL: gpio_writes=$gpio illegal_traps=$traps"
         fail=1
