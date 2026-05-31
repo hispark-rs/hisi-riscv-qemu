@@ -28,8 +28,15 @@ fi
 echo "==> injecting hw/riscv/ws63.c"
 cp "$HERE/src/hw/riscv/ws63.c" "$QEMU_DIR/hw/riscv/ws63.c"
 
-# 2b. apply the target/riscv patch (custom WS63 local-interrupt delivery: the
-#     LOCIEN/LOCIPD CSRs + mcause 32-72 vectored delivery for IRQ>=32). Idempotent.
+# 2a. inject the HiSilicon "xlinx" custom-ISA decoder (included by translate.c via
+#     the target/riscv patch below). Must be present before the build.
+echo "==> injecting target/riscv/insn_trans/trans_xlinx.c.inc"
+cp "$HERE/src/target/riscv/insn_trans/trans_xlinx.c.inc" \
+   "$QEMU_DIR/target/riscv/insn_trans/trans_xlinx.c.inc"
+
+# 2b. apply the target/riscv patch: custom WS63 local-interrupt delivery (LOCIEN/
+#     LOCIPD CSRs + mcause 32-72 vectored delivery for IRQ>=32) AND the xlinx
+#     custom-ISA decoder hooks in translate.c (insn_len/decode_opc). Idempotent.
 if ! grep -q "ws63_locipd" "$QEMU_DIR/target/riscv/cpu_helper.c"; then
     echo "==> applying patches/ws63-target-riscv.patch"
     git -C "$QEMU_DIR" apply "$HERE/patches/ws63-target-riscv.patch"

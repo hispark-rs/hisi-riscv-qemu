@@ -88,6 +88,9 @@
 #define WS63_MMIO_SDMA_SIZE 0x01000000
 #define WS63_MMIO_RTC_BASE  0x57000000
 #define WS63_MMIO_RTC_SIZE  0x01000000
+/* riscv31 core private peripheral bus: FlashPatch (0xE0000000) + SCS (0xE000E000) */
+#define WS63_PPB_BASE       0xE0000000
+#define WS63_PPB_SIZE       0x00010000
 
 /* IRQ numbers (chip_core_irq.h). 26-31 use standard mie bits; >=32 are custom. */
 #define WS63_IRQ_TIMER0     26
@@ -798,6 +801,7 @@ struct WS63MachineState {
     MemoryRegion itcm;
     MemoryRegion dtcm;
     MemoryRegion flash;
+    MemoryRegion ppb;
 };
 
 static void ws63_make_ram(MemoryRegion *sys, MemoryRegion *mr,
@@ -827,6 +831,15 @@ static void ws63_machine_init(MachineState *machine)
     ws63_make_ram(sys, &s->dtcm, "ws63.dtcm", WS63_DTCM_BASE, WS63_DTCM_SIZE);
     ws63_make_ram(sys, &s->flash, "ws63.flash", WS63_FLASH_BASE, WS63_FLASH_SIZE);
     memory_region_add_subregion(sys, WS63_SRAM_BASE, machine->ram);
+
+    /*
+     * Core private peripheral bus (riscv31 core-local). 0xE0000000 holds the
+     * Flash-Patch unit (FLPCTRL + 192 comparators, riscv_patch_init) and a
+     * Cortex-M-style System Control Space at 0xE000E000 (CPUID/SCB-like).
+     * We load the fully-patched firmware image, so the patch unit is inert;
+     * back it with RAM so read-modify-write of these control regs works and
+     * the accesses are absorbed rather than faulting. */
+    ws63_make_ram(sys, &s->ppb, "ws63.ppb", WS63_PPB_BASE, WS63_PPB_SIZE);
 
     /* Catch-all absorbers (low priority) for un-modeled peripheral MMIO. */
     create_unimplemented_device("ws63.mmio.periph", WS63_MMIO_LOW_BASE, WS63_MMIO_LOW_SIZE);
@@ -893,6 +906,14 @@ static void ws63_machine_init(MachineState *machine)
     object_property_set_bool(OBJECT(&s->cpu), "a", false, &error_abort);
     object_property_set_bool(OBJECT(&s->cpu), "d", false, &error_abort);
     object_property_set_bool(OBJECT(&s->cpu), "zawrs", false, &error_abort);
+    /*
+     * The WS63 "riscv31" core uses HiSilicon custom "xlinx" code-size
+     * instructions (push/pop/popret, uxtb/uxth) that occupy the same
+     * compressed-encoding space (funct3=100) as standard Zcb/Zcmp but with a
+     * different bit layout. They are decoded in target/riscv/trans_xlinx.c.inc,
+     * so we must NOT enable Zcb/Zcmp/Zcmt (that would mis-decode them). Zcf
+     * (compressed float load/store) lives in a disjoint space and is kept. */
+    object_property_set_bool(OBJECT(&s->cpu), "zcf", true, &error_abort);
     qdev_prop_set_uint64(DEVICE(&s->cpu), "resetvec", entry);
     s->cpu.env.mhartid = 0;
     qemu_register_reset(ws63_cpu_reset, &s->cpu);
