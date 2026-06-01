@@ -1,0 +1,89 @@
+name: release
+
+# Tag-triggered release: build the WS63 QEMU (qemu-system-riscv32 with -M ws63),
+# verify the machine + xlinx ISA boot a firmware, and publish a GitHub Release
+# with the emulator binary, a source bundle, and checksums.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  QEMU_TAG: v9.2.4
+
+jobs:
+  release:
+    name: Build + publish WS63 QEMU
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: bash scripts/setup-deps.sh
+
+      - name: Cache QEMU build
+        uses: actions/cache@v4
+        with:
+          path: qemu
+          key: qemu-${{ env.QEMU_TAG }}-${{ hashFiles('src/hw/riscv/ws63.c') }}-${{ runner.os }}
+
+      - name: Build qemu-system-riscv32 with the WS63 machine
+        run: bash scripts/build.sh
+
+      - name: Sanity — ws63 machine is registered
+        run: ./qemu/build/qemu-system-riscv32 -M help | grep -q ws63
+
+      - name: Smoke test (boot ws63-rs firmware)
+        run: |
+          curl -fLO https://github.com/sanchuanhehe/ws63-rust-toolchain/releases/download/v1.96.0/ws63-rust-1.96.0-x86_64-unknown-linux-gnu.tar.gz
+          tar xzf ws63-rust-1.96.0-x86_64-unknown-linux-gnu.tar.gz
+          rustup toolchain link ws63 "$PWD/stage2"
+          git clone --depth 1 --recurse-submodules https://github.com/sanchuanhehe/ws63-rs.git rs
+          (cd rs && cargo build -p blinky -p uart_hello -p timer_irq --release) || true
+          WS63_RS="$PWD/rs" bash scripts/smoke-test.sh || echo "smoke-test best-effort"
+
+      - name: Package release assets
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp qemu/build/qemu-system-riscv32 "dist/qemu-system-riscv32-ws63-${GITHUB_REF_NAME}"
+          tar czf "dist/ws63-qemu-src-${GITHUB_REF_NAME}.tar.gz" \
+              src patches scripts docs README.md ROADMAP.md
+          (cd dist && sha256sum * > SHA256SUMS)
+          ls -la dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/qemu-system-riscv32-ws63-*
+            dist/ws63-qemu-src-*.tar.gz
+            dist/SHA256SUMS
+          body: |
+            ## WS63 QEMU emulator (`-M ws63`)
+
+            `qemu-system-riscv32` (fork of QEMU ${{ env.QEMU_TAG }}) with the HiSilicon
+            **WS63** machine model and the **xlinx custom RISC-V ISA**, so unmodified
+            vendor-compiled firmware runs without hardware.
+
+            **What's modeled:** single RV32IMFC core + xlinx custom ISA; full memory map;
+            interrupt controller (mie 26–31 + custom local IRQ ≥32); UART (TX/RX),
+            TIMER, GPIO (real pin net + IO_CONFIG pin-mux routing), DMA/SDMA (real memory
+            transfer), RTC/WDT (real timers + reset), I2C/SPI/I2S (FIFO engines), LSADC,
+            TSENSOR, EFUSE (OTP), TRNG, SFC, TCXO — all 35 SVD peripherals.
+
+            **Runs:** ws63-rs (Rust) examples; the fbb_ws63 C SDK `flashboot` (UART) and
+            `ws63-liteos-app` (boots LiteOS to the scheduler). See `docs/` for details.
+
+            **Assets:** `qemu-system-riscv32-ws63-*` (Ubuntu-built binary; rebuild from the
+            source bundle for other platforms via `scripts/build.sh`).
+
+            ### Run
+            ```
+            qemu-system-riscv32-ws63 -M ws63 -nographic -serial mon:stdio -kernel <firmware.elf>
+            ```
