@@ -972,7 +972,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(WS63PeriphState, WS63_PERIPH)
 
 typedef enum {
     PK_GENERIC, PK_WDT, PK_DMA, PK_TRNG, PK_I2C,
-    PK_RTC, PK_LSADC, PK_SPI, PK_EFUSE, PK_I2S, PK_PWM,
+    PK_RTC, PK_LSADC, PK_SPI, PK_EFUSE, PK_I2S, PK_PWM, PK_TSENSOR,
 } WS63PeriphKind;
 
 #define WS63_PERIPH_MAXSIZE 0x1000
@@ -1155,6 +1155,11 @@ static uint64_t ws63_periph_read(void *opaque, hwaddr off, unsigned size)
         break;
     case PK_EFUSE:
         if (off == 0x2C) return 0x0c;       /* STS: boot0_done|boot1_done */
+        break;                              /* data window 0x800.. -> shadow (OTP) */
+    case PK_TSENSOR:
+        /* sts @0x308: rdy(bit1)=1, data(bits[11:2]) = temp code. ~25C -> code 422
+         * via temp=(code-114)/(896-114)*165-40 ; report a steady 25C. */
+        if (off == 0x308) return (1u << 1) | (422u << 2);
         break;
     case PK_PWM:
         /* PERIODLOAD_FLAG @ 0x124 + 0x40*ch -> 1 (period loaded) */
@@ -1182,6 +1187,12 @@ static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned s
     case PK_LSADC:
         if (off == 0x1C && (v & 0x1)) {                  /* CTRL_8 start -> conv done IRQ */
             qemu_set_irq(s->irq, 1);
+        }
+        break;
+    case PK_EFUSE:
+        if (off >= 0x800 && off < 0xA00) {               /* OTP data window: program = OR */
+            s->shadow[(off / 4) % (WS63_PERIPH_MAXSIZE / 4)] |= v;
+            return;
         }
         break;
     case PK_PWM:
@@ -1286,7 +1297,7 @@ static const struct {
     { 0x44008000, PK_EFUSE,   0x1000, "efuse",     0 },
     { 0x4400C000, PK_LSADC,   0x1000, "lsadc",     WS63_IRQ_LSADC },
     { 0x4400D000, PK_GENERIC, 0x1000, "io_config", 0 },
-    { 0x4400E000, PK_GENERIC, 0x1000, "tsensor",   0 },
+    { 0x4400E000, PK_TSENSOR, 0x1000, "tsensor",   0 },
     { 0x44018000, PK_I2C,     0x100,  "i2c0",      0 },
     { 0x44018100, PK_I2C,     0x100,  "i2c1",      0 },
     { 0x44020000, PK_SPI,     0x1000, "spi0",      0 },

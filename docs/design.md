@@ -96,18 +96,26 @@ HAL 的 TX 路径（`uart.rs` `write_byte`）：轮询 `FIFO_STATUS.tx_fifo_full
 | **PWM**（0x44024000）| ✅ 真实(部分) | 寄存器影子 + PERIODLOAD_FLAG=1 + START 自清 |
 | **I2S**（0x44025000）| ✅ 真实(行为完整) | LEFT/RIGHT TX→RX 回环 |
 | **LSADC**（0x4400C000）| ✅ **真实(行为完整)** | CTRL_8 触发转换 → rne=1/bsy=0、CTRL_9 弹出 14-bit 采样 + 完成 IRQ 72（读清）|
-| **EFUSE**（0x44008000）| ✅ 真实(部分) | STS boot-done 位 + 数据窗影子（标定内容无 dump）|
+| **EFUSE**（0x44008000）| ✅ **真实(行为完整)** | 真实 OTP：STS boot-done + 数据窗读回，**写=按位或**（一次性熔丝只能置位，不可清零，裸机验证）；标定内容无 dump 故为空白熔丝 |
+| **TSENSOR**（0x4400E000）| ✅ **真实(行为完整)** | start→sts rdy=1 + 10-bit 温度码（合成 ~25°C，按 HAL 转换公式）|
 | **WDT**（0x40006000）| ✅ **真实(行为完整)** | QEMU 定时器倒计时；超时未喂狗则真复位 SoC（裸机测试验证）|
 | **RTC**（0x57024000）| ✅ **真实(行为完整)** | QEMU 定时器周期触发 **IRQ 29** + INT_STATUS/EOI；CURRENT_VALUE 计数 |
 | **DMA/SDMA**（0x4A000000/0x520A0000）| ✅ **真实(行为完整)** | 通道使能即**真正搬运内存**（src→dst，按宽度/地址自增），置传输完成位，按 tc_int_en 触发 **IRQ 59**；INT_CLR 清除（裸机测试验证）|
 | **TRNG**（0x44114000）| ✅ 真实 | FIFO_READY=ready、FIFO_DATA 伪随机（xorshift）|
 | **SPACC / PKE / KM**（密码学）| 🟡 影子 | 寄存器影子（**未在启动路径**：mbedtls 用 ROM 表软件 AES）。真实 AES/SHA/RSA 可经 QEMU crypto 库实现，但 SPACC v2 多通道描述符协议复杂且无固件触发，列为按需扩展 |
-| **CLDO_CRG / IO_CONFIG / TSENSOR / RF_WB_CTL / SHARE_MEM / FAMA_REMAP / ULP_GPIO**（影子）| 🟡 影子 | 读写寄存器影子（驱动写后可读回）；RF_WB_CTL 的无线电/PHY 不仿真，仅寄存器配置影子 |
+| **CLDO_CRG / IO_CONFIG / SYS_CTL1 / PWM / RF_WB_CTL / SHARE_MEM / FAMA_REMAP / ULP_GPIO**（影子）| 🟡 影子 | 见下「配置类为何是影子」 |
 
 > **覆盖度**：`WS63.svd` 的全部 **35 个外设**现均有模型（无裸 catch-all 黑洞）。
-> 「行为完整」= 真实数据搬运/计时/中断（DMA/RTC/WDT/Timer/I2C/SPI/I2S/LSADC/GPIO/UART）；
-> 「影子」= 寄存器读写一致（配置类，驱动不会因读回 0 而挂死）。**无法真实仿真**的只有模拟量
-> （ADC 电压、TSENSOR 温度——只能合成）与 **RF/PHY 射频**（RF_WB_CTL/WiFi/BT，物理边界）。
+> 「行为完整」= 真实数据搬运/计时/中断/转换（DMA/RTC/WDT/Timer/I2C/SPI/I2S/LSADC/GPIO/UART/**TSENSOR/EFUSE**）。
+>
+> **配置类为何是影子**：配置寄存器本身没有"行为"，其行为是对*别处*的*作用*。作用可内部计算的已做成真实
+> （TSENSOR 出温度、EFUSE 走 OTP、LSADC 出采样）；作用是**物理/外部**的则在仿真器里无可观测行为：
+> - **IO_CONFIG**（引脚复用）：路由的是**物理引脚**间信号，仿真无引脚 → 不可观测（纯配置）。
+> - **RF_WB_CTL / WiFi / BT**：射频 PHY，物理边界，不仿。
+> - **CLDO_CRG 时钟门控**：省电特性，功能上无意义（固件用前必先开钟）；其*复位位*理论可复位目标外设，
+>   但位→外设映射复杂且无固件触发，暂留影子。
+> - **SHARE_MEM_CTL**：核间共享内存控制，单核下无意义。
+> - **SPACC/PKE/KM**：见加密行，真实 AES/SHA/RSA 需复杂且未被触发的描述符协议，按需扩展。
 
 ## 运行厂商 C SDK 固件（多角度对齐）
 
