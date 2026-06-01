@@ -1213,7 +1213,12 @@ static uint64_t ws63_periph_read(void *opaque, hwaddr off, unsigned size)
         if (off == 0x14) return s->shadow[0x04 / 4]; /* CNT -> load value */
         break;
     case PK_DMA:
-        if (off == 0x04 || off == 0x0C) return s->dma_done; /* INT_ST/ORI_INT_ST */
+        /* INT_ST (0x04): int_st[0:7] + int_trans_st[8:15]; ORI_INT_ST (0x0C) raw.
+         * The v151 TC ISR reads this to find the channel (it writes no clear reg);
+         * the local-IRQ line auto-clears on delivery, so no read-to-clear here. */
+        if (off == 0x04 || off == 0x0C) {
+            return s->dma_done | (s->dma_done << 8);
+        }
         if (off == 0x10) {              /* EN_CHNS: enabled-channel mask */
             uint32_t m = 0;
             for (int c = 0; c < 8; c++) {
@@ -1240,10 +1245,25 @@ static uint64_t ws63_periph_read(void *opaque, hwaddr off, unsigned size)
         if (off == 0x10) return s->int_status; /* INT_STATUS */
         break;
     case PK_LSADC:
-        if (off == 0x04) return 0x08;       /* CTRL_1: rne=1 (data), bsy=0 */
-        if (off == 0x20) {                  /* CTRL_9: pop 14-bit sample, clear IRQ */
-            qemu_set_irq(s->irq, 0);
-            return ws63_xorshift(&s->rng) & 0x3fff;
+        /* v154 ADC: the init calibration sequence polls these "done" status bits
+         * before any conversion — report calibration complete so init proceeds.
+         * The auto-scan read path is synchronous (no conversion IRQ), so we just
+         * model the calibration-done bits + the RX-FIFO level/data. */
+        if (off == 0x044) return 0x1;       /* offset_cali_finish_sts.offset_cali_finish */
+        if (off == 0x0A0) return 0x1;       /* rpt_cap_cali_sts_0.finish */
+        /* 0x080 gain.intr_gain_uint reads back 0 (shadow) -> gain unit 0, as required */
+        if (off == 0x04) {                  /* CTRL_1: rne(bit3) tracks the RX FIFO level */
+            return (s->fcnt > 0) ? 0x08 : 0x00;
+        }
+        if (off == 0x20) {                  /* CTRL_9: pop a sample; de-assert IRQ when drained */
+            if (s->fcnt > 0) {
+                s->fcnt--;
+                if (s->fcnt == 0) {
+                    qemu_set_irq(s->irq, 0);
+                }
+                return 0x1F40;              /* ~mid-scale 14-bit code, channel 0 -> sane voltage */
+            }
+            return 0;
         }
         break;
     case PK_SPI:
@@ -1291,8 +1311,8 @@ static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned s
         if (off == 0x60) { ws63_fifo_push(s, v); }       /* DR -> loopback RX FIFO */
         break;
     case PK_LSADC:
-        if (off == 0x1C && (v & 0x1)) {                  /* CTRL_8 start -> conv done IRQ */
-            qemu_set_irq(s->irq, 1);
+        if (off == 0x1C && (v & 0x1)) {                  /* CTRL_8 lsadc_start: scan */
+            s->fcnt = 2;                                 /* FIFO_DATA_LENS samples ready */
         }
         break;
     case PK_EFUSE:
@@ -1331,8 +1351,8 @@ static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned s
         }
         break;
     case PK_DMA:
-        if (off == 0x08) {                  /* DMAC_INT_CLR: write-clear done bits */
-            s->dma_done &= ~v;
+        if (off == 0x08) {                  /* DMAC_INT_CLR: int_trans_clr[0:7] / int_err_clr[8:15] */
+            s->dma_done &= ~((v | (v >> 8)) & 0xFF); /* clear the channel on either field */
             if (s->dma_done == 0) {
                 qemu_set_irq(s->irq, 0);
             }

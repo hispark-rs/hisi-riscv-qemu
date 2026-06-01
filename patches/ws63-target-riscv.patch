@@ -50,7 +50,7 @@ index 77e7e98..00cfe38 100644
  void riscv_cpu_set_rdtime_fn(CPURISCVState *env, uint64_t (*fn)(void *),
                               void *arg);
 diff --git a/target/riscv/cpu_helper.c b/target/riscv/cpu_helper.c
-index 803d874..40a4f50 100644
+index 803d874..31de3ad 100644
 --- a/target/riscv/cpu_helper.c
 +++ b/target/riscv/cpu_helper.c
 @@ -500,6 +500,41 @@ int riscv_cpu_vsirq_pending(CPURISCVState *env)
@@ -427,7 +427,7 @@ index 803d874..40a4f50 100644
  /*
   * Handle Traps
   *
-@@ -1822,6 +2159,18 @@ void riscv_cpu_do_interrupt(CPUState *cs)
+@@ -1822,6 +2159,31 @@ void riscv_cpu_do_interrupt(CPUState *cs)
      bool async = !!(cs->exception_index & RISCV_EXCP_INT_FLAG);
      target_ulong cause = cs->exception_index & RISCV_EXCP_INT_MASK;
      uint64_t deleg = async ? env->mideleg : env->medeleg;
@@ -441,6 +441,19 @@ index 803d874..40a4f50 100644
 +        env->pc >= WS63_ROM_BASE && env->pc < WS63_ROM_END) {
 +        ws63_rom_call(env);
 +        return;
++    }
++
++    /*
++     * WS63 custom local interrupts (>=32) latch in LOCIPD; on real silicon the
++     * LOCIE-group handler dispatches by IRQ number and clears the source via
++     * LOCIPCLR. Model that by clearing the pending bit when the IRQ is taken
++     * (edge/one-shot delivery). Without this, a device that holds its line
++     * asserted re-delivers forever, because the C SDK acknowledges in software
++     * (group dispatch) rather than at the device. mie-class IRQs 26-31 use the
++     * standard mip path and are left untouched.
++     */
++    if (async && cause >= 32 && cause < 128) {
++        env->ws63_locipd[cause >> 6] &= ~(1ULL << (cause & 63));
 +    }
 +
      bool s_injected = env->mvip & (1ULL << cause) & env->mvien &&

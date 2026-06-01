@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Local-IRQ storm on C SDK completion interrupts.** Local IRQs ≥32 now auto-clear
+  their LOCIPD bit when the CPU takes them (edge/one-shot, matching the SoC's
+  LOCIE-group + LOCIPCLR model). Previously a device that held its line asserted
+  (e.g. the C SDK DMA/ADC done interrupts) re-delivered ~1M times/s and starved the
+  scheduler. No regression: the rs `gpio_irq` (IRQ 33) still delivers once per edge.
+- **C SDK `adc` sample now passes** (`tests/csdk/adc.elf`). The LSADC model reports
+  the v154 offset/cap-calibration-done status (so `uapi_adc_init` finishes) and
+  tracks the RX-FIFO level/data; the poll-based `adc_port_read` returns and prints
+  `voltage: N mv`. (Added to `tests/csdk/manifest.txt`.)
+
 ### Added
 - **C SDK peripheral-sample tests** (`scripts/csdk-test.sh` + `tests/csdk/`). Boots
   prebuilt fbb_ws63 C SDK peripheral-sample ELFs on the WS63 machine and asserts
