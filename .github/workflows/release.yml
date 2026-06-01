@@ -52,7 +52,7 @@ jobs:
           mkdir -p dist
           cp qemu/build/qemu-system-riscv32 "dist/qemu-system-riscv32-ws63-${GITHUB_REF_NAME}"
           tar czf "dist/ws63-qemu-src-${GITHUB_REF_NAME}.tar.gz" \
-              src patches scripts docs README.md ROADMAP.md
+              src patches scripts docs README.md ROADMAP.md CHANGELOG.md
           (cd dist && sha256sum * > SHA256SUMS)
           ls -la dist
 

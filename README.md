@@ -6,9 +6,11 @@
 仿照 [esp-qemu](https://github.com/espressif/qemu) 的做法：fork 一个固定版本的 QEMU，加入一个
 in-tree 板卡文件 `hw/riscv/ws63.c`（WS63 机器模型 + 自定义 UART），只构建 `riscv32-softmmu`。
 
-> 状态：单核 SoC 模型。已建模 CPU/内存/中断(IRQ 26–31)/Timer/GPIO/SYS_CTL0/UART，跑通 blinky /
-> uart_hello / timer_irq（定时器中断闭环）；其余外设暂作 MMIO 吸收。设计见 [docs/design.md](docs/design.md)，
-> 后续规划见 [ROADMAP.md](ROADMAP.md)。
+> 状态：单核 SoC 模型。CPU + xlinx 自定义 ISA、内存、中断（IRQ 26–31 + 自定义本地 ≥32，含 LOCIPRI/PRITHD
+> 优先级阈值）、**全部 35 个 SVD 外设**（DMA/RTC/WDT/I2C/SPI/I2S/LSADC/UART/TSENSOR/EFUSE/TRNG/SFC +
+> GPIO 引脚网/pinmux + CLDO_CRG 时钟门控）均已建模；跑通 ws63-rs（blinky/uart_hello/timer_irq/gpio_irq）与
+> fbb_ws63 C SDK（flashboot + ws63-liteos-app 启动到调度器）。可选 `-icount` 确定性指令计时。
+> 设计见 [docs/design.md](docs/design.md)，变更见 [CHANGELOG.md](CHANGELOG.md)，规划见 [ROADMAP.md](ROADMAP.md)。
 
 ## 快速开始
 

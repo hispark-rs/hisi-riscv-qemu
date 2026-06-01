@@ -165,5 +165,9 @@ HAL 的 TX 路径（`uart.rs` `write_byte`）：轮询 `FIFO_STATUS.tx_fifo_full
    （`ws63_timer_arm` 复检门控→`timer_del`），重新置位则**恢复**——已实测 3/3（开→跑、关→冻、再开→恢复）。门控
    寄存器影子默认 0xFFFFFFFF 与全局一致，故固件的读-改-写不会误清他位。**源路由**：`CLDO_CRG_CLK_SEL@0x44001134`
    的 TCXO/PLL 选择按 `ws63_periph_clk_hz(reg,bit,sel_bit)` 建模为状态；定时器无源选择（恒 PCLK），UART/SPI 的
-   源/分频在 QEMU chardev 不限速下不可观测，故仅记录状态。仍非周期精确（无逐级 PLL 锁定/分频器状态机）。
-4. 固定 v9.2.4；升级到 v10.x LTS 需注意 API 变化（如 `class_init` 的 `const void *data`、`sysemu/`→`system/` 头文件改名）。
+   源/分频在 QEMU chardev 不限速下不可观测，故仅记录状态。
+4. **非周期精确，但可选确定性指令计时**：TCG 不模拟流水线/cache/逐指令周期，默认虚拟时间自由运行。
+   `scripts/run.sh ICOUNT=1`（= `-icount shift=2`，约 250 MHz、IPC=1）开启**确定性指令计时**：虚拟时间绑定指令数，
+   **同一固件每次运行结果完全一致**（实测 1e6 循环 3 次均 = 2,880,003 ticks；不开 icount 则随宿主时钟漂移）。
+   这是 IPC=1 近似，**不是**真实微架构周期精确（真周期级需 gem5 等，非本仿真器目标）。`ICOUNT_SHIFT` 可调频率。
+5. 固定 v9.2.4；升级到 v10.x LTS 需注意 API 变化（如 `class_init` 的 `const void *data`、`sysemu/`→`system/` 头文件改名）。
