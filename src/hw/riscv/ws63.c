@@ -944,6 +944,169 @@ static const TypeInfo ws63_sfc_typeinfo = {
 };
 
 /* ============================================================================
+ * Generic peripheral models — one device type with per-kind behavior, covering
+ * the rest of the WS63 peripherals so the C SDK / rs HAL drivers can poll/use
+ * them without hanging (no real hardware). Bases from WS63.svd; register layout
+ * + the status/ready/done bits to force are from the SVD + C SDK HAL (researched).
+ * Default behavior is a read/write register shadow (drivers read back what they
+ * wrote); per-kind overrides force the bits drivers poll on.
+ * ========================================================================= */
+#define TYPE_WS63_PERIPH "ws63-periph"
+OBJECT_DECLARE_SIMPLE_TYPE(WS63PeriphState, WS63_PERIPH)
+
+typedef enum {
+    PK_GENERIC, PK_WDT, PK_DMA, PK_TRNG, PK_I2C,
+    PK_RTC, PK_LSADC, PK_SPI, PK_EFUSE, PK_I2S, PK_PWM,
+} WS63PeriphKind;
+
+#define WS63_PERIPH_MAXSIZE 0x1000
+
+struct WS63PeriphState {
+    SysBusDevice parent_obj;
+    MemoryRegion iomem;
+    uint32_t kind;
+    uint32_t size;
+    uint32_t rng;       /* TRNG LFSR / generic entropy */
+    uint64_t counter;   /* RTC free-running counter */
+    uint32_t shadow[WS63_PERIPH_MAXSIZE / 4];
+};
+
+static uint32_t ws63_xorshift(uint32_t *s)
+{
+    uint32_t x = *s ? *s : 0x1234abcdu;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    *s = x;
+    return x;
+}
+
+static uint64_t ws63_periph_read(void *opaque, hwaddr off, unsigned size)
+{
+    WS63PeriphState *s = opaque;
+    uint32_t v = s->shadow[(off / 4) % (WS63_PERIPH_MAXSIZE / 4)];
+
+    switch (s->kind) {
+    case PK_WDT:
+        if (off == 0x0C) return 0;          /* EOI: read clears int */
+        if (off == 0x14) return s->shadow[0x04 / 4]; /* CNT -> load value */
+        break;
+    case PK_DMA:
+        if (off == 0x04 || off == 0x0C) return 0xff; /* INT_ST/ORI: all chans done */
+        break;
+    case PK_TRNG:
+        if (off == 0x100) return ws63_xorshift(&s->rng); /* FIFO_DATA */
+        if (off == 0x104) return 0x3;       /* FIFO_READY: data_ready|done */
+        break;
+    case PK_I2C:
+        if (off == 0x0C) return 0x39;       /* SR: int_done|int_rx|int_tx|int_stop */
+        if (off == 0x1C) return s->shadow[0x18 / 4] & 0xff; /* RXR <- TXR (loopback) */
+        if (off == 0x20) return 0x0a;       /* FIFOSTATUS: tx_empty|rx_full-ish */
+        break;
+    case PK_RTC:
+        if (off == 0x04) { s->counter += 0x1000; return (uint32_t)s->counter; } /* CURRENT_VALUE */
+        if (off == 0x0C) return 0;          /* EOI: clears int */
+        if (off == 0x10) return 0x1;        /* INT_STATUS: pending */
+        break;
+    case PK_LSADC:
+        if (off == 0x04) return 0x08;       /* CTRL_1: rne=1 (data), bsy=0 */
+        if (off == 0x20) return ws63_xorshift(&s->rng) & 0x3fff; /* CTRL_9: 14-bit code */
+        break;
+    case PK_SPI:
+        if (off == 0x60) return s->shadow[0x60 / 4]; /* DR: loopback (last write) */
+        if (off == 0xE4) return 0x0e;       /* WSR: busy=0, txfnf|txfe|rxfne */
+        if (off == 0xD0) return 0;          /* TLR */
+        if (off == 0xDC) return 1;          /* RLR */
+        if (off == 0xC0) return 0;          /* INSR */
+        break;
+    case PK_EFUSE:
+        if (off == 0x2C) return 0x0c;       /* STS: boot0_done|boot1_done */
+        break;
+    case PK_PWM:
+        /* PERIODLOAD_FLAG @ 0x124 + 0x40*ch -> 1 (period loaded) */
+        if (off >= 0x124 && ((off - 0x124) % 0x40) == 0) return 1;
+        break;
+    default:
+        break;
+    }
+    return v;
+}
+
+static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
+{
+    WS63PeriphState *s = opaque;
+    uint32_t v = (uint32_t)val;
+
+    switch (s->kind) {
+    case PK_I2C:
+        if (off == 0x04) { v &= ~0xfu; }    /* COM: cmd bits[3:0] auto-clear */
+        break;
+    case PK_PWM:
+        if (off == 0x08 || off == 0x18 || off == 0x28 || off == 0x38) {
+            v = 0;                          /* group START self-clears */
+        }
+        break;
+    default:
+        break;
+    }
+    s->shadow[(off / 4) % (WS63_PERIPH_MAXSIZE / 4)] = v;
+}
+
+static const MemoryRegionOps ws63_periph_ops = {
+    .read = ws63_periph_read,
+    .write = ws63_periph_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+};
+
+static void ws63_periph_realize(DeviceState *dev, Error **errp)
+{
+    WS63PeriphState *s = WS63_PERIPH(dev);
+    s->rng = 0x2545f491u ^ (s->kind << 8);
+    memory_region_init_io(&s->iomem, OBJECT(dev), &ws63_periph_ops, s,
+                          TYPE_WS63_PERIPH, s->size ? s->size : WS63_PERIPH_MAXSIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
+}
+
+static void ws63_periph_class_init(ObjectClass *oc, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+    dc->realize = ws63_periph_realize;
+}
+
+static const TypeInfo ws63_periph_typeinfo = {
+    .name          = TYPE_WS63_PERIPH,
+    .parent        = TYPE_SYS_BUS_DEVICE,
+    .instance_size = sizeof(WS63PeriphState),
+    .class_init    = ws63_periph_class_init,
+};
+
+/* peripheral instance table (base, kind, window size, name) — from WS63.svd */
+static const struct { hwaddr base; uint32_t kind; uint32_t size; const char *name; }
+ws63_periph_table[] = {
+    /* GLB_CTL_M (0x40002000) is within the SYS_CTL0 window and handled there. */
+    { 0x44001100, PK_GENERIC, 0x1000, "cldo_crg" },
+    { 0x40006000, PK_WDT,     0x1000, "wdt" },
+    { 0x44008000, PK_EFUSE,   0x1000, "efuse" },
+    { 0x4400C000, PK_LSADC,   0x1000, "lsadc" },
+    { 0x4400D000, PK_GENERIC, 0x1000, "io_config" },
+    { 0x4400E000, PK_GENERIC, 0x1000, "tsensor" },
+    { 0x44018000, PK_I2C,     0x100,  "i2c0" },
+    { 0x44018100, PK_I2C,     0x100,  "i2c1" },
+    { 0x44020000, PK_SPI,     0x1000, "spi0" },
+    { 0x44021000, PK_SPI,     0x1000, "spi1" },
+    { 0x44024000, PK_PWM,     0x1000, "pwm" },
+    { 0x44025000, PK_I2S,     0x1000, "i2s" },
+    { 0x44100000, PK_GENERIC, 0x1000, "spacc" },
+    { 0x44110000, PK_GENERIC, 0x1000, "pke" },
+    { 0x44112000, PK_GENERIC, 0x1000, "km" },
+    { 0x44114000, PK_TRNG,    0x1000, "trng" },
+    { 0x4A000000, PK_DMA,     0x1000, "dma" },
+    { 0x520A0000, PK_DMA,     0x1000, "sdma" },
+    { 0x57024000, PK_RTC,     0x1000, "rtc" },
+};
+#define WS63_NUM_PERIPH ARRAY_SIZE(ws63_periph_table)
+
+/* ============================================================================
  * WS63 machine
  * ========================================================================= */
 #define TYPE_WS63_MACHINE MACHINE_TYPE_NAME("ws63")
@@ -958,6 +1121,7 @@ struct WS63MachineState {
     WS63SysCtl0State sysctl0;
     WS63TcxoState tcxo;
     WS63SfcState sfc;
+    WS63PeriphState periph[WS63_NUM_PERIPH];
     MemoryRegion bootrom;
     MemoryRegion rom;
     MemoryRegion itcm;
@@ -1039,6 +1203,18 @@ static void ws63_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "sfc", &s->sfc, TYPE_WS63_SFC);
     sysbus_realize(SYS_BUS_DEVICE(&s->sfc), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->sfc), 0, WS63_SFC_BASE);
+
+    /* All remaining modelable peripherals (I2C/SPI/PWM/I2S/LSADC/EFUSE/WDT/RTC/
+     * DMA/SDMA/TRNG/CLDO_CRG/IO_CONFIG/...): register shadow + per-kind status
+     * bits so HAL drivers run. Mapped over the catch-all absorber. */
+    for (int i = 0; i < (int)WS63_NUM_PERIPH; i++) {
+        object_initialize_child(OBJECT(machine), ws63_periph_table[i].name,
+                                &s->periph[i], TYPE_WS63_PERIPH);
+        s->periph[i].kind = ws63_periph_table[i].kind;
+        s->periph[i].size = ws63_periph_table[i].size;
+        sysbus_realize(SYS_BUS_DEVICE(&s->periph[i]), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(&s->periph[i]), 0, ws63_periph_table[i].base);
+    }
 
     /* TIMER (IRQ 26/27/28). */
     object_initialize_child(OBJECT(machine), "timer", &s->timer, TYPE_WS63_TIMER);
@@ -1135,6 +1311,7 @@ static void ws63_register_types(void)
     type_register_static(&ws63_sysctl0_typeinfo);
     type_register_static(&ws63_tcxo_typeinfo);
     type_register_static(&ws63_sfc_typeinfo);
+    type_register_static(&ws63_periph_typeinfo);
     type_register_static(&ws63_machine_typeinfo);
 }
 

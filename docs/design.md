@@ -91,8 +91,18 @@ HAL 的 TX 路径（`uart.rs` `write_byte`）：轮询 `FIFO_STATUS.tx_fifo_full
 | **PPB（核内私有外设总线）** | 🟡 RAM 吸收 | `0xE0000000` FlashPatch 单元 + Cortex-M 式 SCS（`0xE000E000`）；加载已打补丁镜像故补丁单元无意义 |
 | 中断控制器 | ✅ 真实 | IRQ 26–31（mie 类）+ ≥32（自定义 LOCIxx，target/riscv 补丁）均完整投递；优先级阈值未强制 |
 | CLDO_CRG | 🟡 吸收 | `init_clocks` 只写不读关键位，吸收即可 |
-| **SFC（Flash 控制器）** | ⬜ 吸收 | bootloader flash init 会失败但优雅报错；建模它（+ flash 后端）可让 flashboot 加载 app —— 下一步 |
-| I2C0/1, SPI0/1, PWM, I2S, LSADC, EFUSE, WDT, RTC, DMA, SDMA, SPACC/PKE/KM/TRNG | ⬜ 吸收 | catch-all 接受读写、读返回 0；按地址可追踪。按本仓 device 模式可逐个增量建模 |
+| **SFC（Flash 控制器）** | ✅ 真实(部分) | SPI 命令接口（RDID→W25Q16、RDSR→ready、命令完成）；flash XIP 内容未回填 |
+| **I2C0/1**（0x44018000/0x44018100）| ✅ 真实(部分) | SR 轮询位（done/tx/rx/stop）、COM 命令位自动清、RXR←TXR 回环 |
+| **SPI0/1**（0x44020000/0x44021000）| ✅ 真实(部分) | WSR 状态（busy=0/txfnf/txfe/rxfne）、DR 回环 |
+| **PWM**（0x44024000）| ✅ 真实(部分) | 寄存器影子 + PERIODLOAD_FLAG=1 + START 自清 |
+| **I2S**（0x44025000）| ✅ 真实(部分) | 寄存器影子 + TX/RX 回环 |
+| **LSADC**（0x4400C000）| ✅ 真实(部分) | CTRL_1 rne=1/bsy=0、CTRL_9 伪随机 14-bit 采样码 |
+| **EFUSE**（0x44008000）| ✅ 真实(部分) | STS boot-done 位 + 数据窗影子（标定内容无 dump）|
+| **WDT**（0x40006000）| ✅ 真实(部分) | CNT←LOAD、EOI 读清；不触发真实复位 |
+| **RTC**（0x57024000）| ✅ 真实(部分) | CURRENT_VALUE 单调递增计数 + INT_STATUS（轮询用）|
+| **DMA/SDMA**（0x4A000000/0x520A0000）| ✅ 真实(部分) | INT_ST 报通道传输完成（轮询不挂死）|
+| **TRNG**（0x44114000）| ✅ 真实 | FIFO_READY=ready、FIFO_DATA 伪随机（xorshift）|
+| **CLDO_CRG / IO_CONFIG / SPACC / PKE / KM / TSENSOR**（影子）| 🟡 影子 | 读写寄存器影子（驱动写后可读回）；无副作用建模 |
 
 ## 运行厂商 C SDK 固件（多角度对齐）
 
