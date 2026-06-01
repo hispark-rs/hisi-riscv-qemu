@@ -85,7 +85,7 @@ HAL 的 TX 路径（`uart.rs` `write_byte`）：轮询 `FIFO_STATUS.tx_fifo_full
 | **xlinx 自定义 ISA** | ✅ 真实 | HiSilicon riscv31 私有指令（l.li/\*shf/b\*i/muliadd/jal16/ldmia/push-pop/压缩 lbu-sb…），**厂商 gcc 固件必需**；见 [xlinx-isa.md](xlinx-isa.md) |
 | UART0/1/2 | ✅ 真实 | 自定义 HiSilicon 寄存器；TX→chardev，RX←chardev（中断使能时触发 IRQ 53/54/55）|
 | TIMER ×3 | ✅ 真实 | 下数计数器 + 中断（26/27/28），周期重载 |
-| GPIO0/1/2 | ✅ 真实 | 输出 set/clr、输入读、边沿/电平中断 + 输出→输入回环（可自触发 IRQ） |
+| GPIO0/1/2 | ✅ **真实(行为完整)** | 输出 set/clr、输入读、边沿/电平中断；引脚为**真实信号网**：bank 内输出→输入回环 + **跨 bank 板级连线**（GPIO0 输出脚驱动 GPIO1 输入脚，可观测+中断，裸机验证）+ 可由 monitor/外部设备驱动 |
 | SYS_CTL0 | ✅ 真实(部分) | 仅时钟状态（TCXO/PLL 锁）；其余读 0 |
 | **TCXO 时钟/计数器** | ✅ 真实(部分) | `0x440004C0`：bit4 count-valid + 64 位单调计数（+0x04/+0x08），供 bootloader us 级延时 |
 | **PPB（核内私有外设总线）** | 🟡 RAM 吸收 | `0xE0000000` FlashPatch 单元 + Cortex-M 式 SCS（`0xE000E000`）；加载已打补丁镜像故补丁单元无意义 |
@@ -110,7 +110,10 @@ HAL 的 TX 路径（`uart.rs` `write_byte`）：轮询 `FIFO_STATUS.tx_fifo_full
 >
 > **配置类为何是影子**：配置寄存器本身没有"行为"，其行为是对*别处*的*作用*。作用可内部计算的已做成真实
 > （TSENSOR 出温度、EFUSE 走 OTP、LSADC 出采样）；作用是**物理/外部**的则在仿真器里无可观测行为：
-> - **IO_CONFIG**（引脚复用）：路由的是**物理引脚**间信号，仿真无引脚 → 不可观测（纯配置）。
+> - **引脚行为本身可仿真**：QEMU 用信号网（`qemu_irq`）建模引脚——GPIO 引脚现已是真实信号网
+>   （bank 内回环 + 跨 bank 板级连线 + 可外部驱动）。真正"不可观测"的只是**悬空引脚**（输出无连接对象）。
+> - **IO_CONFIG（引脚复用 SEL）**：选择某引脚承载哪个外设功能（GPIO/UART/SPI…）。GPIO 功能的引脚网已建模；
+>   把非 GPIO 功能（如 UART TX）按 pinmux 路由到引脚是进一步扩展（功能等价已由各外设自身的 TX/RX/回环覆盖）。
 > - **RF_WB_CTL / WiFi / BT**：射频 PHY，物理边界，不仿。
 > - **CLDO_CRG 时钟门控**：省电特性，功能上无意义（固件用前必先开钟）；其*复位位*理论可复位目标外设，
 >   但位→外设映射复杂且无固件触发，暂留影子。

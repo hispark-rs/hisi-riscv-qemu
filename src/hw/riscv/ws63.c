@@ -634,11 +634,15 @@ static const TypeInfo ws63_timer_typeinfo = {
 #define TYPE_WS63_GPIO "ws63-gpio"
 OBJECT_DECLARE_SIMPLE_TYPE(WS63GpioState, WS63_GPIO)
 
+#define WS63_GPIO_PINS 8        /* pins exposed as external signal nets */
+
 struct WS63GpioState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     qemu_irq irq;
+    qemu_irq out_pin[WS63_GPIO_PINS]; /* output pin nets (drive other pins/devices) */
     uint32_t out;
+    uint32_t ext_in;        /* level driven onto pins from outside the bank */
     uint32_t oen;
     uint32_t int_en;
     uint32_t int_mask;
@@ -652,7 +656,7 @@ static uint64_t ws63_gpio_read(void *opaque, hwaddr off, unsigned size)
 {
     WS63GpioState *s = opaque;
     switch (off) {
-    case 0x00: return s->out;            /* output value (no external input) */
+    case 0x00: return s->out | s->ext_in; /* pin level: our output | external drive */
     case 0x04: return s->oen;
     case 0x0C: return s->int_en;
     case 0x10: return s->int_mask;
@@ -670,49 +674,68 @@ static uint64_t ws63_gpio_read(void *opaque, hwaddr off, unsigned size)
  * level-triggered pins INT_RAW tracks the active level. Output drives input
  * (loopback), so writing an output pin can raise its own interrupt — a
  * self-contained interrupt source (and a reasonable GPIO loopback model). */
-static void ws63_gpio_eval(WS63GpioState *s, uint32_t old_out)
+static void ws63_gpio_eval(WS63GpioState *s, uint32_t old_eff)
 {
-    uint32_t rose = ~old_out & s->out;
-    uint32_t fell = old_out & ~s->out;
+    uint32_t eff = s->out | s->ext_in;  /* pin level = our output | external drive */
+    uint32_t rose = ~old_eff & eff;
+    uint32_t fell = old_eff & ~eff;
     uint32_t edge = (s->int_dedge & (rose | fell))
                   | (~s->int_dedge & s->int_pol & rose)
                   | (~s->int_dedge & ~s->int_pol & fell);
     /* edge-type pins latch on a matching edge */
     s->int_raw |= s->int_en & s->int_type & edge;
     /* level-type pins track the active level */
-    uint32_t level_active = (s->int_pol & s->out) | (~s->int_pol & ~s->out);
+    uint32_t level_active = (s->int_pol & eff) | (~s->int_pol & ~eff);
     uint32_t level_pins = s->int_en & ~s->int_type;
     s->int_raw = (s->int_raw & ~level_pins) | (level_pins & level_active);
 
     qemu_set_irq(s->irq, (s->int_raw & ~s->int_mask & s->int_en) ? 1 : 0);
+
+    /* drive our output pins onto their nets (board-level wiring to other pins) */
+    for (int i = 0; i < WS63_GPIO_PINS; i++) {
+        qemu_set_irq(s->out_pin[i], (s->out >> i) & 1);
+    }
+}
+
+/* external source drives one of our input pins (board wiring / another device) */
+static void ws63_gpio_set_in(void *opaque, int n, int level)
+{
+    WS63GpioState *s = opaque;
+    uint32_t old_eff = s->out | s->ext_in;
+    if (level) {
+        s->ext_in |= (1u << n);
+    } else {
+        s->ext_in &= ~(1u << n);
+    }
+    ws63_gpio_eval(s, old_eff);
 }
 
 static void ws63_gpio_write(void *opaque, hwaddr off, uint64_t val,
                             unsigned size)
 {
     WS63GpioState *s = opaque;
-    uint32_t old_out = s->out;
+    uint32_t old_eff = s->out | s->ext_in;
     switch (off) {
-    case 0x00: s->out = (uint32_t)val; ws63_gpio_eval(s, old_out); break;
+    case 0x00: s->out = (uint32_t)val; ws63_gpio_eval(s, old_eff); break;
     case 0x04: s->oen = (uint32_t)val; break;
-    case 0x0C: s->int_en = (uint32_t)val; ws63_gpio_eval(s, s->out); break;
-    case 0x10: s->int_mask = (uint32_t)val; ws63_gpio_eval(s, s->out); break;
+    case 0x0C: s->int_en = (uint32_t)val; ws63_gpio_eval(s, old_eff); break;
+    case 0x10: s->int_mask = (uint32_t)val; ws63_gpio_eval(s, old_eff); break;
     case 0x14: s->int_type = (uint32_t)val; break;
     case 0x18: s->int_pol = (uint32_t)val; break;
     case 0x1C: s->int_dedge = (uint32_t)val; break;
     case 0x2C: /* INT_EOI (w1c) */
         s->int_raw &= ~(uint32_t)val;
-        ws63_gpio_eval(s, s->out);
+        ws63_gpio_eval(s, old_eff);
         break;
     case 0x30: /* DATA_SET (w1s) */
         s->out |= (uint32_t)val;
         qemu_log("ws63-gpio: SET -> out=0x%08x\n", s->out);
-        ws63_gpio_eval(s, old_out);
+        ws63_gpio_eval(s, old_eff);
         break;
     case 0x34: /* DATA_CLR (w1c) */
         s->out &= ~(uint32_t)val;
         qemu_log("ws63-gpio: CLR -> out=0x%08x\n", s->out);
-        ws63_gpio_eval(s, old_out);
+        ws63_gpio_eval(s, old_eff);
         break;
     default: break;
     }
@@ -734,6 +757,10 @@ static void ws63_gpio_instance_init(Object *obj)
                           TYPE_WS63_GPIO, WS63_GPIO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    /* pin signal nets: inputs driven from outside (board wiring / monitor),
+     * outputs that can drive other pins/devices. */
+    qdev_init_gpio_in(DEVICE(obj), ws63_gpio_set_in, WS63_GPIO_PINS);
+    qdev_init_gpio_out(DEVICE(obj), s->out_pin, WS63_GPIO_PINS);
     s->oen = 0xFF; /* reset: all inputs */
 }
 
@@ -1447,6 +1474,14 @@ static void ws63_machine_init(MachineState *machine)
         sysbus_mmio_map(SYS_BUS_DEVICE(&s->gpio[i]), 0, gpio_base[i]);
         sysbus_connect_irq(SYS_BUS_DEVICE(&s->gpio[i]), 0,
                            qdev_get_gpio_in(DEVICE(&s->intc), WS63_IRQ_GPIO0 + i));
+    }
+    /* Board-level pin net: wire GPIO0 output pins -> GPIO1 input pins, so a pin
+     * driven on one bank is read (and can interrupt) on another. This models real
+     * pin behavior across the chip I/O net (board wiring); the same gpio-in lines
+     * can also be driven externally from the monitor (qom-set) or another device. */
+    for (int i = 0; i < WS63_GPIO_PINS; i++) {
+        qdev_connect_gpio_out(DEVICE(&s->gpio[0]), i,
+                              qdev_get_gpio_in(DEVICE(&s->gpio[1]), i));
     }
 
     /* UART0/1/2 (custom device on top of the absorber). */
