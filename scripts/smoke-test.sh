@@ -140,5 +140,21 @@ else
     echo "==> wifi_blob_link: SKIP (build it: cargo build -p wifi_blob_link --release)"
 fi
 
+# ---- rf_port_demo: ws63-rf-rs porting layer + blob linked through it ----
+RFP_ELF="$TARGET_DIR/rf_port_demo"
+if [ -f "$RFP_ELF" ]; then
+    echo "==> rf_port_demo: expecting ws63-rf-rs porting fns + blob link to pass"
+    timeout 8 "$QEMU_BIN" -M ws63 -nographic -serial mon:stdio \
+        -kernel "$RFP_ELF" </dev/null >"$TMP/rfp.out" 2>/dev/null || true
+    if grep -q "RF PORT DEMO: PASS" "$TMP/rfp.out"; then
+        echo "    PASS: $(grep -m1 'log sink' "$TMP/rfp.out" | sed 's/^[[:space:]]*//')"
+    else
+        echo "    FAIL: porting layer not confirmed. Got:"; tail -6 "$TMP/rfp.out" | sed 's/^/      /'
+        fail=1
+    fi
+else
+    echo "==> rf_port_demo: SKIP (build it: cargo build -p rf_port_demo --release)"
+fi
+
 [ "$fail" -eq 0 ] && echo "SMOKE TEST: PASS" || echo "SMOKE TEST: FAIL"
 exit "$fail"
