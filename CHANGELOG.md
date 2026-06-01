@@ -8,7 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-01
+
+Validation against real vendor firmware: a C SDK peripheral-sample test harness
+(now in CI alongside the ws63-rs smoke test), an NV / partition-table flash overlay,
+and the model fixes those tests turned up — the LSADC, the DMA engine, the local-IRQ
+delivery path, and the watchdog ROM API — plus a catalogue of every mask-ROM stub.
+
 ### Added
+- **C SDK peripheral-sample tests** (`scripts/csdk-test.sh` + `tests/csdk/`). Boots
+  prebuilt fbb_ws63 C SDK peripheral-sample ELFs on the WS63 machine and asserts each
+  sample's UART success marker — validating the peripheral models against real vendor
+  firmware (complements the ws63-rs `scripts/smoke-test.sh`). Shipping fixtures, all
+  green in CI: `tcxo` (TCXO ms/us counter), `systick` (SysTick counter), `adc` (LSADC
+  conversion) and `dma` (memory copy), plus an NV-overlay assertion — **5/5**.
+  `scripts/build-csdk-samples.sh` regenerates fixtures from a fbb_ws63 checkout
+  (selects one `CONFIG_SAMPLE_SUPPORT_*`, clean-builds, strips to ~400 KB). Remaining
+  documented gap (`tests/csdk/manifest.txt`): `timer` — not a peripheral-model gap
+  (the HW timer fires fine), but the LiteOS software-timer task layer never reaches
+  `uapi_timer_start`. The `watchdog` sample runs healthy (it kicks — see below) but
+  its interrupt-mode "kick timeout!" marker is not asserted.
+- **NV / partition flash overlay** (`scripts/run.sh NV=1` + `tests/csdk/flash/`).
+  A `-kernel` boot skips flashboot, so the flash XIP window is empty and the C SDK's
+  partition-table + NV reads fail. `NV=1` loads the partition table (`params`, table
+  magic `0x4b87a54b` @ XIP 0x200380) and the software/factory NV stores into flash —
+  outside the app's own XIP region — so `uapi_partition_get_info()` and NV reads
+  succeed (the "[UPG] ...flash_start_addr fail" messages go away). csdk-test.sh
+  asserts this. The per-chip factory-calibration keys (e.g. `xo_trim`) are written at
+  production and absent from any build NV, so that one read still reports — by design.
 - **`docs/rom-stubs.md`** — a dedicated document cataloguing every mask-ROM stub /
   interception: the `ws63_rom_call` mechanism (illegal-inst trap on 0x109000-0x14C000
   → host-C emulation) and all emulated ROM functions (`mem*_s`, `*printf_s`,
@@ -18,6 +45,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limits (BT/WiFi, factory-calibration NV like `xo_trim`, crypto).
 
 ### Fixed
+- **Local-IRQ storm on C SDK completion interrupts.** Local IRQs ≥32 now auto-clear
+  their LOCIPD bit when the CPU takes them (edge/one-shot). The C SDK delivers local
+  IRQs ≥32 by per-IRQ `mcause` through a shared `default_local_interrupt_handler` with
+  no LOCIPCLR step, so the hardware auto-clears LOCIPD on delivery — which this now
+  models. Previously a device that held its line asserted (e.g. the C SDK DMA/ADC done
+  interrupts) re-delivered ~1M times/s and starved the scheduler. No regression: the
+  rs `gpio_irq` (IRQ 33) still delivers once per edge.
+- **C SDK `adc` sample now passes** (`tests/csdk/adc.elf`). The LSADC model reports
+  the v154 offset/cap-calibration-done status (so `uapi_adc_init` finishes) and
+  tracks the RX-FIFO level/data; the poll-based `adc_port_read` returns and prints
+  `voltage: N mv`.
+- **C SDK `dma` sample now passes** (`tests/csdk/dma.elf`). Three v151 DMA model bugs
+  fixed: the channel int-status read now includes the `int_trans_st[8:15]` terminal-
+  count bits, the descriptor control word's source/dest address-increment flags are
+  read from the correct bits (26/27 — previously 27/28, so the destination never
+  advanced), and the completion IRQ auto-clears (see above). The poll-based transfer
+  completes and the copied-buffer `memcmp` matches → `dma memory copy test succ`.
 - **Watchdog ROM API emulated** (`ws63_rom_call`). The whole watchdog stack is
   mask-ROM-resident, so the calls were no-op-stubbed and the WDT never ran. Now
   `uapi_watchdog_init/enable/kick/disable/deinit` are emulated: enable arms a virtual
@@ -25,35 +69,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   watchdog's actual function. A healthy (kicking) firmware is never reset (the C SDK
   watchdog sample runs cleanly to the scheduler). The interrupt-mode timeout callback
   ("watchdog kick timeout!") is not modelled (would need vCPU-synchronised injection).
-- **Local-IRQ storm on C SDK completion interrupts.** Local IRQs ≥32 now auto-clear
-  their LOCIPD bit when the CPU takes them (edge/one-shot, matching the SoC's
-  LOCIE-group + LOCIPCLR model). Previously a device that held its line asserted
-  (e.g. the C SDK DMA/ADC done interrupts) re-delivered ~1M times/s and starved the
-  scheduler. No regression: the rs `gpio_irq` (IRQ 33) still delivers once per edge.
-- **C SDK `adc` sample now passes** (`tests/csdk/adc.elf`). The LSADC model reports
-  the v154 offset/cap-calibration-done status (so `uapi_adc_init` finishes) and
-  tracks the RX-FIFO level/data; the poll-based `adc_port_read` returns and prints
-  `voltage: N mv`. (Added to `tests/csdk/manifest.txt`.)
-
-### Added
-- **C SDK peripheral-sample tests** (`scripts/csdk-test.sh` + `tests/csdk/`). Boots
-  prebuilt fbb_ws63 C SDK peripheral-sample ELFs on the WS63 machine and asserts
-  each sample's UART success marker — validating the peripheral models against real
-  vendor firmware (complements the ws63-rs `scripts/smoke-test.sh`). Shipping
-  fixtures: `tcxo` (TCXO ms/us counter) and `systick` (SysTick counter), both green
-  in CI. `scripts/build-csdk-samples.sh` regenerates fixtures from a fbb_ws63
-  checkout (selects one `CONFIG_SAMPLE_SUPPORT_*`, clean-builds, strips to ~400 KB).
-  Known gaps (sample builds but blocks on an unmodelled completion path, documented
-  in `tests/csdk/manifest.txt`): `timer` (timer-completion IRQ), `dma` (LLI
-  descriptor mode), `watchdog` (kick/feed timing), `adc` (conversion-done read).
-- **NV / partition flash overlay** (`scripts/run.sh NV=1` + `tests/csdk/flash/`).
-  A `-kernel` boot skips flashboot, so the flash XIP window is empty and the C SDK's
-  partition-table + NV reads fail. `NV=1` loads the partition table (`params`, table
-  magic `0x4b87a54b` @ XIP 0x200380) and the software/factory NV stores into flash —
-  outside the app's own XIP region — so `uapi_partition_get_info()` and NV reads
-  succeed (the "[UPG] ...flash_start_addr fail" messages go away). csdk-test.sh
-  asserts this. The per-chip factory-calibration keys (e.g. `xo_trim`) are written at
-  production and absent from any build NV, so that one read still reports — by design.
 
 ## [0.2.0] - 2026-06-01
 
@@ -120,6 +135,7 @@ vendor-compiled firmware without hardware.
 - **Tooling**: `scripts/{build,run,smoke-test,setup-deps}.sh`, a tag-triggered
   release workflow, and the `ROADMAP.md` / `docs/design.md` documentation set.
 
-[Unreleased]: https://github.com/sanchuanhehe/ws63-qemu/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/sanchuanhehe/ws63-qemu/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sanchuanhehe/ws63-qemu/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sanchuanhehe/ws63-qemu/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sanchuanhehe/ws63-qemu/releases/tag/v0.1.0

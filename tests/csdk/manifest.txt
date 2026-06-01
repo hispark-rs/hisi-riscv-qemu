@@ -27,17 +27,15 @@ dma.elf        | 16 | dma memory copy test succ
 # model bugs (auto-clear, int_st int_trans_st[8:15], and the src/dest_inc bit
 # positions 26/27) — it now passes.
 #
-#   watchdog - BLOCKED at the mask-ROM boundary (not a peripheral-model gap). The
-#              WDT HAL writes through `g_watchdog_regs`, set by hal_watchdog_regs_init
-#              to g_watchdog_base_addr (=CHIP_WDT_BASE 0x40006000). In our env that
-#              pointer is never initialized (ROM-resident symbol, acore.sym 0x18042c;
-#              the ROM init path is stubbed since we have no mask-ROM binary), so
-#              uapi_watchdog_init() "succeeds" + prints "init watchdog" but issues
-#              ZERO MMIO writes to 0x40006000 — the WDT is never programmed. Even if
-#              it were, WDT_MODE_INTERRUPT needs the timeout-interrupt route (the WDT
-#              has no chip_core_irq.h entry; irq_wdt_handler is wired to a fixed
-#              vector, likely COP/NMI mcause 12) + an interrupt-then-reset state
-#              machine. Same ROM-data wall that blocks BT/WiFi.
+#   watchdog - FUNCTIONAL but not asserted. The whole WDT API is mask-ROM-resident
+#              (uapi_watchdog_*/hal_watchdog_v151_*), so it is now emulated in
+#              ws63_rom_call (see docs/rom-stubs.md C): enable arms a virtual one-shot
+#              timer, kick re-arms it, expiry -> SoC reset. The C SDK watchdog sample
+#              kicks forever -> healthy, runs to the scheduler, never resets. Its only
+#              success marker is the interrupt-mode "watchdog kick timeout!" callback,
+#              which is NOT modelled (a virtual-clock timer callback can't safely
+#              rewrite env->pc to inject the firmware handler — not vCPU-synced), so
+#              the sample has no UART marker to assert on.
 #   timer    - NOT a model gap. HW timer model is correct: channel 0 (IRQ 26, the
 #              LiteOS systick) fires fine (~2300 IRQ-26 in 8 s). The uapi_timer
 #              SOFTWARE-timer/task layer never reaches uapi_timer_start on
