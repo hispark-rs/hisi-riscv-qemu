@@ -7,7 +7,7 @@
 
 | 来源 | 角色 |
 |------|------|
-| `ws63-svd/WS63.svd` | 寄存器布局的「名义真值」（厂商 SVD）|
+| `ws63-pac/ws63-svd/WS63.svd` | 寄存器布局的「名义真值」（厂商 SVD;svd 现为 ws63-pac 的嵌套子模块）|
 | `ws63-hal`（Rust）| 被验证对象：ws63-rs 的 HAL 驱动 |
 | `fbb_ws63`（C SDK）| 权威参照：厂商在产硬件上验证过的驱动 |
 | **ws63-qemu 运行时** | **交叉验证台**：QEMU 外设模型按 SVD + rs HAL 建模；**若 C SDK 固件在同一模型上也能正确工作，则证明 rs HAL 的寄存器模型与 C SDK 一致** |
@@ -32,8 +32,9 @@
 ## 时钟 / TCXO
 
 - TCXO 计数器 `0x440004C0`（bit4 count-valid + 64 位计数 +0x04/+0x08）：C SDK `hal_tcxo`（flashboot）
-  实际使用，QEMU 据此建模后 bootloader 时钟 bring-up 通过。rs HAL 当前以名义 24 MHz 工作，未依赖该计数器
-  ——**对齐发现**：若 rs 要做 us 级延时/时间戳，应对接 `0x440004C0`（与 C SDK 一致），这是一条 rs HAL 待补齐项。
+  实际使用，QEMU 据此建模后 bootloader 时钟 bring-up 通过。rs HAL **已对接**——`ws63-hal/src/tcxo.rs`
+  的 `TcxoDriver` 用同一「写 refresh 锁存 → 等 valid 标志 → 读 count0..count3」过程读 64 位计数，
+  与 C SDK / QEMU 模型一致。
 - SYS_CTL0 时钟状态（TCXO/PLL 锁，`0x40000000`）：两侧 `init_clocks` 均经此，QEMU 模型同时满足。
 
 ## 定时器 / 中断
@@ -52,10 +53,12 @@
 ## 发现与差异
 
 1. ✅ **UART/timer/中断/内存映射/外设基址**：rs HAL 与 C SDK 完全对齐（同寄存器、同位、同时序），运行时双向验证。
-2. 🟡 **TCXO 计数器**：C SDK 用 `0x440004C0` 做时间基准；rs HAL 暂用名义频率，未对接——建议补齐以对齐时序语义。
+2. ✅ **TCXO 计数器**：C SDK 与 rs HAL（`ws63-hal/src/tcxo.rs` 的 `TcxoDriver`）都用 `0x440004C0` 的 64 位
+   自由计数（同 refresh→valid→读过程），与 QEMU 模型一致。
 3. 🟡 **指令集**：C SDK 用 HiSilicon **xlinx 自定义指令**（GCC），rs 用标准 rv32imfc——功能等价，密度不同
    （见 [`rust-toolchain-xlinx.md`](rust-toolchain-xlinx.md)）。
 4. ⬜ **flash/NV/efuse 内容**：需真实分区/标定数据（无 dump），属数据墙而非寄存器布局差异。
 
 > 总评：在已建模的外设维度上，**ws63-rs HAL 的寄存器布局与时序与厂商 C SDK 一致**，并经「两侧固件跑在
-> 同一 QEMU 模型」运行时交叉验证。唯一明确的 rs 待补齐项是 TCXO 时间基准对接。
+> 同一 QEMU 模型」运行时交叉验证（含 TCXO 64 位计数器，两侧均已对接 `0x440004C0`）。剩余差异是 xlinx
+> 指令密度（功能等价）与 flash/NV/efuse 标定数据墙——均非寄存器布局问题。
