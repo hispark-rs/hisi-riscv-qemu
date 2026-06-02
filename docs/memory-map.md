@@ -4,7 +4,7 @@
 
 - 内存区域（RAM/Flash/TCM）：`ws63-rs/ws63-rt/memory.x`，它是 fbb_ws63 C SDK 板级内存配置
   `src/drivers/boards/ws63/evb/memory_config/include/memory_config_common.h` 的忠实转写。
-- 外设基址：`ws63-rs/ws63-svd/WS63.svd`（各 `<peripheral>` 的 `baseAddress`）。
+- 外设基址：`ws63-rs/ws63-pac/ws63-svd/WS63.svd`（各 `<peripheral>` 的 `baseAddress`；svd 现为 ws63-pac 的嵌套子模块）。
 
 > ✅ **与 C SDK 一致**：上表地址逐项匹配 `memory_config_common.h`——
 > `BOOTROM_START=0x100000`、`ROM_START=0x109000`、`APP_ITCM_ORIGIN=0x14C000`、
@@ -33,38 +33,44 @@
 
 ## 外设基址（来自 WS63.svd）
 
+状态:**已建模** = 专有 sysbus 设备(寄存器语义 + 必要时中断/搬运);**已建模(部分)** = 关键位真实、
+其余影子;**吸收** = `create_unimplemented_device` 兜底(读 0、不崩)。行为细节见 [`design.md`](design.md) 外设矩阵。
+
 | 外设 | 基址 | `ws63-qemu` 状态 |
 |------|------|------------------|
-| SYS_CTL0 | `0x4000_0000` | **已建模**（时钟状态：TCXO/PLL 锁） |
-| GLB_CTL_M | `0x4000_2000` | 吸收 |
-| WDT | `0x4000_6000` | 吸收 |
-| SYS_CTL1 | `0x4400_0000` | 吸收（自定义中断控制器，未建模） |
-| CLDO_CRG | `0x4400_1100` | 吸收¹ |
-| TCXO | `0x4400_04C0` | 吸收 |
+| SYS_CTL0 | `0x4000_0000` | **已建模**（时钟状态 TCXO/PLL 锁 + 系统复位记录） |
+| GLB_CTL_M | `0x4000_2000` | **已建模**（在 SYS_CTL0 窗口内:芯片复位触发） |
+| WDT | `0x4000_6000` | **已建模**（倒计时→超时复位 SoC） |
+| TCXO / SYS_CTL1 窗口 | `0x4400_0000`（计数器 `0x4400_04C0`） | **已建模(部分)**（64 位单调计数 + count-valid;覆盖 SYS_CTL1 区） |
+| CLDO_CRG | `0x4400_1100` | **已建模(部分)**:时钟门控生效（清/置 CKEN_CTL0 冻结/恢复定时器）¹ |
 | TIMER | `0x4400_2000` | **已建模**（×3 下数计数器 + 中断 26/27/28） |
-| EFUSE | `0x4400_8000` | 吸收 |
-| LSADC | `0x4400_C000` | 吸收 |
-| IO_CONFIG | `0x4400_D000` | 吸收 |
+| RF_WB_CTL | `0x4400_4000` | 吸收（配置影子;RF/PHY 无线电**不仿真**） |
+| EFUSE | `0x4400_8000` | **已建模**（OTP:写=按位或、STS boot-done、数据窗读回） |
+| LSADC | `0x4400_C000` | **已建模**（触发转换 → 弹 14-bit 采样 + IRQ 72） |
+| IO_CONFIG (pinmux) | `0x4400_D000` | **已建模**（`ws63-pinmux` 引脚复用织构） |
+| TSENSOR | `0x4400_E000` | **已建模**（start→rdy + 10-bit 温度码） |
 | **UART0** | `0x4401_0000` | **已建模**（自定义 HiSilicon UART 设备） |
 | UART1/2 | `0x4401_1000` / `0x4401_2000` | **已建模**（同 UART0） |
-| I2C0/1 | `0x4401_8000` / `0x4401_8100` | 吸收 |
-| SPI0/1 | `0x4402_0000` / `0x4402_1000` | 吸收 |
-| PWM | `0x4402_4000` | 吸收 |
-| I2S | `0x4402_5000` | 吸收 |
-| GPIO0/1/2 | `0x4402_8000` / `0x4402_9000` / `0x4402_A000` | **已建模**（输出 set/clr、输入、中断寄存器） |
-| SPACC/PKE/KM/TRNG | `0x4410_0000`..`0x4411_4000` | 吸收 |
-| SFC_CFG | `0x4800_0000` | 吸收 |
-| DMA | `0x4A00_0000` | 吸收 |
-| SDMA | `0x520A_0000` | 吸收 |
-| RTC | `0x5702_4000` | 吸收 |
-| ULP_GPIO | `0x5703_0000` | 吸收 |
+| I2C0/1 | `0x4401_8000` / `0x4401_8100` | **已建模**（回环 FIFO:TXR→RXR、SR 完成位、IRQ 31/32） |
+| SPI0/1 | `0x4402_0000` / `0x4402_1000` | **已建模**（回环 FIFO:DR 写→顺序读回、WSR、IRQ 43/52） |
+| PWM | `0x4402_4000` | **已建模(部分)**（影子 + START 自清 + PERIODLOAD_FLAG） |
+| I2S | `0x4402_5000` | **已建模**（LEFT/RIGHT TX→RX 回环） |
+| GPIO0/1/2 | `0x4402_8000` / `0x4402_9000` / `0x4402_A000` | **已建模**（输出 set/clr、输入、边沿/电平中断、真实信号网） |
+| SPACC / PKE / KM | `0x4410_0000` / `0x4411_0000` / `0x4411_2000` | 吸收（寄存器影子） |
+| TRNG | `0x4411_4000` | **已建模**（FIFO_READY + 伪随机 xorshift） |
+| SFC | `0x4800_0000` | **已建模(部分)**（SPI 命令 RDID/RDSR + flash XIP 窗口） |
+| DMA | `0x4A00_0000` | **已建模**（通道使能即真正搬运内存 + 完成位 + IRQ 59） |
+| SDMA | `0x520A_0000` | **已建模**（同 DMA 引擎;逻辑通道 8–11） |
+| RTC | `0x5702_4000` | **已建模**（周期触发 IRQ 29 + CURRENT_VALUE 计数） |
+| ULP_GPIO | `0x5703_0000` | 吸收（寄存器影子） |
 
-¹ **boot-critical**：`clock_init::init_clocks()` 会读 SYS_CTL0（TCXO 检测、PLL 锁定）与写 CLDO_CRG
-（时钟门控）。SYS_CTL0 **已建模**为返回「TCXO 检出 + PLL 已锁」，故 `init_clocks()` 不会空转；
-CLDO_CRG 只被写不读关键位，吸收即可。
+¹ **boot-critical**：`clock_init::init_clocks()` 读 SYS_CTL0（TCXO 检测、PLL 锁定）+ 写 CLDO_CRG
+（时钟门控）。SYS_CTL0 已建模为返回「TCXO 检出 + PLL 已锁」,故 `init_clocks()` 不空转;CLDO_CRG
+的时钟门控位真实生效(清 CKEN_CTL0 bit21 冻结定时器、置位恢复),其余位影子。
 
-"吸收"= `create_unimplemented_device`：接受所有读写、读返回 0、不会让 VM 崩溃，
-可用 `-d unimp` 追踪。三个吸收窗口：`0x4000_0000`(256 MiB)、`0x5200_0000`、`0x5700_0000`。
+> **建模 vs 吸收的实现**:已建模外设是注册的 sysbus 设备,映射**覆盖**在三个 `create_unimplemented_device`
+> 兜底窗口(`0x4000_0000` 256 MiB、`0x5200_0000`、`0x5700_0000`)之上;只有未建模子区落到兜底
+> （读 0、不崩,可用 `-d unimp` 追踪）。**全部 35 个 SVD 外设均已覆盖**(见 design.md 「外设建模覆盖」)。
 
 ## CPU
 
