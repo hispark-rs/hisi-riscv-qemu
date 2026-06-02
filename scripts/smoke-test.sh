@@ -207,5 +207,21 @@ else
     echo "==> custom_memory: SKIP (build it: cargo build -p custom_memory --release)"
 fi
 
+# ---- async_delay: embedded-hal-async DelayNs (TIMER IRQ -> waker -> block_on) ----
+ASYNC_ELF="$TARGET_DIR/async_delay"
+if [ -f "$ASYNC_ELF" ]; then
+    echo "==> async_delay: expecting embedded-hal-async DelayNs to drive 5 timer-IRQ ticks"
+    timeout 6 "$QEMU_BIN" -M ws63 -nographic -serial mon:stdio \
+        -kernel "$ASYNC_ELF" </dev/null >"$TMP/asyncd.out" 2>/dev/null || true
+    if grep -q "ASYNC DELAY: PASS" "$TMP/asyncd.out"; then
+        echo "    PASS: $(grep -c 'async tick #' "$TMP/asyncd.out") async ticks (IRQ->waker->block_on)"
+    else
+        echo "    FAIL: async delay not confirmed. Got:"; tail -5 "$TMP/asyncd.out" | sed 's/^/      /'
+        fail=1
+    fi
+else
+    echo "==> async_delay: SKIP (build it: cargo build -p async_delay --release)"
+fi
+
 [ "$fail" -eq 0 ] && echo "SMOKE TEST: PASS" || echo "SMOKE TEST: FAIL"
 exit "$fail"
