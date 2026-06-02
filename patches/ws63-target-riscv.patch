@@ -571,3 +571,65 @@ index 803d874..97e2715 100644
      bool s_injected = env->mvip & (1ULL << cause) & env->mvien &&
          !(env->mip & (1ULL << cause));
      bool vs_injected = env->hvip & (1ULL << cause) & env->hvien &&
+diff --git a/target/riscv/translate.c b/target/riscv/translate.c
+index bccaf8e..ad390ab 100644
+--- a/target/riscv/translate.c
++++ b/target/riscv/translate.c
+@@ -1163,14 +1163,24 @@ static uint32_t opcode_at(DisasContextBase *dcbase, target_ulong pc)
+ #include "insn_trans/trans_rvzcmop.c.inc"
+ #include "insn_trans/trans_rvzicfiss.c.inc"
+ 
++/* HiSilicon WS63 "xlinx" custom instruction extensions (must follow
++ * trans_rvzce.c.inc: reuses decode_push_pop_list). */
++#include "insn_trans/trans_xlinx.c.inc"
++
+ /* Include decoders for factored-out extensions */
+ #include "decode-XVentanaCondOps.c.inc"
+ 
+-/* The specification allows for longer insns, but not supported by qemu. */
+-#define MAX_INSN_LEN  4
++/*
++ * The specification allows for longer insns, but only the WS63 "xlinx"
++ * 48-bit l.li is supported by qemu here (marker 0x1f in bits[5:0]).
++ */
++#define MAX_INSN_LEN  6
+ 
+ static inline int insn_len(uint16_t first_word)
+ {
++    if ((first_word & 0x3f) == 0x1f) {
++        return 6; /* xlinx 48-bit (l.li) */
++    }
+     return (first_word & 3) == 3 ? 4 : 2;
+ }
+ 
+@@ -1197,7 +1207,11 @@ static void decode_opc(CPURISCVState *env, DisasContext *ctx, uint16_t opcode)
+             decode_insn16(ctx, opcode)) {
+             return;
+         }
+-    } else {
++        /* WS63 xlinx 16-bit (push/pop/popret, uxtb/uxth) */
++        if (decode_xlinx16(ctx, opcode)) {
++            return;
++        }
++    } else if (ctx->cur_insn_len == 4) {
+         uint32_t opcode32 = opcode;
+         opcode32 = deposit32(opcode32, 16, 16,
+                              translator_lduw(env, &ctx->base,
+@@ -1210,6 +1224,17 @@ static void decode_opc(CPURISCVState *env, DisasContext *ctx, uint16_t opcode)
+                 return;
+             }
+         }
++        /* WS63 xlinx 32-bit (*shf, b*i, muliadd, jal16/j16) */
++        if (decode_xlinx32(ctx, opcode32)) {
++            return;
++        }
++    } else { /* ctx->cur_insn_len == 6: WS63 xlinx 48-bit (l.li) */
++        uint16_t hw1 = translator_lduw(env, &ctx->base, ctx->base.pc_next + 2);
++        uint16_t hw2 = translator_lduw(env, &ctx->base, ctx->base.pc_next + 4);
++        ctx->opcode = opcode | ((uint32_t)hw1 << 16);
++        if (decode_xlinx48(ctx, opcode, hw1 | ((uint32_t)hw2 << 16))) {
++            return;
++        }
+     }
+ 
+     gen_exception_illegal(ctx);
