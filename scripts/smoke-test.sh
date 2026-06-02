@@ -255,5 +255,21 @@ else
     echo "==> embassy_async_io: SKIP (build it: cargo build -p embassy_async_io --release)"
 fi
 
+# ---- async_bus: embedded-hal-async SpiBus + I2c (loopback under block_on) ----
+ABUS_ELF="$TARGET_DIR/async_bus"
+if [ -f "$ABUS_ELF" ]; then
+    echo "==> async_bus: expecting async SPI/I2c loopback (embedded-hal-async)"
+    timeout 5 "$QEMU_BIN" -M ws63 -nographic -serial mon:stdio \
+        -kernel "$ABUS_ELF" </dev/null >"$TMP/abus.out" 2>/dev/null || true
+    if grep -q "ASYNC BUS: PASS" "$TMP/abus.out"; then
+        echo "    PASS: $(grep -m1 'spi.transfer' "$TMP/abus.out" | sed 's/^[[:space:]]*//')"
+    else
+        echo "    FAIL: async bus not confirmed. Got:"; tail -4 "$TMP/abus.out" | sed 's/^/      /'
+        fail=1
+    fi
+else
+    echo "==> async_bus: SKIP (build it: cargo build -p async_bus --release)"
+fi
+
 [ "$fail" -eq 0 ] && echo "SMOKE TEST: PASS" || echo "SMOKE TEST: FAIL"
 exit "$fail"
