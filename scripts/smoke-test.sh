@@ -191,5 +191,21 @@ else
     echo "==> semihost_selftest: SKIP (build it: cargo build -p semihost_selftest --release)"
 fi
 
+# ---- custom_memory: per-example memory.x override (ws63-rt bundled one disabled) ----
+CUSTMEM_ELF="$TARGET_DIR/custom_memory"
+if [ -f "$CUSTMEM_ELF" ]; then
+    echo "==> custom_memory: expecting its OWN memory.x in effect (marker 0x00c0ffee)"
+    timeout 4 "$QEMU_BIN" -M ws63 -nographic -serial mon:stdio \
+        -kernel "$CUSTMEM_ELF" </dev/null >"$TMP/custmem.out" 2>/dev/null || true
+    if grep -q "OK (per-example memory.x in effect)" "$TMP/custmem.out"; then
+        echo "    PASS: $(grep -m1 marker= "$TMP/custmem.out" | sed 's/^[[:space:]]*//')"
+    else
+        echo "    FAIL: per-example memory.x not confirmed. Got:"; head -4 "$TMP/custmem.out" | sed 's/^/      /'
+        fail=1
+    fi
+else
+    echo "==> custom_memory: SKIP (build it: cargo build -p custom_memory --release)"
+fi
+
 [ "$fail" -eq 0 ] && echo "SMOKE TEST: PASS" || echo "SMOKE TEST: FAIL"
 exit "$fail"
