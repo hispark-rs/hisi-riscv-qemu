@@ -133,10 +133,12 @@ system reset、IO_CONFIG pinmux 路由亦已建模。完整矩阵见 [`docs/desi
 
 - **时钟门控已生效**:`CLDO_CRG_CKEN_CTL0/1`(@0x44001100/04)建模为时钟门,**默认开**;清定时器门(CKEN_CTL0 bit21)
   **冻结**定时器、置位**恢复**(实测 3/3)。
-- **源路由**:`CLDO_CRG_CLK_SEL@0x44001134` TCXO/PLL 选择建模为状态;定时器以 `ws63_periph_clk_hz()` 取 PCLK
-  (PLL 锁定 240 MHz / 未锁回退 TCXO 24/40 MHz)。
+- **源路由**:`CLDO_CRG_CLK_SEL@0x44001134` TCXO/PLL 选择建模为状态。**定时器/WDT 计数时钟已校正为 TCXO 晶体
+  (24/40 MHz)**——非 PLL PCLK(2026-06 对照 fbb_ws63 `clock_init.c`:`timer_porting_clock_value_set(REQ_24M)`,
+  删去 `ws63_pclk_hz`/`WS63_PLL_HZ`);与 ws63-rs HAL 的 timer/WDT 时钟修复一致,smoke-test 全绿。
 - **eFuse / LSADC** 已最小建模并**行为完整**——把原先静态对照 SDK 的修复变成可执行验证(LSADC `ctrl_8/9` 转换、EFUSE 读窗口)。
 - **本质受限**(非缺陷):UART 波特、SPI 分频等时序在 QEMU chardev 不限速下**不可观测**,故源/分频仅记录状态。
+  完整时钟树(FNPLL 2880 MHz + CLDO_CRG)已在 [ws63-guide ch8](https://github.com/sanchuanhehe/ws63-guide) 实证落盘。
 
 ---
 
