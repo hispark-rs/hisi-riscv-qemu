@@ -59,7 +59,9 @@ jobs:
       - name: C SDK peripheral-sample tests
         run: bash scripts/csdk-test.sh
 
-      # Register-level, boot-free regression of the GPIO/UART/timer/INTC/DMA
-      # models (drives MMIO directly via libqtest). Built by scripts/build.sh.
+      # Register-level, boot-free regression of the GPIO/UART/timer/INTC/DMA/
+      # netmac models (drives MMIO directly via libqtest). Fast feedback on the
+      # pinned QEMU here; the qtest-matrix workflow runs this same test across
+      # multiple QEMU releases (out-of-tree-overlay drift radar).
       - name: QTest (register-level regression)
         run: bash scripts/qtest.sh

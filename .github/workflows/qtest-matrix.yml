@@ -1,0 +1,71 @@
+name: qtest-matrix
+
+# Boot-free, register-level qtest regression (tests/qtest/ws63-test) across a
+# MATRIX of QEMU base releases. This is the phase-6 maintainability radar: the
+# WS63 model is an out-of-tree overlay (hw/riscv/ws63.c + a target/riscv patch +
+# the xlinx decoder .inc, injected by scripts/build.sh). The #1 maintenance risk
+# is a new QEMU release shifting the files the patch touches. Pinning the qtest
+# to one version hides that; running it across versions catches drift early.
+#
+# - Pinned + same-LTS-minor cells are REQUIRED (the patch applies, must stay green).
+# - Newer majors are EXPERIMENTAL (continue-on-error): a failure there is the
+#   "time to rebase the target/riscv patch" signal, not a merge blocker.
+#
+# The qtest needs no Rust toolchain and boots no firmware — it drives the device
+# models directly over MMIO — so each cell is just: deps -> build QEMU -> qtest.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly, so a newly-tagged QEMU that breaks the overlay shows up even with
+    # no repo activity.
+    - cron: "0 6 * * 1"
+
+# Newer pushes supersede in-flight runs on the same ref.
+concurrency:
+  group: qtest-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qtest:
+    name: qtest (QEMU ${{ matrix.qemu_tag }})
+    runs-on: ubuntu-latest
+    # Non-required cells may fail without failing the workflow.
+    continue-on-error: ${{ !matrix.required }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Pinned baseline — the version the overlay + patch target. Blocking.
+          - qemu_tag: v9.2.4
+            required: true
+          # Same LTS minor: proves the overlay isn't pinned to a v9.2.4-only quirk
+          # (the patch applies across the 9.2.x line). Blocking.
+          - qemu_tag: v9.2.0
+            required: true
+          # Next major — forward-compat radar. The target/riscv patch is expected
+          # to need a rebase here (cpu-qom.h / cpu.h moved); allowed to fail.
+          - qemu_tag: v10.0.0
+            required: false
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build deps
+        run: bash scripts/setup-deps.sh
+
+      - name: Cache QEMU build
+        uses: actions/cache@v5
+        with:
+          path: qemu
+          # Key on the QEMU tag too (each cell builds its own tree), plus every
+          # overlay input that scripts/build.sh injects.
+          key: qtest-${{ matrix.qemu_tag }}-${{ hashFiles('src/**', 'patches/**', 'scripts/build.sh') }}-${{ runner.os }}
+
+      - name: Build WS63 QEMU + qtest (${{ matrix.qemu_tag }})
+        run: QEMU_TAG=${{ matrix.qemu_tag }} bash scripts/build.sh
+
+      - name: QTest (register-level regression)
+        run: bash scripts/qtest.sh

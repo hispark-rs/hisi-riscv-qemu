@@ -169,7 +169,10 @@ system reset、IO_CONFIG pinmux 路由亦已建模。完整矩阵见 [`docs/desi
 
 - 跟 QEMU release(v9.2 → v10.x LTS)rebase;自定义代码已隔离到 `hw/riscv/ws63.c` + `target/riscv` 补丁 +
   `insn_trans/trans_xlinx.c.inc`,便于跟版;考虑用正式 patch-series 取代「拷文件 + sed 注入」。
-- **CI 已就位**(build + 双固件冒烟 + C SDK 样例 + QEMU 构建缓存);后续加 qtest 矩阵。
+- **CI 已就位**(build + 双固件冒烟 + C SDK 样例 + QEMU 构建缓存)。
+- **qtest 矩阵已就位**(`qtest-matrix.yml`):寄存器级 qtest 跨 QEMU 版本跑——v9.2.4/v9.2.0 必过(补丁可应用),
+  v10.0.0 实验性(`continue-on-error`,当前红:`cpu-qom.h`/`cpu.h` 已变,是「该 rebase target/riscv 补丁」的信号)。
+  无需 Rust 工具链/不启动固件,是 out-of-tree overlay 漂移雷达。周一定时跑一次以捕获新发布的 QEMU。
 - 可能向上游提交基础机器(`hw/riscv/ws63.c`)+ qtests(HiSilicon WS63 board)。
 
 ---
