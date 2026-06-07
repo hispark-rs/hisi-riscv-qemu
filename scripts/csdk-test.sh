@@ -2,7 +2,7 @@
 # Boot prebuilt fbb_ws63 C SDK peripheral-sample ELFs on ws63-qemu and assert each
 # sample's UART output marker. This validates the WS63 peripheral models against
 # REAL vendor-compiled firmware (complementing scripts/smoke-test.sh, which runs
-# the ws63-rs Rust firmware).
+# the hisi-riscv-rs Rust firmware).
 #
 # Hermetic + CI-friendly: needs only the built qemu and the committed fixtures in
 # tests/csdk/ — no fbb_ws63 checkout or vendor toolchain. Regenerate fixtures with

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Debug a ws63-rs firmware ELF: launch the WS63 QEMU with a gdbstub (halted at
+# Debug a hisi-riscv-rs firmware ELF: launch the WS63 QEMU with a gdbstub (halted at
 # entry) and attach rust-gdb, which drives gdb-multiarch (it understands riscv:rv32)
 # and auto-loads the Rust pretty-printers from the ws63 toolchain sysroot.
 #
@@ -23,14 +23,14 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QEMU_DIR="${QEMU_DIR:-$HERE/qemu}"
 QEMU_BIN="${QEMU_BIN:-$QEMU_DIR/build/qemu-system-riscv32}"
-WS63_RS="${WS63_RS:-$HERE/../ws63-rs}"
+WS63_RS="${WS63_RS:-$HERE/../hisi-riscv-rs}"
 PORT="${PORT:-1234}"
 export RUST_GDB="${RUST_GDB:-gdb-multiarch}"
 GDB_TOOLCHAIN="${GDB_TOOLCHAIN:-ws63}"
 SERIAL_LOG="${SERIAL_LOG:-$HERE/debug-serial.log}"
 
 ELF="${1:?usage: debug.sh <firmware.elf | example-name> [gdb args...]}"; shift || true
-# Resolve a bare example name to its release ELF under ws63-rs.
+# Resolve a bare example name to its release ELF under hisi-riscv-rs.
 if [ ! -f "$ELF" ]; then
     CAND="$WS63_RS/target/riscv32imfc-unknown-none-elf/release/$ELF"
     [ -f "$CAND" ] && ELF="$CAND"

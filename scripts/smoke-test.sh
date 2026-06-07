@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Smoke-test the WS63 QEMU machine against ws63-rs firmware.
+# Smoke-test the WS63 QEMU machine against hisi-riscv-rs firmware.
 #   - uart_hello: assert the banner prints over UART0 (custom UART device)
 #   - blinky:     assert the firmware reaches the GPIO0 toggle loop (MMIO trace)
 # Exit 0 = both pass.
 #
-# Env: QEMU_DIR (default <repo>/qemu), WS63_RS (default ../ws63-rs)
+# Env: QEMU_DIR (default <repo>/qemu), WS63_RS (default ../hisi-riscv-rs)
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QEMU_DIR="${QEMU_DIR:-$HERE/qemu}"
 QEMU_BIN="${QEMU_BIN:-$QEMU_DIR/build/qemu-system-riscv32}"
-WS63_RS="${WS63_RS:-$HERE/../ws63-rs}"
+WS63_RS="${WS63_RS:-$HERE/../hisi-riscv-rs}"
 TARGET_DIR="$WS63_RS/target/riscv32imfc-unknown-none-elf/release"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

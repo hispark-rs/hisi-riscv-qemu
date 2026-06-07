@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Smoke-test the BS21 QEMU machine (-M bs21) against ws63-rs BS21 firmware.
+# Smoke-test the BS21 QEMU machine (-M bs21) against hisi-riscv-rs BS21 firmware.
 #   - uart_hello: assert the banner prints over UART0 (custom UART @ 0x52081000)
 #   - blinky:     assert the firmware reaches the GPIO0 toggle loop (MMIO trace)
 # This is the milestone-1 acceptance: BS21 blinky + uart_hello boot end-to-end on
 # the bs21 machine. Exit 0 = both pass.
 #
 # Build the firmware first (its own workspace, chip-bs21 HAL + BS21 memory.x):
-#   cargo build --manifest-path ws63-rs/bs21-examples/Cargo.toml --release
+#   cargo build --manifest-path hisi-riscv-rs/bs21-examples/Cargo.toml --release
 #
-# Env: QEMU_DIR (default <repo>/qemu), WS63_RS (default ../ws63-rs)
+# Env: QEMU_DIR (default <repo>/qemu), WS63_RS (default ../hisi-riscv-rs)
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QEMU_DIR="${QEMU_DIR:-$HERE/qemu}"
 QEMU_BIN="${QEMU_BIN:-$QEMU_DIR/build/qemu-system-riscv32}"
-WS63_RS="${WS63_RS:-$HERE/../ws63-rs}"
+WS63_RS="${WS63_RS:-$HERE/../hisi-riscv-rs}"
 # BS21 examples are their own (chip-bs21) workspace; prefer release, fall back to debug.
 BASE="$WS63_RS/bs21-examples/target/riscv32imfc-unknown-none-elf"
 TARGET_DIR="$BASE/release"
