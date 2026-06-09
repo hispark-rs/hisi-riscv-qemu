@@ -1,5 +1,48 @@
+diff --git a/hw/riscv/bs21.c b/hw/riscv/bs21.c
+--- a/hw/riscv/bs21.c
++++ b/hw/riscv/bs21.c
+@@ -27,19 +27,19 @@
+ #include "qemu/osdep.h"
+ #include "qemu/error-report.h"
+ #include "qapi/error.h"
+-#include "hw/boards.h"
+-#include "hw/loader.h"
+-#include "hw/sysbus.h"
+-#include "hw/irq.h"
+-#include "hw/qdev-properties.h"
+-#include "hw/qdev-properties-system.h"
++#include "hw/core/boards.h"
++#include "hw/core/loader.h"
++#include "hw/core/sysbus.h"
++#include "hw/core/irq.h"
++#include "hw/core/qdev-properties.h"
++#include "hw/core/qdev-properties-system.h"
+ #include "hw/misc/unimp.h"
+ #include "chardev/char.h"
+ #include "target/riscv/cpu.h"
+ #include "hw/core/cpu.h"
+ #include "system/system.h"
+ #include "system/reset.h"
+-#include "exec/address-spaces.h"
++#include "system/address-spaces.h"
+ #include "elf.h"
+ #include "hisi_riscv31.h" /* shared HiSilicon riscv31 device models (impl: ws63.c) */
+ 
+diff --git a/hw/riscv/hisi_riscv31.h b/hw/riscv/hisi_riscv31.h
+--- a/hw/riscv/hisi_riscv31.h
++++ b/hw/riscv/hisi_riscv31.h
+@@ -22,8 +22,8 @@
+ #define HW_RISCV_HISI_RISCV31_H
+ 
+ #include "exec/hwaddr.h"
+-#include "exec/memory.h"
+-#include "hw/qdev-core.h"
++#include "system/memory.h"
++#include "hw/core/qdev.h"
+ #include "target/riscv/cpu.h"
+ 
+ /* Shared HiSilicon riscv31 device-model type names (implemented in ws63.c). */
 diff --git a/hw/riscv/ws63.c b/hw/riscv/ws63.c
-index 7ce56d1..fe740d6 100644
 --- a/hw/riscv/ws63.c
 +++ b/hw/riscv/ws63.c
 @@ -32,12 +32,12 @@
@@ -39,3 +82,4 @@ index 7ce56d1..fe740d6 100644
      qemu_irq irq;
      uint8_t rx_byte;
      bool rx_valid;
+
