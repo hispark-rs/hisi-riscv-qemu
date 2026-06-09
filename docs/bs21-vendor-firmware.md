@@ -96,13 +96,20 @@ a0–a3, result in a0) and resume at `ra`.
 3. ~~SFC reg model~~ — DONE. The `ws63-sfc` v150 model (RDID→JEDEC ID) is mapped at
    `0x90000000` in bs21.c; flashboot's flash-ID init now succeeds (it runs 9 instrs
    further). M1 + WS63 unaffected.
-4. **Flash CONTENT** — the next gate: after flash-ID, flashboot reads the partition
-   table from flash (via the SFC command interface, into DTCM `0x20000c34`) and
-   checks its first word against the magic **`0x4b87a52d`** (loaded by an xlinx
-   `l.li`). Empty flash → 0 ≠ magic → it halts. To proceed it needs the SFC's READ
-   command backed by a flash image containing a valid partition table (magic
-   `0x4b87a52d`) + the application — i.e. loading the real firmware. That (+ the app
-   image) is the remaining "boot the vendor app" chain.
+4. ~~Flash CONTENT — partition table~~ — DONE. flashboot reads the partition table
+   via **XIP at flash1 `0x90100000`** (its helper @0x406b4 just does `lui a0,0x90100;
+   ret`) and checks the first word against magic **`0x4b87a52d`**. bs21.c now maps a
+   `bs21.flash1` RAM region at 0x90100000; loading the prebuilt `partition.bin`
+   (`src/interim_binary/bs21e/bin/partition/.../partition.bin`, magic at offset 0)
+   there gets flashboot **past the magic** and **~940 instrs** (4x) deep into its
+   main path (partition parsing) before a new idle spin @0x4293a. Reproduce:
+   `bs21-vendor-boot.sh flashboot_sign_a.bin 5 0x40000 partition.bin`.
+5. **App image + boot** — the next gate: the partition table points to firmware
+   partitions at flash offsets (0x1000/0xa000/0x88000/…); flashboot then validates
+   and loads the application from those offsets. Populating flash1 with the full
+   firmware (flashboot + app at their partition offsets) lets flashboot load + jump
+   to the app — but the app is the full LiteOS BLE/SLE image, so *running* it is the
+   broader connectivity work (all peripherals, the BLE/SLE stacks).
 
 The infrastructure (CPU + xlinx + memory map + UART/GPIO + the disjoint-range ROM
 dispatch + bs21_rom_call) is in place; both loaderboot and flashboot *run* — the

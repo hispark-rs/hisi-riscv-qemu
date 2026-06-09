@@ -60,6 +60,11 @@
 #define BS21_DTCM_SIZE      0x00010000   /* 64K (APP_DTCM_LENGTH) */
 #define BS21_FLASH_BASE     0x10000000   /* XIP NOR flash (QSPI) */
 #define BS21_FLASH_SIZE     0x00100000   /* 1M */
+/* flash1 XIP window (the SFC-mapped QSPI flash): the partition table + firmware
+ * live here. flashboot reads the partition table from 0x90100000 (it returns this
+ * pointer directly) and checks the magic 0x4b87a52d. */
+#define BS21_FLASH1_BASE    0x90100000
+#define BS21_FLASH1_SIZE    0x00100000   /* 1M */
 #define BS21_SRAM_BASE      0x00100000   /* L2RAM (160K on BS21E/BS22) */
 #define BS21_SRAM_SIZE      0x00028000
 #define BS21_RESET_PC       0x10000000   /* flash XIP entry */
@@ -108,6 +113,7 @@ struct BS21MachineState {
     MemoryRegion itcm;
     MemoryRegion dtcm;
     MemoryRegion flash;
+    MemoryRegion flash1;
     MemoryRegion ppb;
 };
 
@@ -142,6 +148,7 @@ static void bs21_machine_init(MachineState *machine)
     ws63_make_ram(sys, &s->itcm, "bs21.itcm", BS21_ITCM_BASE, BS21_ITCM_SIZE);
     ws63_make_ram(sys, &s->dtcm, "bs21.dtcm", BS21_DTCM_BASE, BS21_DTCM_SIZE);
     ws63_make_ram(sys, &s->flash, "bs21.flash", BS21_FLASH_BASE, BS21_FLASH_SIZE);
+    ws63_make_ram(sys, &s->flash1, "bs21.flash1", BS21_FLASH1_BASE, BS21_FLASH1_SIZE);
     memory_region_add_subregion(sys, BS21_SRAM_BASE, machine->ram);
 
     /* Core private peripheral bus (FlashPatch + SCS) — back with RAM so control

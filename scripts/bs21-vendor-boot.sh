@@ -54,10 +54,18 @@ print(f"code-info magic 0x{mg:x}, code 0x{csize:x} bytes @ file 0x{len(d)-csize:
 PY
 [ -s "$TMP/code.bin" ] || exit 1
 
-echo "==> booting $(basename "$IMG") at $ADDR on -M bs21 (${SECS}s)"
+# Optional flash1 image (e.g. partition.bin) loaded at the XIP base 0x90100000:
+# flashboot reads the partition table there and checks magic 0x4b87a52d — with it,
+# flashboot parses the partition table and runs ~940 instrs (4x) into its main path.
+FLASH1_IMG="${4:-}"
+FLASH1_ARGS=()
+[ -n "$FLASH1_IMG" ] && FLASH1_ARGS=(-device "loader,file=$FLASH1_IMG,addr=0x90100000")
+
+echo "==> booting $(basename "$IMG") at $ADDR on -M bs21 (${SECS}s)${FLASH1_IMG:+ + flash1 $(basename "$FLASH1_IMG")@0x90100000}"
 timeout "$SECS" "$QEMU_BIN" -M bs21 -nographic -serial mon:stdio \
     -d in_asm,unimp,guest_errors -D "$TMP/trace.log" \
     -device loader,file="$TMP/code.bin",addr="$ADDR" \
+    "${FLASH1_ARGS[@]}" \
     -device loader,addr="$ADDR",cpu-num=0 </dev/null >"$TMP/uart.out" 2>&1 || true
 
 insns=$(grep -cE '^0x' "$TMP/trace.log" 2>/dev/null); insns=${insns:-0}
