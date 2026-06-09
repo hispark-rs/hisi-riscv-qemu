@@ -109,15 +109,43 @@ a0–a3, result in a0) and resume at `ra`.
    each out at its partition flash offset (app @0x15000 → XIP 0x90115000); the boot
    script chunk-loads it at 0x90100000 (the generic loader caps a single raw load at
    ~0x10000). flashboot loads with the full flash present.
-6. **Post-parse halt** — the current gate: flashboot **disables interrupts**
-   (mstatus=0, mie=0) and, after parsing the partition table (~940 instrs), reaches a
-   hard spin @0x4293a — and it runs the *same* 940 instrs with OR without the app in
-   flash, so it halts **before** reading/validating the app. The halt is a post-parse
-   condition (a boot-reason/peripheral check), not the app load. Finding what
-   flashboot checks there (and modelling it) is the next step before it would load +
-   jump to the app — after which *running* the LiteOS BLE/SLE app is the broader
-   connectivity work.
+6. **The 0x4293a halt is a CRASH, not a boot-mode decision — it is the absent
+   BS21 mask-ROM** (cracked 2026-06-09). Earlier notes guessed a "boot-reason check"
+   at 0x41730; that was wrong — it came from objdump **misdecoding xlinx**. The real
+   mechanism (decoded with the vendor xlinx-aware objdump, see below):
 
-The infrastructure (CPU + xlinx + memory map + UART/GPIO + the disjoint-range ROM
-dispatch + bs21_rom_call) is in place; both loaderboot and flashboot *run* — the
-remaining work is the SFC/flash so flashboot can load and start the application.
+   - The spin @0x4293a is flashboot's **panic tail**: `irq_lock()` → record reason
+     `0xdeadbeaf` into DTCM @0x2000ffe8 (`0x44f1c`) → clear bit0 of
+     `BOOT_PORTING_RESET_REG` 0x57004600 (`0x42916`) → `j .`. It is reached from
+     flashboot's **exception handler** (`mtvec = 0x47bbc`), which printf-dumps
+     `exception:/uwExcType=/mepc=/mstatus=/mtval=/mcause=/ra=/sp=…` (strings @0x4871c+)
+     via the log fn `0x43b40`. So flashboot **trapped**, then panicked.
+   - **First trap: `mcause=0x2` (illegal instr), `mepc=0x0`.** flashboot validates the
+     mask-ROM signature: `0x43c8a: lui a5,0x10; lw a4,32(a5)` reads `*(0x10020)` and
+     `bne a4, 0xd4818193, 0x4403a`. The ROM region (0x10000–0x40000) is **zeroed RAM**
+     in `-M bs21` (no mask-ROM dump exists), so `*(0x10020)=0 ≠ 0xd4818193` → it tail-
+     `ret`s at 0x4403a with **ra=0** → jumps to PC 0 → illegal-instruction trap.
+   - **Proof:** inject the magic — `-device loader,file=<0xd4818193>,addr=0x10020` —
+     and flashboot **stops branching to the crash** (0 hits on 0x4403a), reaches the
+     magic-OK path 0x43c98, and runs further (1260 vs 723 insns) before a **second**
+     crash (`mcause=0x5` load-access-fault @ `0x570004a0`). So flashboot has **many**
+     mask-ROM/peripheral dependencies; the magic is just the first.
+   - **Conclusion:** like WS63, flashboot is tightly coupled to the silicon mask-ROM
+     (signature + ROM data tables + ROM functions it tail-calls and registers
+     callbacks into, e.g. ROM addr 0x1c200 at 0x43c9a). The SDK ships only
+     `librom_callback.a` + `.sym` (no ROM image), so the path forward is **emulating
+     the BS21 mask-ROM** (synthesize the signature/tables + extend `bs21_rom_call` for
+     the functions it invokes) — the same scale as the WS63 ROM-on-QEMU work, i.e. the
+     deferred connectivity-scale effort. This is NOT a single register to model.
+
+   **Tooling note (reusable):** objdump misdecodes xlinx as `fld/fsd/.insn/illegal`.
+   The fbb_ws63 vendor toolchain decodes it correctly — use
+   `…/cc_riscv32_musl_105/cc_riscv32_musl_fp/bin/riscv32-linux-musl-objdump
+   -b binary -m riscv:rv32 -D --adjust-vma=0x40000` on the extracted code. It shows the
+   real `popret/push/pop/l.li/uxth/divu/...` (BS2X linx131 == WS63 xlinx, same ISA).
+
+The infrastructure (CPU + xlinx + memory map + UART/GPIO + SFC + flash1 + the
+disjoint-range ROM dispatch + bs21_rom_call) is in place; both loaderboot and flashboot
+*run* and flashboot parses the partition table — the remaining work is the **BS21
+mask-ROM emulation** so flashboot can pass its ROM-signature/ROM-call dependencies and
+go on to load and start the application.
