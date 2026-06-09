@@ -960,8 +960,19 @@ struct WS63TcxoState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     uint64_t count;     /* 64-bit free-running TCXO tick counter */
+    uint32_t count_off; /* offset of the TCXO_COUNT block within the region:
+                         * 0x4C0 on WS63 (TCXO @0x44000000); 0x000 on BS21 where
+                         * TCXO_COUNT_BASE_ADDR is the region base (0x57000200).
+                         * Set via ws63_tcxo_set_count_off() before realize. */
     uint32_t shadow[WS63_TCXO_SIZE / 4];
 };
+
+/* Override the TCXO_COUNT block offset (default WS63's 0x4C0). bs21.c calls this
+ * so the count status/lo/hi sit at the region base, matching TCXO_COUNT_BASE_ADDR. */
+void ws63_tcxo_set_count_off(DeviceState *dev, uint32_t off)
+{
+    WS63_TCXO(dev)->count_off = off;
+}
 
 /*
  * Advance the 64-bit counter. Track the QEMU virtual clock at the nominal 24 MHz
@@ -981,16 +992,14 @@ static uint64_t ws63_tcxo_tick(WS63TcxoState *s)
 static uint64_t ws63_tcxo_read(void *opaque, hwaddr off, unsigned size)
 {
     WS63TcxoState *s = opaque;
-    switch (off) {
-    case WS63_TCXO_COUNT_OFF:           /* +0x00: status, bit4 = count valid */
+    if (off == s->count_off) {              /* +0x00: status, bit4 = count valid */
         return 0x10;
-    case WS63_TCXO_COUNT_OFF + 4:       /* +0x04: count[31:0] (advance here) */
+    } else if (off == s->count_off + 4) {   /* +0x04: count[31:0] (advance here) */
         return (uint32_t)ws63_tcxo_tick(s);
-    case WS63_TCXO_COUNT_OFF + 8:       /* +0x08: count[63:32] */
+    } else if (off == s->count_off + 8) {   /* +0x08: count[63:32] */
         return (uint32_t)(s->count >> 32);
-    default:
-        return s->shadow[(off / 4) % (WS63_TCXO_SIZE / 4)];
     }
+    return s->shadow[(off / 4) % (WS63_TCXO_SIZE / 4)];
 }
 
 static void ws63_tcxo_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
@@ -1011,6 +1020,7 @@ static void ws63_tcxo_instance_init(Object *obj)
 {
     WS63TcxoState *s = WS63_TCXO(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+    s->count_off = WS63_TCXO_COUNT_OFF;     /* WS63 default; bs21.c overrides to 0 */
     memory_region_init_io(&s->iomem, obj, &ws63_tcxo_ops, s,
                           TYPE_WS63_TCXO, WS63_TCXO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);

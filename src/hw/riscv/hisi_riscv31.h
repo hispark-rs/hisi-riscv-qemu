@@ -51,4 +51,9 @@ void ws63_register_custom_csrs(void);
  * IRQ-delivery time, so post-realize wiring is fine). */
 void ws63_intc_set_cpu_env(DeviceState *intc, CPURISCVState *env);
 
+/* Override the shared TCXO model's TCXO_COUNT block offset (default WS63 0x4C0).
+ * BS21 places TCXO_COUNT at the region base (TCXO_COUNT_BASE_ADDR 0x57000200), so
+ * bs21.c sets this to 0. Call after qdev_new, before realize. */
+void ws63_tcxo_set_count_off(DeviceState *dev, uint32_t off);
+
 #endif /* HW_RISCV_HISI_RISCV31_H */

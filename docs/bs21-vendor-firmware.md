@@ -143,9 +143,42 @@ a0–a3, result in a0) and resume at `ra`.
    `…/cc_riscv32_musl_105/cc_riscv32_musl_fp/bin/riscv32-linux-musl-objdump
    -b binary -m riscv:rv32 -D --adjust-vma=0x40000` on the extracted code. It shows the
    real `popret/push/pop/l.li/uxth/divu/...` (BS2X linx131 == WS63 xlinx, same ISA).
+   For a true linear trace + per-insn registers use QEMU
+   `-accel tcg,one-insn-per-tb=on -d in_asm,cpu`.
+
+7. **mask-ROM signature MODELLED → flashboot RUNS its init + prints its banner
+   (2026-06-09).** Two `bs21.c`-local fixes got flashboot from the 0x4293a panic to a
+   clean, fully-diagnosed app-load attempt:
+   - **ROM signature**: `bs21.c` pokes `*(uint32_t*)0x10020 = 0xd4818193` into the
+     RAM-backed ROM region at machine init (a small extensible `rom_data[]` table) —
+     so the signature check passes natively (no `-device loader` injection).
+   - **TCXO collision fix**: the shared `ws63-tcxo` model is mapped at `0x57000200`
+     with a 0x1000 region (WS63 layout, where TCXO sits alone at 0x44000000) — on BS21
+     that swallowed the whole GLB_CTL_A/D block and **faulted on flashboot's 2-byte
+     read of `0x570004a0`** (TCXO ops require 4-byte). Per the SDK
+     (`TCXO_COUNT_BASE_ADDR 0x57000200`, `GLB_CTL_A 0x57000400`) the TCXO_COUNT block
+     is only 0x200, so `bs21.c` aliases just `BS21_TCXO_SIZE 0x200` of the device —
+     GLB_CTL_A/D fall through to the absorber. And BS21's TCXO_COUNT sits at the region
+     **base** (offset 0), not WS63's +0x4C0, so `ws63_tcxo_set_count_off(tcxo, 0)`
+     (new setter in `hisi_riscv31.h`) points the status/lo/hi there — flashboot's
+     `*(0x57000200)` bit-4 (count-valid) poll now passes (and BS21 `uart_hello`'s tick
+     counter reads correctly too). WS63's TCXO keeps its 0x4C0 default → 5/5 qtests
+     unaffected.
+
+   With these, flashboot runs **2953 insns** (was 723) through its full init and prints:
+   ```
+   Flashboot Init! id = 0x0 / Power On / Reboot cause:0xF0F0 / Reboot count:0x0
+   Flash Init ret = 0x80001341 / Load App Failed!
+   ```
+   **Next blocker = the SFC/flash model (Flash Init).** flashboot's flash-init calls the
+   SFC detect routine `0x434c2` (writes SFC `0x90000110`/`0x90000300`), then checks a
+   DTCM error flag `*(uint8_t*)0x20001d69`; it's set, so flashboot loads the hardcoded
+   error `0x80001341` (at `0x42138`) and prints "Load App Failed!". The `ws63-sfc` v150
+   model answers RDID with a W25Q16 ID but does not satisfy flashboot's full flash
+   detection/status sequence — modelling that (so the error flag stays clear) is the
+   next step before flashboot reads + loads the app at XIP `0x90115000`.
 
 The infrastructure (CPU + xlinx + memory map + UART/GPIO + SFC + flash1 + the
-disjoint-range ROM dispatch + bs21_rom_call) is in place; both loaderboot and flashboot
-*run* and flashboot parses the partition table — the remaining work is the **BS21
-mask-ROM emulation** so flashboot can pass its ROM-signature/ROM-call dependencies and
-go on to load and start the application.
+disjoint-range ROM dispatch + bs21_rom_call + the mask-ROM signature + the TCXO fix) is
+in place; flashboot now **runs its init and prints its banner** — the remaining work is
+the SFC/flash detection so Flash Init succeeds and flashboot can load+jump to the app.

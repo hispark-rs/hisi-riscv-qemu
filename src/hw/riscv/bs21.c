@@ -92,6 +92,7 @@
 #define BS21_TIMER_BASE     0x52002000
 #define BS21_GPIO0_BASE     0x57010000
 #define BS21_TCXO_BASE      0x57000200
+#define BS21_TCXO_SIZE      0x00000200   /* TCXO_COUNT block; GLB_CTL_A @0x57000400 */
 #define BS21_SFC_BASE       0x90000000   /* serial-flash controller regs (v150) */
 
 /* IRQ numbers (chip_core_irq.h). 26-31 use standard mie bits; >=32 are LOCI.
@@ -115,6 +116,7 @@ struct BS21MachineState {
     MemoryRegion flash;
     MemoryRegion flash1;
     MemoryRegion ppb;
+    MemoryRegion tcxo_win;
 };
 
 static void bs21_cpu_reset(void *opaque)
@@ -155,6 +157,24 @@ static void bs21_machine_init(MachineState *machine)
      * read-modify-writes are absorbed rather than faulting (see ws63.c). */
     ws63_make_ram(sys, &s->ppb, "bs21.ppb", BS21_PPB_BASE, BS21_PPB_SIZE);
 
+    /* BS21 mask-ROM emulation. The silicon mask ROM (0x10000..0x40000) is not in
+     * the SDK; the boot stages validate ROM *data* (a signature/version word) and
+     * tail-call ROM *functions* (handled by bs21_rom_call on illegal-instruction
+     * traps, patches/<tag>/0005). Here we synthesize the ROM data words the vendor
+     * flashboot reads: it checks `*(uint32_t*)0x10020 == 0xd4818193` at its 0x43c8a
+     * and, on mismatch, ret's with ra=0 -> jumps to PC 0 -> illegal-instruction
+     * panic. Poke the known words into the RAM-backed ROM region (extend as more
+     * ROM-data dependencies are found). */
+    {
+        static const struct { hwaddr addr; uint32_t val; } rom_data[] = {
+            { 0x10020, 0xd4818193 },  /* flashboot mask-ROM signature (0x43c8a) */
+        };
+        uint32_t *rom = memory_region_get_ram_ptr(&s->rom);
+        for (int i = 0; i < (int)ARRAY_SIZE(rom_data); i++) {
+            rom[(rom_data[i].addr - BS21_ROM_BASE) / 4] = rom_data[i].val;
+        }
+    }
+
     /* Catch-all absorbers for un-modeled peripheral MMIO (real devices on top). */
     create_unimplemented_device("bs21.mmio.mctl", BS21_MMIO_MCTL_BASE, BS21_MMIO_MCTL_SIZE);
     create_unimplemented_device("bs21.mmio.glb", BS21_MMIO_GLB_BASE, BS21_MMIO_GLB_SIZE);
@@ -164,10 +184,20 @@ static void bs21_machine_init(MachineState *machine)
     DeviceState *intc = qdev_new(TYPE_WS63_INTC);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(intc), &error_fatal);
 
-    /* TCXO clock/counter (shared model; over the absorber). */
+    /* TCXO clock/counter (shared model; over the absorber). On BS21 the
+     * TCXO_COUNT block is only 0x57000200..0x57000400 (TCXO_COUNT_BASE_ADDR;
+     * GLB_CTL_A starts right after at 0x57000400) — unlike WS63 where the TCXO
+     * sits alone at 0x44000000 with a full 0x1000 region. Alias only the 0x200
+     * that is really TCXO here, so the GLB_CTL_A/D registers above it fall through
+     * to the glb absorber instead of hitting the TCXO's strict 4-byte handler
+     * (the vendor flashboot does sub-word reads of GLB_CTL_A, e.g. 0x570004a0). */
     DeviceState *tcxo = qdev_new(TYPE_WS63_TCXO);
+    ws63_tcxo_set_count_off(tcxo, 0);   /* BS21 TCXO_COUNT is at the region base */
     sysbus_realize_and_unref(SYS_BUS_DEVICE(tcxo), &error_fatal);
-    sysbus_mmio_map(SYS_BUS_DEVICE(tcxo), 0, BS21_TCXO_BASE);
+    MemoryRegion *tcxo_mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(tcxo), 0);
+    memory_region_init_alias(&s->tcxo_win, OBJECT(tcxo), "bs21.tcxo", tcxo_mr,
+                             0, BS21_TCXO_SIZE);
+    memory_region_add_subregion(sys, BS21_TCXO_BASE, &s->tcxo_win);
 
     /* SFC serial-flash controller (shared v150 model) — models the SPI command
      * interface enough for flash identification (RDID -> JEDEC ID), so the vendor
