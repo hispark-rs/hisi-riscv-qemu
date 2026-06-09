@@ -56,4 +56,8 @@ void ws63_intc_set_cpu_env(DeviceState *intc, CPURISCVState *env);
  * bs21.c sets this to 0. Call after qdev_new, before realize. */
 void ws63_tcxo_set_count_off(DeviceState *dev, uint32_t off);
 
+/* Override the JEDEC ID the shared SFC model reports for RDID (default WS63's
+ * W25Q16). bs21.c sets the GigaDevice ID the BS2X flashboot expects. */
+void ws63_sfc_set_flash_id(DeviceState *dev, uint32_t id);
+
 #endif /* HW_RISCV_HISI_RISCV31_H */

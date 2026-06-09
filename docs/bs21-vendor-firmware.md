@@ -170,15 +170,28 @@ a0–a3, result in a0) and resume at `ra`.
    Flashboot Init! id = 0x0 / Power On / Reboot cause:0xF0F0 / Reboot count:0x0
    Flash Init ret = 0x80001341 / Load App Failed!
    ```
-   **Next blocker = the SFC/flash model (Flash Init).** flashboot's flash-init calls the
-   SFC detect routine `0x434c2` (writes SFC `0x90000110`/`0x90000300`), then checks a
-   DTCM error flag `*(uint8_t*)0x20001d69`; it's set, so flashboot loads the hardcoded
-   error `0x80001341` (at `0x42138`) and prints "Load App Failed!". The `ws63-sfc` v150
-   model answers RDID with a W25Q16 ID but does not satisfy flashboot's full flash
-   detection/status sequence — modelling that (so the error flag stays clear) is the
-   next step before flashboot reads + loads the app at XIP `0x90115000`.
+8. **SFC flash ID fixed → flashboot LOADS the app and JUMPS to it (2026-06-09).** The
+   `Flash Init ret=0x80001341` was a **flash-ID mismatch**: BS21's flashboot flash table
+   is **GigaDevice** (`sfc_config_info_porting.c`: GD25LE80), and at `0x42122` it
+   compares the read JEDEC ID against **`0x1460C8`** (mfr 0xC8 / type 0x60 / cap 0x14) —
+   but the shared `ws63-sfc` model answered RDID with WS63's Winbond W25Q16 (0x1560EF),
+   so detection failed → error flag → 0x80001341. Made the SFC's RDID ID per-machine
+   (`ws63_sfc_set_flash_id()`, default W25Q16; bs21.c sets `0x1460C8`). Now:
+   ```
+   Flashboot Init! / Power On / Reboot cause:0xF0F0 / Reboot count:0x0
+   Flash Init ret = 0x0 / No need to upgrade / Jump to addr = 0x90115300
+   ```
+   With the **full flash image** present (`bs21-build-flash.sh`, app @ flash 0x15000 →
+   XIP 0x90115000), flashboot's flash detect ✓, upgrade-version check ✓, and it **loads
+   + jumps to the app at 0x90115300**. The app's RTOS startup then executes from XIP
+   (sets `mtvec`, clears `mstatus`/`mie`, programs the LOCI custom CSRs `0x7c2`/`0x7c3`,
+   sets `gp` to DTCM `0x2000369c`). **flashboot's job is complete.** Reproduce:
+   `bs21-vendor-boot.sh flashboot_sign_a.bin 8 0x40000 <full-flash.bin>` (the 4th arg is
+   the `bs21-build-flash.sh` image). Running the full LiteOS BLE/SLE app from here is the
+   broader connectivity work (full memory map / RAM init / all peripherals).
 
 The infrastructure (CPU + xlinx + memory map + UART/GPIO + SFC + flash1 + the
-disjoint-range ROM dispatch + bs21_rom_call + the mask-ROM signature + the TCXO fix) is
-in place; flashboot now **runs its init and prints its banner** — the remaining work is
-the SFC/flash detection so Flash Init succeeds and flashboot can load+jump to the app.
+disjoint-range ROM dispatch + bs21_rom_call + the mask-ROM signature + the TCXO fix +
+the GigaDevice flash ID) is in place; **flashboot now runs its full init, detects the
+flash, and loads + jumps to the application** — the BS2X vendor boot chain
+(loaderboot → flashboot → app) is end-to-end on `-M bs21` up to the app handoff.

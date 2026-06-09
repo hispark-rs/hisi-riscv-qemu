@@ -1049,13 +1049,23 @@ OBJECT_DECLARE_SIMPLE_TYPE(WS63SfcState, WS63_SFC)
 #define SFC_CMD_CONFIG      0x300   /* bit0 = start (auto-clears when done) */
 #define SFC_CMD_INS         0x308   /* bits[7:0] = SPI opcode */
 #define SFC_CMD_DATABUF0    0x400
-#define SFC_FLASH_ID_W25Q16 0x001560EF
+#define SFC_FLASH_ID_W25Q16 0x001560EF   /* Winbond (WS63 default) */
+#define SFC_FLASH_ID_GD25Q80C 0x001440C8 /* GigaDevice (BS21: FLASH_MANUFACTURER_GIGADEVICE_GD25Q80C) */
 
 struct WS63SfcState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
+    uint32_t flash_id;  /* JEDEC ID returned for RDID (0x9F): packed cap<<16|type<<8|mfr.
+                         * WS63 = W25Q16; BS21 = GD25Q80C. Set via ws63_sfc_set_flash_id(). */
     uint32_t shadow[WS63_SFC_SIZE / 4];
 };
+
+/* Override the JEDEC ID the SFC reports for RDID (default WS63's W25Q16). bs21.c
+ * sets the GigaDevice ID the BS2X flashboot's flash detection expects. */
+void ws63_sfc_set_flash_id(DeviceState *dev, uint32_t id)
+{
+    WS63_SFC(dev)->flash_id = id;
+}
 
 static uint64_t ws63_sfc_read(void *opaque, hwaddr off, unsigned size)
 {
@@ -1071,7 +1081,7 @@ static void ws63_sfc_write(void *opaque, hwaddr off, uint64_t val, unsigned size
         uint8_t op = s->shadow[SFC_CMD_INS / 4] & 0xff;
         switch (op) {
         case 0x9f: /* RDID */
-            s->shadow[SFC_CMD_DATABUF0 / 4] = SFC_FLASH_ID_W25Q16;
+            s->shadow[SFC_CMD_DATABUF0 / 4] = s->flash_id;
             break;
         case 0x05: /* RDSR */
         case 0x35: /* RDSR2 */
@@ -1099,6 +1109,7 @@ static void ws63_sfc_instance_init(Object *obj)
 {
     WS63SfcState *s = WS63_SFC(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+    s->flash_id = SFC_FLASH_ID_W25Q16;  /* WS63 default; bs21.c overrides to GD */
     memory_region_init_io(&s->iomem, obj, &ws63_sfc_ops, s,
                           TYPE_WS63_SFC, WS63_SFC_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);

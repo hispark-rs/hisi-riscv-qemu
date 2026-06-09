@@ -201,8 +201,12 @@ static void bs21_machine_init(MachineState *machine)
 
     /* SFC serial-flash controller (shared v150 model) — models the SPI command
      * interface enough for flash identification (RDID -> JEDEC ID), so the vendor
-     * flashboot's early flash init succeeds. */
+     * flashboot's early flash init succeeds. BS21's flashboot's flash table is
+     * GigaDevice GD25LE80 (sfc_config_info_porting.c) — JEDEC 0xC8/0x60/0x14 =
+     * 0x1460C8 (mfr/type/cap packed) — not WS63's Winbond W25Q16; flashboot's
+     * detect (0x42122) compares the read ID against 0x1460C8, so report that. */
     DeviceState *sfc = qdev_new(TYPE_WS63_SFC);
+    ws63_sfc_set_flash_id(sfc, 0x001460C8);   /* GD25LE80 (GigaDevice, 1MB) */
     sysbus_realize_and_unref(SYS_BUS_DEVICE(sfc), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(sfc), 0, BS21_SFC_BASE);
 
