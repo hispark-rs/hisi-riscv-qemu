@@ -26,9 +26,20 @@ Multi-section HiSilicon signed image:
 
 The mask ROM copies the code to ITCM and jumps to it. We instead load the
 extracted code at **`0x40000`** (`APP_ITCM_ORIGIN`, "use itcm start addr load
-loaderboot") and set the reset PC there. **flashboot uses a different format**
-(magic = ImageId `0x4b1e3c1e`, code-info as a *trailer* `0x4b1e3c2d` at the tail) —
-not yet cracked.
+loaderboot") and set the reset PC there.
+
+**flashboot** uses the SAME two-header structure, only with different magics
+(image header `0x4b1e3c1e` = its ImageId, code-info header `0x4b1e3c2d` @0x100,
+size @ code-info+0x24 = 0x8ab0, code at file 0x300). `bs21-vendor-boot.sh` accepts
+both magics, so it loads flashboot too. flashboot also links to **`0x40000`**: it
+**runs** ~206 instrs (reset → ULP_AON clock config @0x5702c*** → a BSS/relocate
+clear loop → its main code @0x40552), then reaches an early halt (`j .` @0x40120)
+when it touches the **SFC** (Serial Flash Controller @ `0x90000000`: it writes
+`0x509` to `0x90000210` and calls an SFC routine @0x4097a) — the SFC/flash is not
+modelled, so the flash read returns garbage and flashboot stops. flashboot's source
+(`flashboot_init` + `usb_download` + `upgrade_version_check`) confirms it reads
+flash early. **SFC modelling is the next boundary** for flashboot to load the app
+and print its banner.
 
 ## Memory-map fix (found by running firmware)
 
@@ -80,10 +91,15 @@ a0–a3, result in a0) and resume at `ra`.
 
 ## Remaining boundaries (the deferred connectivity work)
 
-1. **BS21 ROM-call table** — implement `bs21_rom_call` (addresses above) so the
-   later stages' secure-libc / SFC calls are emulated.
-2. **flashboot image format** — the trailer-based variant (above).
-3. **SFC + mask-ROM stubs** — flash controller + the boot-stage hand-off.
+1. ~~BS21 ROM-call table~~ — DONE (`bs21_rom_call`, patches 0005; see above).
+2. ~~flashboot image format~~ — DONE (cracked; `bs21-vendor-boot.sh` runs it).
+3. **SFC model** (`0x90000000`) — the NEXT blocker: flashboot reads flash via the
+   SFC early (version-check / app-load) and halts when it gets garbage. Modelling
+   the SFC (valid flash ID/status + the XIP flash content) lets flashboot proceed
+   to load the application and print its banner. (WS63 has a `ws63-sfc` model at
+   0x48000000; BS21's SFC is v150 @0x90000000 — check IP match, then map it.)
+4. **mask-ROM / SFC-resident boot helpers** + the full boot-stage hand-off.
 
 The infrastructure (CPU + xlinx + memory map + UART/GPIO + the disjoint-range ROM
-dispatch) is in place; vendor firmware already *runs*.
+dispatch + bs21_rom_call) is in place; both loaderboot and flashboot *run* — the
+remaining work is the SFC/flash so flashboot can load and start the application.

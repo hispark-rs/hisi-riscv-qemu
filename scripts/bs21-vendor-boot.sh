@@ -40,16 +40,17 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 python3 - "$IMG" "$TMP/code.bin" <<'PY'
 import sys, struct
 d = open(sys.argv[1], 'rb').read()
-ci = next((i for i in range(0, len(d) - 3, 4)
-           if struct.unpack_from('<I', d, i)[0] == 0x4bd2f02d), None)
-if ci is None:
-    sys.exit("no code-info header (magic 0x4bd2f02d) — flashboot uses a "
-             "different, trailer-based format (see docs/bs21-vendor-firmware.md)")
-csize = struct.unpack_from('<I', d, ci + 0x24)[0]
+# code-info header @0x100: loaderboot uses magic 0x4bd2f02d, flashboot 0x4b1e3c2d;
+# code size is the u32 at code-info+0x24, code is at the file tail.
+CI_MAGICS = (0x4bd2f02d, 0x4b1e3c2d)
+mg = struct.unpack_from('<I', d, 0x100)[0]
+if mg not in CI_MAGICS:
+    sys.exit(f"unrecognised code-info magic 0x{mg:x} @0x100")
+csize = struct.unpack_from('<I', d, 0x100 + 0x24)[0]
 if not (0 < csize <= len(d)):
     sys.exit(f"bad code size 0x{csize:x}")
 open(sys.argv[2], 'wb').write(d[len(d) - csize:])
-print(f"code-info @0x{ci:x}, code 0x{csize:x} bytes @ file 0x{len(d)-csize:x}")
+print(f"code-info magic 0x{mg:x}, code 0x{csize:x} bytes @ file 0x{len(d)-csize:x}")
 PY
 [ -s "$TMP/code.bin" ] || exit 1
 
