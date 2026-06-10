@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: ws63-rs <noreply@anthropic.com>
+Date: Tue, 10 Jun 2026 16:30:00 +0800
+Subject: [PATCH] hw/riscv: register the HiSilicon BS22 machine (minimal/M1)
+
+Build-system integration for hw/riscv/bs22.c (the minimal BS22 / BS2X machine,
+copied into the tree alongside this series). Like bs21.c, bs22.c reuses the
+shared HiSilicon riscv31 device models from ws63.c via hisi_riscv31.h, so
+CONFIG_BS22 selects CONFIG_WS63 (which compiles ws63.c and the shared models).
+
+BS22 is register- and memory-identical to BS21E at the milestone-1 level (the
+whole BS2X family shares platform_core.h peripheral bases + chip_core_irq.h IRQ
+numbers, and BS22's M1 memory map matches BS21E's 160K L2RAM layout), so the same
+bare-metal bs2x firmware (examples/bs21/{blinky,uart_hello}) boots on -M bs22.
+
+Adds the CONFIG_BS22 meson source entry and the Kconfig symbol (default y on
+RISCV32, selects UNIMP + WS63). Registers `-M bs22`.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ hw/riscv/Kconfig     | 7 +++++++
+ hw/riscv/meson.build | 1 +
+ 2 files changed, 8 insertions(+)
+diff --git a/hw/riscv/Kconfig b/hw/riscv/Kconfig
+--- a/hw/riscv/Kconfig
++++ b/hw/riscv/Kconfig
+@@ -132,3 +132,10 @@
+     depends on RISCV32
+     select UNIMP
+     select WS63
++
++config BS22
++    bool
++    default y
++    depends on RISCV32
++    select UNIMP
++    select WS63
+diff --git a/hw/riscv/meson.build b/hw/riscv/meson.build
+--- a/hw/riscv/meson.build
++++ b/hw/riscv/meson.build
+@@ -16,4 +16,5 @@
+ 
+ riscv_ss.add(when: 'CONFIG_WS63', if_true: files('ws63.c'))
+ riscv_ss.add(when: 'CONFIG_BS21', if_true: files('bs21.c'))
++riscv_ss.add(when: 'CONFIG_BS22', if_true: files('bs22.c'))
+ hw_arch += {'riscv': riscv_ss}
