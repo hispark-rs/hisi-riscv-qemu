@@ -241,25 +241,40 @@ static bool trans_xlinx_pushpop(DisasContext *ctx, uint16_t insn)
  *
  * The register list is a presence bitmap over a FIXED set of 16 slots (instruction
  * bits 7,8,9,10,11 then 20,21,...,30, processed in that ascending-address order),
- * and bit31 is a BANK selector choosing which register each slot maps to:
- *   slot bit:   7   8   9   10  11 | 20  21  22  23  24  25  26  27  28  29  30
- *   bank0(b31=0): ra sp  s0  s1  a0 | a1  s2  s3  s4  s5  s6  s7  s8  s9 s10 s11
- *   bank1(b31=1): ra t0  t1  t2  a0 | a1  a2  a3  a4  a5  a6  a7  t3  t4  t5  t6
- * (ra/a0/a1 are shared; the rest differ per bank.) Derived + validated against
- * 164 real ldmia/stmia from the BS2X firmware (all match exactly). The previous
- * map only knew the bank-0 s-registers, so a bank-1 list like {t1-t6,a6-a7} (the
- * LiteOS memcpy's 8-word block copy) decoded as s-registers and clobbered the
- * caller's s0..s11 -> a NULL-pointer crash deep in the app's init.
+ * and bit31 is a BANK selector choosing which register each slot maps to. The
+ * slot -> register ORDER (not just the set) is the LiteOS TaskContext save layout
+ * (arch/riscv/include/arch/task.h): each group is stored in descending register
+ * order. Bank 1 is the {ra,t0-t6,a0-a7} group, laid out at ascending addresses as
+ *   t6 t5 t4 t3 a7 a6 a5 a4 a3 a2 a1 a0 t2 t1 t0 ra
+ * so a0 is the 12th word (TaskContext.a0 @ +108, matching ArchTaskStackInit's
+ * `sw taskID, 108(ctx)`) and ra is last (+124). Bank 0 holds the {s0-s11} group
+ * (descending s11..s0) plus the shared ra/sp/a0/a1 slots.
+ *
+ * Getting the ORDER right matters at the first task switch: SwitchNewTask restores
+ * a0(=taskID) for OsTaskEntry via `ldmia {ra,t0-t6,a0-a7},(sp)`. A set-correct but
+ * order-wrong table (the previous version, validated only against objdump's
+ * order-insensitive register list over 164 firmware examples) put taskID into a7
+ * instead of a0 -> OsTaskEntry computed a bad TCB pointer -> load fault on the
+ * very first scheduled task. (A bulk memcpy via ldmia+stmia is order-agnostic, so
+ * the bug stayed hidden until a manually-built context (ArchTaskStackInit) relied
+ * on the absolute slot->register mapping.)
  */
 static bool trans_xlinx_ldmstm(DisasContext *ctx, uint32_t insn)
 {
+    /* slot_bit[i] is the instruction bit for the i-th word, in ASCENDING-ADDRESS
+     * order (i=0 = lowest address). The bit->register mapping is fixed (each bit
+     * always selects the same register, per bank); the address order is the
+     * descending-register TaskContext layout, so word i lands at base + i*4 to
+     * match the struct (and ArchTaskStackInit's by-offset writes). */
     static const int slot_bit[16] = {
-        7, 8, 9, 10, 11, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+        30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 11, 10, 9, 8, 7,
     };
-    /* [bank][slot] -> GPR number */
+    /* [bank][slot] -> GPR number, paired with slot_bit (ascending address). */
     static const int slot_reg[2][16] = {
-        /* bank 0 */ {  1,  2,  8,  9, 10, 11, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27 },
-        /* bank 1 */ {  1,  5,  6,  7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31 },
+        /* bank 0: s11 s10 s9 s8 s7 s6 s5 s4 s3 s2  a1  a0 s1 s0 sp ra */
+        /* bank 0 */ { 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 11, 10,  9,  8,  2,  1 },
+        /* bank 1: t6  t5 t4 t3 a7 a6 a5 a4 a3 a2  a1  a0 t2 t1 t0 ra */
+        /* bank 1 */ { 31, 30, 29, 28, 17, 16, 15, 14, 13, 12, 11, 10,  7,  6,  5,  1 },
     };
     int bank = (insn >> 31) & 0x1;
     bool is_store = (insn >> 12) & 0x1;
