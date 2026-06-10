@@ -64,21 +64,25 @@ static bool trans_xlinx_shf(DisasContext *ctx, uint32_t insn)
     return true;
 }
 
-/* muliadd rd, rs1, rs2, imm6 : rd = rs1 + rs2 * imm6 */
+/* muliadd rd, rs1, rs2, imm : rd = rs1 + rs2 * imm
+ * The multiplier is an 8-bit immediate = (funct7[31:25] << 1) | bit14, so values
+ * up to 255 (e.g. *92 for a 92-byte TCB stride). The funct7 field is the FULL 7
+ * bits — masking it to 5 (0x1f) truncated any imm > 63 (e.g. 92 -> 28), which
+ * mis-indexed the LiteOS TCB array (base + id*92) and broke LOS_TaskResume. */
 static bool trans_xlinx_muliadd(DisasContext *ctx, uint32_t insn)
 {
-    int imm6;
+    int imm;
     TCGv rs1, rs2, prod, dest;
 
     if (((insn >> 12) & 0x3) != 0x1) {
         return false;
     }
-    imm6 = ((insn >> 14) & 0x1) | (((insn >> 25) & 0x1f) << 1);
+    imm = ((insn >> 14) & 0x1) | (((insn >> 25) & 0x7f) << 1);
     rs1 = get_gpr(ctx, xlinx_rs1(insn), EXT_NONE);
     rs2 = get_gpr(ctx, xlinx_rs2(insn), EXT_NONE);
     prod = tcg_temp_new();
     dest = dest_gpr(ctx, xlinx_rd(insn));
-    tcg_gen_muli_tl(prod, rs2, imm6);
+    tcg_gen_muli_tl(prod, rs2, imm);
     tcg_gen_add_tl(dest, rs1, prod);
     gen_set_gpr(ctx, xlinx_rd(insn), dest);
     return true;

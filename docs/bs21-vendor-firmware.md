@@ -202,14 +202,28 @@ a0–a3, result in a0) and resume at `ra`.
    (11 fn-ptrs @ 0x90115a10..0x90115a3c). **Next blocker:** init `table[9]` (0x90118a3a,
    a LiteOS task/thread registration — entry 0x90118cfe, stack 1536, prio 31, via the
    creator at 0x90118a2a) returns error **0x2000209** → the app logs + halts at
-   `0x90128c62 (j .)`. That is LiteOS kernel bring-up (task creation / scheduler /
-   memory pools, then the BLE/SLE stack) — the broader connectivity work; each init
-   level needs its subsystem satisfied. (WS63 5/5 qtests + BS21 M1 unaffected by the
-   decoder change.)
+   `0x90128c62 (j .)`.
 
-The infrastructure (CPU + xlinx [now incl. prefd] + memory map + UART/GPIO + SFC +
-flash1 + the disjoint-range ROM dispatch + bs21_rom_call + the mask-ROM signature +
-the TCXO fix + the GigaDevice flash ID) is in place; **flashboot loads + jumps to the
-app, and the LiteOS app executes its startup and reaches its init-call table** — the
-BS2X vendor boot chain (loaderboot → flashboot → app) runs end-to-end on `-M bs21`
-into the application's RTOS init.
+10. **xlinx `muliadd` immediate bug fixed → app passes LiteOS task creation, runs the
+    full kernel init (2026-06-09).** The init-call `table[9]` failure was a **decoder
+    bug**, not a missing subsystem: `LOS_TaskResume` indexes the TCB array as
+    `base + id*92` via xlinx `muliadd s0,s0,a0,92`, but the decoder masked the
+    immediate's funct7 field to 5 bits (`& 0x1f`) instead of 7 (`& 0x7f`) — so any
+    immediate > 63 was truncated (92 → 28). `TCB[1]` resolved to `base+28` instead of
+    `base+92` → resume read the wrong TCB (status 0, not SUSPENDED) → 0x2000209.
+    Verified against 82 `muliadd` instances with imm 64–192: the 5-bit mask got all 82
+    wrong, the 7-bit mask gets all 82 right (immediate = `(funct7<<1) | bit14`, 8 bits).
+    With the fix the app passes task creation and runs the **whole LiteOS kernel init**
+    (1663 app insns, was 934), reaching the app's own reboot/idle path
+    (`APP|Reboot core:%d cause 0x%x`, halts @0x90126206). **Next boundary:** that path
+    reads a ULP_AON register (`*0x5702c0f0` vs 0x10000, our absorber returns 0) and
+    looks app/multi-core specific (`core:2` — likely the BT slave core) — the deeper
+    app/connectivity layer. (WS63 5/5 qtests + BS21 M1 unaffected by the decoder fix.)
+
+The infrastructure (CPU + xlinx [now incl. prefd + the muliadd imm fix] + memory map +
+UART/GPIO + SFC + flash1 + the disjoint-range ROM dispatch + bs21_rom_call + the
+mask-ROM signature + the TCXO fix + the GigaDevice flash ID) is in place; **flashboot
+loads + jumps to the app, and the LiteOS app runs its full kernel init (sections,
+memory pool, task create/resume, init-call levels)** — the BS2X vendor boot chain
+(loaderboot → flashboot → app) runs end-to-end on `-M bs21` through the application's
+RTOS kernel init.
