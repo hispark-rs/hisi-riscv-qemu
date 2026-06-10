@@ -292,14 +292,46 @@ a0–a3, result in a0) and resume at `ra`.
     `-d in_asm` app-PC-coverage diff across run lengths to prove stuck-vs-slow; `-d unimp`
     tail to read the steady-state MMIO footprint.
 
+14. **Real root cause = TCXO v150 count layout (16-bit chunks); eFUSE v151 modelled →
+    app runs all clock/PMU/calibration init to its stage-1 reboot (2026-06-10).** §13's
+    "eFUSE/ULP_AON status" guess was wrong. **Key discovery:** the app **overwrites ITCM**
+    (0x40000) with its own copied code, so the earlier flashboot disasm of the loop was of
+    the wrong bytes — dumping the *live* ITCM (QMP `pmemsave`) revealed the truth. The 20-PC
+    loop is a `uapi_tcxo_delay_us` busy-wait: a counter-read (`0x42816`) latches the TCXO
+    and assembles a 64-bit count as `(*0x57000204 & 0xffff) | (*0x57000208 << 16)` (low) and
+    `(*0x5700020c & 0xffff) | (*0x57000210 << 16)` (high). Per the SDK (`hal_tcxo_v150_regs_
+    def.h`, **ground truth**) the BS21 TCXO has **four 16-bit count registers** (count0[15:0]
+    @+4, count1[31:16] @+8, count2[47:32] @+0C, count3[63:48] @+10; status `valid` = bit4).
+    Our shared TCXO model used the **WS63 2-register layout** (count[31:0] @+4, count[63:32]
+    @+8), so the app assembled only `count[15:0]` (wrapping every ~2 ms) with high = 0 → the
+    delay's `now < target` never held → infinite wait. **Fix:** `ws63_tcxo_set_chunked16()`
+    — a BS21-only mode that splits the count into the four 16-bit chunks (WS63 path untouched,
+    default off → byte-identical, 5/5 qtests green). Also modelled the **eFUSE v151
+    controller** (`hal_efuse_v151`, ground truth): boot-done sts asserted (0x2c → 0x1c),
+    ctl/avdd/clock_period readback, a blank 128-byte (1024-bit) fuse array (trims read 0 →
+    calibration uses defaults), and OR-on-write programming — faithful supporting
+    infrastructure (it isn't the gate, but it stops the absorber-returns-0 eFUSE boot-done
+    from costing the bounded `check_efuse_boot_done` its 50×1 ms each call). With both, the
+    app passes the delay loop and runs **all** its clock/PMU/eFUSE/calibration init (new code
+    at 0x9012d5xx/0x9012fxxx), then **deliberately reboots**: `reboot(core=2, cause=0x2003)`
+    via `0x9012d59c` (`"APP|Reboot core:%d cause 0x%x"`, reason stored at DTCM 0x2000ffd8,
+    magic 0xdeadbeaf @0x2000ffe8) — core 2 = APPS_CORE; it clears bit0 of BOOT_PORTING_RESET_
+    REG `0x57004600` and spins `j .` waiting for the chip reset. This is the **original
+    "core:2" halt, now reached cleanly** (not via a crash) after a full init pass — a stage-1
+    → stage-2 reboot. **Next:** model the chip-reset trigger (0x57004600 bit0 clear →
+    `qemu_system_reset`) so the app reboots and runs its second stage; classify whether
+    cause 0x2003 is the normal calibration-reboot or an error first. WS63 5/5 qtests + BS21
+    M1 (uart_hello banner + 13 GPIO toggles, 0 illegal traps) both green. **Key probe:** the
+    app overwrites ITCM — always disassemble *live* memory (QMP `pmemsave`), not the loaded
+    image, once past the app handoff.
+
 The infrastructure (CPU + xlinx [now incl. prefd + the muliadd imm fix + the ldmia/stmia
 bank selector] + memory map + UART/GPIO + SFC + flash1 + the disjoint-range ROM dispatch
 + bs21_rom_call + the mask-ROM signature + the TCXO fix + the GigaDevice flash ID + the
-32K-clock-detect status) is in place; **flashboot loads + jumps to the app, and the LiteOS
-app runs its full kernel init (sections, memory pool, task create/resume, init-call levels)
-crash-free, past the 32K-clock calibration** — the BS2X vendor boot chain (loaderboot →
-flashboot → app) runs end-to-end on `-M bs21` into the application's clock/power bring-up,
-**now blocked on an eFUSE (v151) + ULP_AON PMU calibration handler** (`0x57028000` /
-`0x5702c000` unmodelled). The next phase is a real eFUSE-controller + ULP_AON-PMU-status
-device model — see §13 (needs the BS2X eFUSE/ULP_AON register maps, which aren't in the
-open SDK source).
+32K-clock-detect status + the eFUSE v151 controller + the TCXO v150 16-bit count layout)
+is in place; **flashboot loads + jumps to the app, and the LiteOS app runs its full kernel
+init AND all clock/PMU/eFUSE/calibration bring-up crash-free**, then deliberately reboots
+the apps core (`reboot(core=2, cause=0x2003)`) — the BS2X vendor boot chain (loaderboot →
+flashboot → app) runs end-to-end on `-M bs21` through the application's stage-1 init to its
+stage-1→2 reboot request. The next step is to model the chip-reset trigger (`0x57004600`
+bit0) so the app reboots and runs its second stage — see §14.

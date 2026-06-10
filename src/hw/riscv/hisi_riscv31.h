@@ -56,6 +56,11 @@ void ws63_intc_set_cpu_env(DeviceState *intc, CPURISCVState *env);
  * bs21.c sets this to 0. Call after qdev_new, before realize. */
 void ws63_tcxo_set_count_off(DeviceState *dev, uint32_t off);
 
+/* Select the TCXO count-register layout. Default (WS63) returns count[31:0] @+4
+ * and count[63:32] @+8. BS21's TCXO v150 splits the count into four 16-bit
+ * chunks (count0..3 @+4/+8/+0C/+10); bs21.c enables that. Call before realize. */
+void ws63_tcxo_set_chunked16(DeviceState *dev, bool chunked16);
+
 /* Override the JEDEC ID the shared SFC model reports for RDID (default WS63's
  * W25Q16). bs21.c sets the GigaDevice ID the BS2X flashboot expects. */
 void ws63_sfc_set_flash_id(DeviceState *dev, uint32_t id);

@@ -964,6 +964,12 @@ struct WS63TcxoState {
                          * 0x4C0 on WS63 (TCXO @0x44000000); 0x000 on BS21 where
                          * TCXO_COUNT_BASE_ADDR is the region base (0x57000200).
                          * Set via ws63_tcxo_set_count_off() before realize. */
+    uint32_t chunked16; /* count register layout. 0 (WS63): count[31:0] @+4,
+                         * count[63:32] @+8. 1 (BS21 TCXO v150): the count is
+                         * split into four 16-bit chunks — count0[15:0] @+4,
+                         * count1[31:16] @+8, count2[47:32] @+0C, count3[63:48]
+                         * @+10 (hal_tcxo_v150_regs_def.h). Set via
+                         * ws63_tcxo_set_chunked16() before realize. */
     uint32_t shadow[WS63_TCXO_SIZE / 4];
 };
 
@@ -972,6 +978,11 @@ struct WS63TcxoState {
 void ws63_tcxo_set_count_off(DeviceState *dev, uint32_t off)
 {
     WS63_TCXO(dev)->count_off = off;
+}
+
+void ws63_tcxo_set_chunked16(DeviceState *dev, bool chunked16)
+{
+    WS63_TCXO(dev)->chunked16 = chunked16;
 }
 
 /*
@@ -994,6 +1005,19 @@ static uint64_t ws63_tcxo_read(void *opaque, hwaddr off, unsigned size)
     WS63TcxoState *s = opaque;
     if (off == s->count_off) {              /* +0x00: status, bit4 = count valid */
         return 0x10;
+    }
+    if (s->chunked16) {
+        /* BS21 TCXO v150: count split into four 16-bit chunks. Advancing the
+         * tick on the first chunk (+0x04) latches the whole 64-bit count. */
+        if (off == s->count_off + 4) {       /* count0: count[15:0]  */
+            return (uint32_t)(ws63_tcxo_tick(s) & 0xffff);
+        } else if (off == s->count_off + 8) { /* count1: count[31:16] */
+            return (uint32_t)((s->count >> 16) & 0xffff);
+        } else if (off == s->count_off + 0xc) { /* count2: count[47:32] */
+            return (uint32_t)((s->count >> 32) & 0xffff);
+        } else if (off == s->count_off + 0x10) { /* count3: count[63:48] */
+            return (uint32_t)((s->count >> 48) & 0xffff);
+        }
     } else if (off == s->count_off + 4) {   /* +0x04: count[31:0] (advance here) */
         return (uint32_t)ws63_tcxo_tick(s);
     } else if (off == s->count_off + 8) {   /* +0x08: count[63:32] */

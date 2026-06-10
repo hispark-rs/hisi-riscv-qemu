@@ -118,6 +118,12 @@ struct BS21MachineState {
     MemoryRegion ppb;
     MemoryRegion tcxo_win;
     MemoryRegion clk32k;
+    MemoryRegion efuse;
+    uint8_t  efuse_data[128];   /* EFUSE_REGION_MAX_BITS 1024 / 8 */
+    uint32_t efuse_ctl;         /* 0x030 efuse_wr_rd */
+    uint32_t efuse_clk;         /* 0x034 clock_period */
+    uint32_t efuse_resv;        /* 0x038 reserved */
+    uint32_t efuse_avdd;        /* 0x03c efuse_avdd_sw */
 };
 
 /*
@@ -154,6 +160,100 @@ static void bs21_clk32k_write(void *opaque, hwaddr off, uint64_t val,
 static const MemoryRegionOps bs21_clk32k_ops = {
     .read = bs21_clk32k_read,
     .write = bs21_clk32k_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .impl = { .min_access_size = 1, .max_access_size = 4 },
+    .valid = { .min_access_size = 1, .max_access_size = 4 },
+};
+
+/*
+ * eFUSE v151 controller (EFUSE0 @ FUSE_CTL_RB_ADDR 0x57028000). The vendor app's
+ * clock/PMU calibration reads trim values out of eFUSE (hal_efuse_v151, full source
+ * in fbb_ws63 .../drivers/hal/efuse/v151). The generic absorber returns 0 for every
+ * register — including the boot-done status and the ctl-register readback — which
+ * stalls the eFUSE-driven calibration handler the app iterates from its init table.
+ * Model the controller per the SDK (register map from hal_efuse_v151_reg_def.h, base
+ * offsets from bs2x efuse_porting.c):
+ *   0x02c efuse_sts  : [1:0] man_sts, [2] boot0_done, [3] boot1_done, [4] boot2_done
+ *   0x030 efuse_ctl  : [15:0] efuse_wr_rd (0x5a5a read / 0xa5a5 write mode + byte addr)
+ *   0x034 clk_period : [7:0]
+ *   0x038 reserved
+ *   0x03c avdd_ctl   : [0] efuse_avdd_sw
+ *   0x800+ data      : reg i covers bytes 2i,2i+1 -> efuse[2i] | (efuse[2i+1] << 8)
+ * boot-done is reported asserted; the fuse array is blank (all 0), so trim/ctrim reads
+ * return 0 and the calibration code takes its documented "use default" path (e.g.
+ * calibration_xo_core_ctrim_init). eFUSE programming (write mode) ORs bits into the
+ * array (fuses are one-way 0->1). The switch-enable register (0x5702c258) lives in the
+ * ULP_AON block and its read-modify-write works through the absorber, so it needs no
+ * model here.
+ */
+#define BS21_EFUSE_BASE      0x57028000
+#define BS21_EFUSE_SIZE      0x00001000
+#define BS21_EFUSE_STS_OFF   0x02c
+#define BS21_EFUSE_CTL_OFF   0x030
+#define BS21_EFUSE_CLK_OFF   0x034
+#define BS21_EFUSE_RESV_OFF  0x038
+#define BS21_EFUSE_AVDD_OFF  0x03c
+#define BS21_EFUSE_DATA_OFF  0x800
+#define BS21_EFUSE_MAX_BYTES 128
+
+static uint64_t bs21_efuse_read(void *opaque, hwaddr off, unsigned size)
+{
+    BS21MachineState *s = opaque;
+    switch (off) {
+    case BS21_EFUSE_STS_OFF:
+        return 0x1c;   /* boot0/1/2_done = 1, man_sts = 0 (idle) */
+    case BS21_EFUSE_CTL_OFF:
+        return s->efuse_ctl;
+    case BS21_EFUSE_CLK_OFF:
+        return s->efuse_clk;
+    case BS21_EFUSE_RESV_OFF:
+        return s->efuse_resv;
+    case BS21_EFUSE_AVDD_OFF:
+        return s->efuse_avdd;
+    default:
+        break;
+    }
+    if (off >= BS21_EFUSE_DATA_OFF &&
+        off < BS21_EFUSE_DATA_OFF + BS21_EFUSE_MAX_BYTES * 2) {
+        unsigned b = ((off - BS21_EFUSE_DATA_OFF) / 4) * 2; /* low byte index */
+        return s->efuse_data[b] | ((uint32_t)s->efuse_data[b + 1] << 8);
+    }
+    return 0;
+}
+
+static void bs21_efuse_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
+{
+    BS21MachineState *s = opaque;
+    switch (off) {
+    case BS21_EFUSE_CTL_OFF:
+        s->efuse_ctl = val & 0xffff;
+        return;
+    case BS21_EFUSE_CLK_OFF:
+        s->efuse_clk = val & 0xff;
+        return;
+    case BS21_EFUSE_RESV_OFF:
+        s->efuse_resv = (uint32_t)val;
+        return;
+    case BS21_EFUSE_AVDD_OFF:
+        s->efuse_avdd = val & 0x1;
+        return;
+    default:
+        break;
+    }
+    if (off >= BS21_EFUSE_DATA_OFF &&
+        off < BS21_EFUSE_DATA_OFF + BS21_EFUSE_MAX_BYTES * 2) {
+        /* eFUSE programming: a reg write carries the low byte (even addr, val&0xff)
+         * or the high byte (odd addr, (val>>8)&0xff); fuses are one-way -> OR. */
+        unsigned b = ((off - BS21_EFUSE_DATA_OFF) / 4) * 2;
+        s->efuse_data[b]     |= val & 0xff;
+        s->efuse_data[b + 1] |= (val >> 8) & 0xff;
+    }
+    /* efuse_sts (0x02c) and anything else: read-only / ignored. */
+}
+
+static const MemoryRegionOps bs21_efuse_ops = {
+    .read = bs21_efuse_read,
+    .write = bs21_efuse_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .impl = { .min_access_size = 1, .max_access_size = 4 },
     .valid = { .min_access_size = 1, .max_access_size = 4 },
@@ -233,6 +333,7 @@ static void bs21_machine_init(MachineState *machine)
      * (the vendor flashboot does sub-word reads of GLB_CTL_A, e.g. 0x570004a0). */
     DeviceState *tcxo = qdev_new(TYPE_WS63_TCXO);
     ws63_tcxo_set_count_off(tcxo, 0);   /* BS21 TCXO_COUNT is at the region base */
+    ws63_tcxo_set_chunked16(tcxo, true); /* BS21 TCXO v150: 16-bit count chunks */
     sysbus_realize_and_unref(SYS_BUS_DEVICE(tcxo), &error_fatal);
     MemoryRegion *tcxo_mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(tcxo), 0);
     memory_region_init_alias(&s->tcxo_win, OBJECT(tcxo), "bs21.tcxo", tcxo_mr,
@@ -245,6 +346,14 @@ static void bs21_machine_init(MachineState *machine)
     memory_region_init_io(&s->clk32k, OBJECT(machine), &bs21_clk32k_ops, s,
                           "bs21.clk32k", BS21_CLK32K_DET_SIZE);
     memory_region_add_subregion(sys, BS21_CLK32K_DET_BASE, &s->clk32k);
+
+    /* eFUSE v151 controller (over the GLB absorber) — boot-done asserted + a blank
+     * fuse array so the app's eFUSE-driven clock/PMU calibration reads its trims (all
+     * 0 -> default path) instead of stalling on the unmodelled controller. See
+     * bs21_efuse_ops above. */
+    memory_region_init_io(&s->efuse, OBJECT(machine), &bs21_efuse_ops, s,
+                          "bs21.efuse", BS21_EFUSE_SIZE);
+    memory_region_add_subregion(sys, BS21_EFUSE_BASE, &s->efuse);
 
     /* SFC serial-flash controller (shared v150 model) — models the SPI command
      * interface enough for flash identification (RDID -> JEDEC ID), so the vendor
