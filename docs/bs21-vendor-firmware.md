@@ -343,6 +343,37 @@ a0–a3, result in a0) and resume at `ra`.
     register/decoder fix. WS63 5/5 qtests + BS21 M1 green (this entry is analysis only, no
     code change).
 
+16. **BT trimmed at the SDK + securec ROM addresses fixed → a peripheral SAMPLE runs and
+    PRINTS end-to-end (2026-06-10).** Two changes, mirroring the WS63 approach (trim the
+    connectivity stack, run a bare sample):
+    - **SDK BT trim** (in fbb_bs2x, the "同 ws63 做法" fork): drop the build defines
+      `BGLE_TASK_EXIST` + `AT_COMMAND` (config.py) so the SLE/BT/GLE platform stack is never
+      inited and the AT task (prio 20, busy-polls its queue) no longer starves the app
+      (prio 21); build a peripheral sample instead (`CONFIG_SAMPLE_ENABLE` +
+      `CONFIG_ENABLE_PERIPHERAL_SAMPLE`, the `tcxo` demo). With BT gone the app no longer
+      reaches §15's connectivity-event panic — it boots clean into the sample task, which
+      loops on `uapi_tcxo_delay_ms/us` + the TCXO getters.
+    - **securec ROM address fix** (this repo): the sample's logs were still **silent**
+      despite the whole print path running. Root cause (traced via gdbstub): the bs21e
+      target links securec against a **different** mask-ROM symbol file than bs20/bs22 —
+      `rom_info/acore/acore.sym` (vsnprintf_s `0x3e962`) vs `acore_rom_n1200.sym`
+      (`0x3ef92`). `bs21_rom_call` used the latter, so the app's real `vsnprintf_s` was
+      unmapped → the success-stub returned 0 with an empty buffer → `vsnprintf_s(...)="" `
+      → `UartPuts` returned early on `len==0` → no byte ever reached the UART. Repointed
+      the securec cases to acore.sym + added `vsprintf_s`. Now the tcxo sample prints its
+      full banner and **self-validates**:
+      ```
+      Debug uart init succ! flash length:0x100000, version: bs21e 1.0.18
+      APP|System Power On
+      cpu 0 entering scheduler
+      tcxo delay 1000ms!  ...  tcxo get ms work normall.
+      tcxo delay 20000us! ...  tcxo get us work normall.   (loops)
+      ```
+      WS63 5/5 qtests + BS21 M1 green. **Milestone: a BS2X vendor peripheral sample boots
+      AND produces validated UART output on `-M bs21`.** The print path is now unblocked
+      for any future bare (non-connectivity) sample. Connectivity (§15) remains the
+      deferred north-star work.
+
 The infrastructure (CPU + xlinx [now incl. prefd + the muliadd imm fix + the ldmia/stmia
 bank selector] + memory map + UART/GPIO + SFC + flash1 + the disjoint-range ROM dispatch
 + bs21_rom_call + the mask-ROM signature + the TCXO fix + the GigaDevice flash ID + the
