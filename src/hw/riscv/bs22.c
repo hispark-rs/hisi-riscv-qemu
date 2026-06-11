@@ -237,6 +237,9 @@ static void bs22_machine_init(MachineState *machine)
     /* PDM (audio mic v150) — config-level, exercises the chip-bs21 pdm driver. */
     ws63_create_pdm(BS22_PDM_BASE);
 
+    /* USB (DWC OTG) core-ID model over the USB absorber — exercises the usb driver. */
+    ws63_create_usb(BS22_MMIO_USB_BASE);
+
     /* UART0/1/2 (custom device on top of the absorber). */
     const hwaddr uart_base[3] = { BS22_UART0_BASE, BS22_UART1_BASE, BS22_UART2_BASE };
     const int uart_irq[3] = { BS22_IRQ_UART0, BS22_IRQ_UART1, BS22_IRQ_UART2 };

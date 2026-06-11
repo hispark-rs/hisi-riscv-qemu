@@ -237,6 +237,9 @@ static void bs20_machine_init(MachineState *machine)
     /* PDM (audio mic v150) — config-level, exercises the chip-bs21 pdm driver. */
     ws63_create_pdm(BS20_PDM_BASE);
 
+    /* USB (DWC OTG) core-ID model over the USB absorber — exercises the usb driver. */
+    ws63_create_usb(BS20_MMIO_USB_BASE);
+
     /* UART0/1/2 (custom device on top of the absorber). */
     const hwaddr uart_base[3] = { BS20_UART0_BASE, BS20_UART1_BASE, BS20_UART2_BASE };
     const int uart_irq[3] = { BS20_IRQ_UART0, BS20_IRQ_UART1, BS20_IRQ_UART2 };

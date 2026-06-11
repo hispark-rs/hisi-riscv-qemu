@@ -112,4 +112,7 @@ DeviceState *ws63_create_dma(hwaddr base);
 /* Map a BS2X PDM (audio mic v150) model at @base: version reg reads a known ID. */
 void ws63_create_pdm(hwaddr base);
 
+/* Map a BS2X USB (DWC OTG) core-ID model at @base (overlaps the USB absorber). */
+void ws63_create_usb(hwaddr base);
+
 #endif /* HW_RISCV_HISI_RISCV31_H */

@@ -2017,6 +2017,30 @@ void ws63_create_pdm(hwaddr base)
     memory_region_add_subregion(get_system_memory(), base, mr);
 }
 
+/* BS2X USB (Synopsys DWC OTG) @0x58000000 — GSNPSID (0x40) reads the core ID so
+ * the chip-bs21 usb driver's presence check passes. Maps on top of the USB
+ * absorber; the full USB stack is not modelled. */
+static uint64_t ws63_usb_read(void *opaque, hwaddr off, unsigned size)
+{
+    if (off == 0x40) {
+        return 0x4F54300Au;          /* DWC OTG core ID ("OT" + release) */
+    }
+    return 0;
+}
+static void ws63_usb_write(void *opaque, hwaddr off, uint64_t val, unsigned size) { }
+static const MemoryRegionOps ws63_usb_ops = {
+    .read = ws63_usb_read, .write = ws63_usb_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .impl = { .min_access_size = 1, .max_access_size = 4 },
+    .valid = { .min_access_size = 1, .max_access_size = 4 },
+};
+void ws63_create_usb(hwaddr base)
+{
+    MemoryRegion *mr = g_new0(MemoryRegion, 1);
+    memory_region_init_io(mr, NULL, &ws63_usb_ops, NULL, "bs2x.usb.core", 0x1000);
+    memory_region_add_subregion_overlap(get_system_memory(), base, mr, 1);
+}
+
 /* peripheral instance table (base, kind, window size, name, irq) — from WS63.svd.
  * irq != 0 is connected to the intc (the device raises it via qemu_set_irq). */
 static const struct {
