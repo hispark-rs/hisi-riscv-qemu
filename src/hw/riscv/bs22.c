@@ -104,6 +104,7 @@
 #define BS22_TRNG_BASE      0x52009000   /* TRNG (v1) */
 #define BS22_WDT_BASE       0x52003000   /* WDT (watchdog v151) */
 #define BS22_DMA_BASE       0x52070000   /* MDMA (v151) */
+#define BS22_PDM_BASE       0x5208E000   /* PDM (audio mic v150) */
 
 /* IRQ numbers (chip_core_irq.h, shared across BS2X). 26-31 use standard mie bits;
  * >=32 are LOCI. */
@@ -232,6 +233,9 @@ static void bs22_machine_init(MachineState *machine)
 
     /* MDMA (v151) — mem-to-mem copy, exercises the chip-bs21 dma driver. */
     ws63_create_dma(BS22_DMA_BASE);
+
+    /* PDM (audio mic v150) — config-level, exercises the chip-bs21 pdm driver. */
+    ws63_create_pdm(BS22_PDM_BASE);
 
     /* UART0/1/2 (custom device on top of the absorber). */
     const hwaddr uart_base[3] = { BS22_UART0_BASE, BS22_UART1_BASE, BS22_UART2_BASE };

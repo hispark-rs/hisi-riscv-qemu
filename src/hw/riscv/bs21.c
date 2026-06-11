@@ -103,6 +103,7 @@
 #define BS21_TRNG_BASE      0x52009000   /* TRNG (v1) */
 #define BS21_WDT_BASE       0x52003000   /* WDT (watchdog v151) */
 #define BS21_DMA_BASE       0x52070000   /* MDMA (v151) */
+#define BS21_PDM_BASE       0x5208E000   /* PDM (audio mic v150) */
 
 /* IRQ numbers (chip_core_irq.h). 26-31 use standard mie bits; >=32 are LOCI.
  * (BS21's 26-29 are BT/ADC, unlike WS63 where they are TIMER.) */
@@ -425,6 +426,9 @@ static void bs21_machine_init(MachineState *machine)
 
     /* MDMA (v151) — mem-to-mem copy, exercises the chip-bs21 dma driver. */
     ws63_create_dma(BS21_DMA_BASE);
+
+    /* PDM (audio mic v150) — config-level, exercises the chip-bs21 pdm driver. */
+    ws63_create_pdm(BS21_PDM_BASE);
 
     /* UART0/1/2 (custom device on top of the absorber). */
     const hwaddr uart_base[3] = { BS21_UART0_BASE, BS21_UART1_BASE, BS21_UART2_BASE };

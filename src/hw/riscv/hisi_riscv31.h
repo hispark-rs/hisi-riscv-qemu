@@ -109,4 +109,7 @@ void ws63_create_wdt(hwaddr base);
  * so the bs2x machines can functionally exercise the Rust DMA mem-to-mem path. */
 DeviceState *ws63_create_dma(hwaddr base);
 
+/* Map a BS2X PDM (audio mic v150) model at @base: version reg reads a known ID. */
+void ws63_create_pdm(hwaddr base);
+
 #endif /* HW_RISCV_HISI_RISCV31_H */
