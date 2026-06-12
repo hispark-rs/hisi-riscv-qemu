@@ -182,7 +182,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     # always(): publish whatever built even if the experimental Windows leg failed.
-    if: ${{ always() && startsWith(github.ref, 'refs/tags/') }}
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Download all host artifacts
         uses: actions/download-artifact@v4
