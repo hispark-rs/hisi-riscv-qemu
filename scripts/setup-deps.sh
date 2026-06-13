@@ -56,10 +56,16 @@ case "$OS" in
         mingw-w64-x86_64-pkgconf \
         mingw-w64-x86_64-glib2 mingw-w64-x86_64-pixman \
         mingw-w64-x86_64-libslirp mingw-w64-x86_64-zlib mingw-w64-x86_64-zstd
-    # QEMU's mkvenv needs distlib (same as macOS); mingw Python 3.14 lacks it.
-    pacman -S --needed --noconfirm mingw-w64-x86_64-python-distlib 2>/dev/null \
-      || python -m pip install --quiet distlib 2>/dev/null \
-      || pip install --quiet distlib 2>/dev/null || true
+    # QEMU's mkvenv (offline) needs distlib + pycotap available to the venv's base
+    # python; mingw Python 3.14 ships neither and the venv's own pip is broken
+    # ("No module named pip.__main__"). Install them into the SYSTEM mingw python so
+    # the non-isolated venv inherits them (no venv-pip needed). pacman pkg, else pip.
+    pacman -S --needed --noconfirm mingw-w64-x86_64-python-pip 2>/dev/null || true
+    for pkg in distlib pycotap; do
+      pacman -S --needed --noconfirm "mingw-w64-x86_64-python-$pkg" 2>/dev/null \
+        || python -m pip install --quiet "$pkg" 2>/dev/null \
+        || pip install --quiet "$pkg" 2>/dev/null || true
+    done
     MGR="windows/msys2-pacman"
     ;;
 
