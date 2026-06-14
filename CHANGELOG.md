@@ -84,6 +84,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `patches/README.md`.
 
 ### Fixed
+- **SPI WSR status layout** (`ws63.c`): the SPI status register (`0xE4`) now returns
+  the HiSilicon SSI v151 silicon layout — `txfnf`=bit11, `txfe`=bit12, `rxfne`=bit4
+  (idle `0x1800`) — instead of the textbook DesignWare packing (`txfnf`=1/`txfe`=2/
+  `rxfne`=3, idle `0x6`). The silicon (vendor `hal_spi_v151_regs_def.h`
+  `spi_wsr_data`) spreads these flags out, and `ws63-pac`'s `SPI_WSR` was corrected
+  to match (2026-06-14, after the on-silicon SPI0 loopback bring-up); the old QEMU
+  value made a PAC-correct driver poll `txfnf` at bit 11 = 0 and time out. QEMU is
+  not the reference — this realigns the model to silicon so SPI firmware runs under
+  both. No qtest covers SPI yet, so no test change.
 - **QEMU v11.0 upstream regression in RV32 `mcycleh`/`minstreth`**
   (`patches/v11.0.1/0005`): v11's `riscv_pmu_read_ctr()` slices the high/low half
   of `ctr_prev`/`ctr_val` for an RV32 fixed counter but reads the fixed-counter

@@ -1401,7 +1401,10 @@ static uint64_t ws63_periph_read(void *opaque, hwaddr off, unsigned size)
     case PK_SPI:
         if (off == 0x60) return ws63_fifo_pop(s);   /* DR: pop RX (loopback) FIFO */
         if (off == 0xE4) {                          /* WSR */
-            return 0x06 | (s->fcnt > 0 ? 0x08 : 0); /* txfnf|txfe + rxfne if data */
+            /* HiSilicon SSI v151 status layout (NOT textbook DesignWare): txfnf=bit11,
+             * txfe=bit12, rxfne=bit4 (busy=bit15). Idle = 0x1800. Matches the silicon
+             * (vendor hal_spi_v151_regs_def.h spi_wsr_data) and ws63-pac SPI_WSR. */
+            return 0x1800 | (s->fcnt > 0 ? 0x10 : 0);
         }
         if (off == 0xD0) return 0;                  /* TLR (TX FIFO empty) */
         if (off == 0xDC) return s->fcnt;            /* RLR (RX FIFO level) */
