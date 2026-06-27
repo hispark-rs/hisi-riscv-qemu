@@ -41,6 +41,10 @@ python3 / libslirp-dev 等。需要 `sudo`。
 
 ## 第 3 步：构建仿真器
 
+> **想跳过这 10–20 分钟的构建？** Ubuntu 上可直接下载**预编译二进制**、解压即用，无需装构建依赖（第 2 步）
+> 也无需源码构建：见 [安装与构建仿真器 §方式 A：下载预编译 Release](../how-to/install-and-build.md#方式-a下载预编译-release最快)。
+> 本教程走源码构建（可移植、任意平台）；拿到 `qemu-system-riscv32` 后即可直接跳到第 4 步。
+
 ```bash
 bash scripts/build.sh
 ```

@@ -61,6 +61,7 @@ Hello from WS63 on QEMU!
 ## 下一步
 
 - 想系统地运行各种固件、开各种开关 → [运行固件](../how-to/run-firmware.md) 与 [运行选项](../reference/run-options.md)。
+- **想跑 C 固件**（厂商 fbb_ws63 C SDK，非 Rust）→ [运行固件 §运行 fbb_ws63 C SDK 固件](../how-to/run-firmware.md#运行-fbb_ws63-c-sdk-固件)；固件由 [`fbb_ws63-qemu`](https://github.com/hispark-rs/fbb_ws63-qemu) 构建。
 - 想调试 → [调试与追踪](../how-to/debug-and-trace.md)。
 - 想跑回归测试 → [运行测试](../how-to/run-tests.md)。
 - 想知道仿真器到底建模了什么、边界在哪 → [外设建模矩阵](../reference/peripheral-matrix.md) 与 [已知边界与非目标](../explanation/limitations.md)。
