@@ -113,10 +113,13 @@ cargo build -p blinky --release
 > 工具链安装的权威步骤与各平台细节以上游为准：
 > [hisi-riscv-rs · 安装 hisi-riscv 工具链](https://hispark-rs.github.io/hisi-riscv-rs/tutorials/app/01-setup.html#第-1-步安装-hisi-riscv-工具链)。
 
-**(b) fbb_ws63 C SDK（厂商 gcc）** —— 用 SDK 内置工具链：
+**(b) fbb_ws63 C SDK（厂商 gcc）** —— 用 [`hispark-rs/fbb_ws63-qemu`](https://github.com/hispark-rs/fbb_ws63-qemu)
+（fbb_ws63 C SDK 的 QEMU 适配 fork，已为本仿真器预裁剪 BT/WiFi），SDK 内置工具链：
 
 ```bash
-cd fbb_ws63/src && python3 build.py ws63-liteos-app -ninja
+# 在 fbb_ws63-qemu 仓库中
+cd src && python3 build.py ws63-liteos-app -c -ninja
+#   产物:output/ws63/acore/ws63-liteos-app/ws63-liteos-app.elf
 ```
 
 > 跑 C SDK app **不需要**自己装工具链来用仓库自带的测试 fixture——`tests/csdk/` 里已有预编译样例
