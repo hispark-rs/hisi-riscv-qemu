@@ -1536,12 +1536,9 @@ static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned s
          * SDMA (the secure controller @0x520A0000) is NEVER provisioned by the
          * WS63 SDK (CONFIG_DMA_SUPPORT_SMDMA unset, g_sdma_base_addr unassigned):
          * it stays unclocked / security-gated, so a real transfer there stalls an
-         * AXI beat forever and drops the debug link. Vendor mem->mem always uses
-         * the primary M_DMA @0x4A000000. We WARN loudly on any SDMA transfer but
-         * still execute it for now — an existing ws63-rs example (dma_loopback
-         * part2) drives SDMA ch8, so the hard "unprovisioned, never completes"
-         * model must land together with retargeting that example to M_DMA.
-         * Issue #7 (diagnostic; full no-op deferred).
+         * AXI beat forever and drops the debug link. Model it as unprovisioned —
+         * a start never runs a transfer and never completes; warn loudly. Vendor
+         * mem->mem always uses the primary M_DMA @0x4A000000. Issue #7.
          */
         bool secure = (s->base == 0x520A0000);
         bool starts = (off == 0x10 && (v & 0xFF)) ||
@@ -1549,10 +1546,14 @@ static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned s
                        ((off - 0x100) % 0x20) == 0x08 && (v & 1));
         if (secure && starts) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                "ws63: SDMA @0x520A0000 transfer — the secure DMA is unprovisioned "
-                "on WS63 silicon (security-gated/unclocked); the same transfer would "
-                "stall AXI and hang the bus on hardware. Use M_DMA @0x4A000000. "
-                "Issue #7\n");
+                "ws63: SDMA @0x520A0000 transfer ignored — the secure DMA is "
+                "unprovisioned on WS63 silicon (security-gated/unclocked); the same "
+                "transfer would stall AXI and hang the bus on hardware. Use the "
+                "primary M_DMA @0x4A000000. Issue #7\n");
+            if (off != 0x08) {
+                s->shadow[(off / 4) % (WS63_PERIPH_MAXSIZE / 4)] = v;
+                return;                     /* never run, never complete */
+            }
         }
         if (off == 0x08) {                  /* DMAC_INT_CLR: int_trans_clr[0:7] / int_err_clr[8:15] */
             s->dma_done &= ~((v | (v >> 8)) & 0xFF); /* clear the channel on either field */
