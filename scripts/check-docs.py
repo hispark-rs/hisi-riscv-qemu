@@ -131,9 +131,11 @@ if index.exists():
         r = (index.parent / t).resolve()
         if r.exists() and r.suffix == ".md":
             linked.add(str(r.relative_to(ROOT)))
+    # docs/README.md is the index; docs/SUMMARY.md is the mdBook table of contents
+    # (it links every page itself), so neither needs to be linked FROM the index.
     for p in Path("docs").rglob("*.md"):
         rel = str(p)
-        if rel == "docs/README.md":
+        if rel in ("docs/README.md", "docs/SUMMARY.md"):
             continue
         if rel not in linked:
             err(f"orphan page (not linked from docs/README.md): {rel}")

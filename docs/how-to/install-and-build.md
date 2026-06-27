@@ -46,7 +46,7 @@ bash scripts/build.sh
 
 1. 浅克隆 QEMU `$QEMU_TAG`（默认 `v10.0.0`，可改）到 `./qemu/`；若无 `patches/$QEMU_TAG/` 则报错列出已支持版本；
 2. 拷入新文件：板卡源 `src/hw/riscv/ws63.c`、xlinx 解码器 `trans_xlinx.c.inc`、qtest `ws63-test.c`；
-3. 应用该版本的 patch-series `patches/$QEMU_TAG/0001..*.patch`（对既有 QEMU 文件的改动，见 [patch-series 参考](../../patches/README.md)）；
+3. 应用该版本的 patch-series `patches/$QEMU_TAG/0001..*.patch`（对既有 QEMU 文件的改动，见 [patch-series 参考](https://github.com/hispark-rs/hisi-riscv-qemu/blob/master/patches/README.md)）；
 4. `./configure --target-list=riscv32-softmmu --enable-slirp` 后 `make`。
 
 构建相关环境变量：`QEMU_TAG`（默认 `v10.0.0`；另维护 `v10.2.3`、`v11.0.1`、`v9.2.4`）、`QEMU_DIR`（默认
@@ -136,5 +136,5 @@ cd src && python3 build.py ws63-liteos-app -c -ninja
 ## 相关
 
 - 跑起来之后怎么用 → [运行固件](run-firmware.md)
-- QEMU 版本与 patch-series → [移植到新的 QEMU 版本](port-qemu-version.md)、[patch-series 参考](../../patches/README.md)
+- QEMU 版本与 patch-series → [移植到新的 QEMU 版本](port-qemu-version.md)、[patch-series 参考](https://github.com/hispark-rs/hisi-riscv-qemu/blob/master/patches/README.md)
 - 为什么是 fork QEMU 而非树外插件 → [设计取舍](../explanation/design-rationale.md)

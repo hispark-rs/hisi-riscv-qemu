@@ -85,7 +85,7 @@ Secure-libc (the most-called by later stages), from `acore_rom_n1200.sym`:
 SFC / boot (from `remote_lib_boot.sym`): `uapi_sfc_init=0x1037a`,
 `uapi_sfc_init_rom=0x1044a`, `hal_sfc_init=0x1097c`, … (romboot text `0x102ec..0x11e90`).
 
-To intercept, mirror WS63's `ws63_rom_call` (patches/<tag>/0001): when
+To intercept, mirror WS63's `ws63_rom_call` (`patches/<tag>/0001`): when
 `env->pc` is in the BS21 ROM range, emulate the function in host C (args in
 a0–a3, result in a0) and resume at `ra`.
 

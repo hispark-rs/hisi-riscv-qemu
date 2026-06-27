@@ -6,6 +6,7 @@ globs:
 ignores:
   - "qemu/**"          # cloned upstream QEMU tree (gitignored)
   - "node_modules/**"
+  - "docs/SUMMARY.md"  # mdBook table of contents — uses multiple H1 part headers
 config:
   default: true
   MD013: false   # line length — prose/tables are intentionally long

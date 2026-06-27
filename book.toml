@@ -1,0 +1,24 @@
+# mdBook configuration — builds the docs/ tree (Diátaxis-organised) into a site.
+# Local preview:  mdbook serve --open
+# Build:          mdbook build   (output in ./book)
+# Deployed to GitHub Pages by .github/workflows/mdbook.yml.
+[book]
+title = "ws63-qemu 文档"
+description = "在 QEMU 上仿真 HiSilicon WS63（RISC-V RV32IMFC Wi-Fi6/BLE/SLE SoC）的文档，按 Diátaxis 组织。"
+authors = ["hispark-rs"]
+language = "zh"
+src = "docs"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/hispark-rs/hisi-riscv-qemu"
+edit-url-template = "https://github.com/hispark-rs/hisi-riscv-qemu/edit/master/docs/{path}"
+no-section-label = true
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
