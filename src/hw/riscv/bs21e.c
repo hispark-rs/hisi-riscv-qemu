@@ -283,7 +283,7 @@ static void bs21e_machine_init(MachineState *machine)
     ws63_intc_set_cpu_env(intc, &s->cpu.env);
 }
 
-static void bs21e_machine_class_init(ObjectClass *oc, void *data)
+static void bs21e_machine_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     mc->desc = "HiSilicon BS21E (RV32IMFC BLE / SLE NearLink SoC, minimal)";

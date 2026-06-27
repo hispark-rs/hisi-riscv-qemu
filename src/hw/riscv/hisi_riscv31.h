@@ -115,4 +115,21 @@ void ws63_create_pdm(hwaddr base);
 /* Map a BS2X USB (DWC OTG) core-ID model at @base (overlaps the USB absorber). */
 void ws63_create_usb(hwaddr base);
 
+/*
+ * QEMU API drift, version-aliased so the same overlay sources build on every
+ * pinned tag. QEMU 10.2 made the QOM class_init data pointer const and added a
+ * `uintptr_t ra` parameter to riscv_csr_write_fn. Both are mere warnings under
+ * gcc (we build --disable-werror) but HARD ERRORS under Apple clang, so macOS
+ * builds of the 10.2+ pins need the new shapes. QEMU_VERSION_{MAJOR,MINOR} come
+ * from config-host.h, pulled in by qemu/osdep.h which every including .c file
+ * includes before this header.
+ */
+#if QEMU_VERSION_MAJOR > 10 || (QEMU_VERSION_MAJOR == 10 && QEMU_VERSION_MINOR >= 2)
+#define WS63_QOM_CLASS_DATA    const void   /* class_init(ObjectClass *, const void *) */
+#define WS63_CSR_WRITE_RA_ARG  , uintptr_t ra
+#else
+#define WS63_QOM_CLASS_DATA    void         /* class_init(ObjectClass *, void *) */
+#define WS63_CSR_WRITE_RA_ARG
+#endif
+
 #endif /* HW_RISCV_HISI_RISCV31_H */
