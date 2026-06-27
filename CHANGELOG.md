@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-06-27
+
+> This section consolidates everything notable since v0.3.0: the intermediate
+> v0.4.0–v0.4.7 tags shipped without their own changelog sections, so their
+> changes are archived here. v0.4.8 is also the first release whose notes are
+> generated from this changelog.
+
 ### Added
 - **`-M bs21` — HiSilicon BS21 / BS2X machine (multi-chip family, milestone 1).**
   BS21 is a BLE 5.4 + SLE (NearLink) SoC, no Wi-Fi, on the *same* HiSilicon
@@ -65,6 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **qtest matrix** (`.github/workflows/qtest-matrix.yml`): runs the register-level
   qtest across every supported QEMU version (required) plus the newest stable
   (experimental forward-compat radar). Weekly cron.
+- **Documentation site (mdBook).** The `docs/` tree is published to GitHub Pages
+  at <https://hispark-rs.github.io/hisi-riscv-qemu/>, built and deployed by
+  `.github/workflows/mdbook.yml` on every push to `master`.
+- **Documentation CI.** `docs.yml` validates internal links / anchors / Diátaxis
+  layout / orphan pages / H1 via `scripts/check-docs.py` plus markdownlint;
+  `link-check.yml` runs a weekly lychee external-URL check.
 
 ### Changed
 - **Rebased to QEMU v10.0.0** (default; up from v9.2.4) and **migrated the
@@ -82,6 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   v11 six `hw/*.h`→`hw/core/*.h`. The `qtest-matrix` now has all four versions
   green; the forward radar will point at the next QEMU release. See
   `patches/README.md`.
+- **Documentation reorganized into the [Diátaxis](https://diataxis.fr/) four
+  quadrants** (tutorials / how-to / reference / explanation) with a documentation
+  map; the previous combined user-manual / design docs were split by quadrant.
+- **Release notes are now generated from this changelog.** The release workflow
+  extracts the matching `## [x.y.z]` section and prepends it to the per-host
+  download notes (still followed by GitHub's auto-generated PR list).
 
 ### Fixed
 - **SPI WSR status layout** (`ws63.c`): the SPI status register (`0xE4`) now returns
@@ -103,6 +122,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `osal_kmalloc` on v11; fine on v9.2.4/v10.0.0/v10.2.3, which sliced internally).
   Fix slices the fixed-counter value with the same `extract64`. v11 firmware
   smoke-test 16/17 → 17/17. A generic upstream fix, worth reporting to QEMU.
+- **`scripts/build.sh` re-applies the patch-series deterministically.** It now
+  resets the patched upstream files to the pinned tag and replays the whole
+  series every run. Previously the apply step was gated on a single marker, so a
+  CI cache hit — which re-copies the overlay sources pristine — skipped it and the
+  re-copied `ws63.c` / `bs2x.c` lost their per-version `hw/core/` + `system/`
+  include rewrites, failing the `qtest-matrix` non-default-pin builds.
+- **macOS / Apple clang builds of the 10.2+ pins.** QEMU 10.2 made the QOM
+  `class_init` data pointer `const` and added a `uintptr_t ra` parameter to
+  `riscv_csr_write_fn` — warnings under gcc (`--disable-werror`) but hard errors
+  under Apple clang. The overlay sources now version-alias both shapes via
+  `QEMU_VERSION_*`, so `v10.2.3` / `v11.0.1` build under Apple clang too.
 
 ## [0.3.0] - 2026-06-01
 
@@ -231,7 +261,8 @@ vendor-compiled firmware without hardware.
 - **Tooling**: `scripts/{build,run,smoke-test,setup-deps}.sh`, a tag-triggered
   release workflow, and the `ROADMAP.md` / `docs/design.md` documentation set.
 
-[Unreleased]: https://github.com/hispark-rs/ws63-qemu/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/hispark-rs/ws63-qemu/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/hispark-rs/ws63-qemu/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/hispark-rs/ws63-qemu/releases/tag/v0.1.0
+[Unreleased]: https://github.com/hispark-rs/hisi-riscv-qemu/compare/v0.4.8...HEAD
+[0.4.8]: https://github.com/hispark-rs/hisi-riscv-qemu/compare/v0.3.0...v0.4.8
+[0.3.0]: https://github.com/hispark-rs/hisi-riscv-qemu/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/hispark-rs/hisi-riscv-qemu/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/hispark-rs/hisi-riscv-qemu/releases/tag/v0.1.0
