@@ -17,7 +17,8 @@
 
 ## 教程（Tutorials）— 学习导向
 
-- [快速上手：从零跑通第一个固件](tutorials/getting-started.md) —— 安装 → 构建仿真器 → 构建固件 → 运行 blinky → 看到输出。
+- [教程 1：环境准备与安装](tutorials/01-install.md) —— 克隆仓库 → 装依赖 → 构建仿真器 → 装 Rust 工具链。
+- [教程 2：跑通第一个固件](tutorials/02-first-run.md) —— 构建 blinky → 运行 → 看到输出。
 
 ## 操作指南（How-to）— 任务导向
 
