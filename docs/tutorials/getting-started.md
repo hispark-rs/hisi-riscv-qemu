@@ -14,11 +14,12 @@
 
 ## 第 0 步：准备目录
 
-本教程假设 `ws63-qemu` 与 `ws63-rs`（提供示例固件）是相邻的两个目录：
+本教程假设 `ws63-qemu` 与 `ws63-rs`（提供示例固件）是相邻的两个目录。两个仓库已更名为
+`hisi-riscv-qemu` / `hisi-riscv-rs`；下面**克隆进本地旧目录名**，让后续步骤与脚本默认路径（`../ws63-rs`）保持不变：
 
 ```bash
-git clone https://github.com/hispark-rs/ws63-qemu.git
-git clone https://github.com/hispark-rs/ws63-rs.git
+git clone https://github.com/hispark-rs/hisi-riscv-qemu.git ws63-qemu
+git clone https://github.com/hispark-rs/hisi-riscv-rs.git ws63-rs
 cd ws63-qemu
 ```
 
@@ -50,12 +51,12 @@ bash scripts/build.sh
 
 ## 第 3 步：准备一个固件
 
-我们用 `ws63-rs` 里的 `blinky` 示例。它需要 `ws63` 自定义 Rust 工具链（rv32imfc 硬浮点、无原子）：
+我们用 `ws63-rs` 里的 `blinky` 示例。它需要 `hisi-riscv` 自定义 Rust 工具链（rv32imfc 硬浮点、无原子）：
 
 ```bash
-curl -fLO https://github.com/hispark-rs/ws63-rust-toolchain/releases/download/v1.96.0/ws63-rust-1.96.0-x86_64-unknown-linux-gnu.tar.gz
-tar xzf ws63-rust-1.96.0-*.tar.gz
-rustup toolchain link ws63 "$PWD/stage2"
+curl -fLO https://github.com/hispark-rs/hisi-riscv-rust-toolchain/releases/download/v1.96.0-2/hisi-riscv-rust-1.96.0-x86_64-unknown-linux-gnu.tar.gz
+tar xzf hisi-riscv-rust-1.96.0-*.tar.gz
+rustup toolchain link hisi-riscv "$PWD/stage2"
 
 cd ../ws63-rs
 cargo build -p blinky --release

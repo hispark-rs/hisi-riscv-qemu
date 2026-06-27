@@ -12,7 +12,7 @@
 
 ## 方式 A：下载预编译 Release（最快）
 
-从 [Releases](https://github.com/hispark-rs/ws63-qemu/releases) 下载对应版本资产：
+从 [Releases](https://github.com/hispark-rs/hisi-riscv-qemu/releases) 下载对应版本资产：
 
 | 资产 | 说明 |
 |------|------|
@@ -95,11 +95,11 @@ bash scripts/build.sh
 
 仿真器本身不含固件，你需要一个 **ELF** 来跑。两条路径：
 
-**(a) ws63-rs（Rust 裸机）** —— 需要 `ws63` 自定义 Rust 工具链（rv32imfc 硬浮点、无原子，内置为 builtin target）：
+**(a) ws63-rs（Rust 裸机）** —— 需要 `hisi-riscv` 自定义 Rust 工具链（rv32imfc 硬浮点、无原子，内置为 builtin target）：
 
 ```bash
-curl -fLO https://github.com/hispark-rs/ws63-rust-toolchain/releases/download/v1.96.0/ws63-rust-1.96.0-x86_64-unknown-linux-gnu.tar.gz
-tar xzf ws63-rust-1.96.0-*.tar.gz && rustup toolchain link ws63 "$PWD/stage2"
+curl -fLO https://github.com/hispark-rs/hisi-riscv-rust-toolchain/releases/download/v1.96.0-2/hisi-riscv-rust-1.96.0-x86_64-unknown-linux-gnu.tar.gz
+tar xzf hisi-riscv-rust-1.96.0-*.tar.gz && rustup toolchain link hisi-riscv "$PWD/stage2"
 # 在 ws63-rs 仓库中:
 cargo build -p blinky --release
 #   产物:target/riscv32imfc-unknown-none-elf/release/blinky

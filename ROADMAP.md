@@ -1,7 +1,7 @@
 # ws63-qemu 路线图（ROADMAP）
 
 > 本路线图记录 `ws63-qemu` 的目标、已交付内容与剩余工作。
-> **现状(v0.3.0)**:已是一个**单核 SoC 行为保真、能在无硬件下验证 [ws63-rs](https://github.com/hispark-rs/ws63-rs)
+> **现状(v0.3.0)**:已是一个**单核 SoC 行为保真、能在无硬件下验证 [ws63-rs](https://github.com/hispark-rs/hisi-riscv-rs)
 > 驱动并运行 fbb_ws63 C SDK 厂商固件**的仿真器——最初规划的「从 MVP 成长为单核 SoC 保真器」目标(阶段 0–4)
 > **已基本达成**。连接性底座(合成 MAC + SLIRP 的 ping/UDP 软件路径)已完成;剩余的是测试基建打磨、
 > 可维护性/上游,以及真实 Wi-Fi 栈(blob)这一可选远期尾部。
