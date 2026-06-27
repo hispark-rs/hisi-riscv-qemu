@@ -95,15 +95,23 @@ bash scripts/build.sh
 
 仿真器本身不含固件，你需要一个 **ELF** 来跑。两条路径：
 
-**(a) ws63-rs（Rust 裸机）** —— 需要 `hisi-riscv` 自定义 Rust 工具链（rv32imfc 硬浮点、无原子，内置为 builtin target）：
+**(a) ws63-rs（Rust 裸机）** —— 需要 `hisi-riscv` 自定义 Rust 工具链（rv32imfc 硬浮点、无原子，内置为 builtin
+target）。**先装好基础 Rust 环境（[rustup](https://rustup.rs/)）**——本工具链以 rustup 工具链形式安装，依赖 rustup；
+若已装过可跳过。安装方式与上游 hisi-riscv-rs 一致（解压进 rustup 的 toolchains 目录，自动识别，无需 `toolchain link`）：
 
 ```bash
-curl -fLO https://github.com/hispark-rs/hisi-riscv-rust-toolchain/releases/download/v1.96.0-2/hisi-riscv-rust-1.96.0-x86_64-unknown-linux-gnu.tar.gz
-tar xzf hisi-riscv-rust-1.96.0-*.tar.gz && rustup toolchain link hisi-riscv "$PWD/stage2"
+HOST=x86_64-unknown-linux-gnu   # 或 aarch64-unknown-linux-gnu / aarch64-apple-darwin / x86_64-pc-windows-msvc
+curl -LO https://github.com/hispark-rs/hisi-riscv-rust-toolchain/releases/download/v1.96.0-2/hisi-riscv-rust-1.96.0-$HOST.tar.gz
+mkdir -p ~/.rustup/toolchains/hisi-riscv
+tar xzf hisi-riscv-rust-1.96.0-$HOST.tar.gz --strip-components=1 -C ~/.rustup/toolchains/hisi-riscv
+rustup toolchain list | grep hisi-riscv   # 验证:应输出 hisi-riscv
 # 在 ws63-rs 仓库中:
 cargo build -p blinky --release
 #   产物:target/riscv32imfc-unknown-none-elf/release/blinky
 ```
+
+> 工具链安装的权威步骤与各平台细节以上游为准：
+> [hisi-riscv-rs · 安装 hisi-riscv 工具链](https://hispark-rs.github.io/hisi-riscv-rs/tutorials/app/01-setup.html#第-1-步安装-hisi-riscv-工具链)。
 
 **(b) fbb_ws63 C SDK（厂商 gcc）** —— 用 SDK 内置工具链：
 
