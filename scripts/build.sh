@@ -63,14 +63,21 @@ cp "$HERE/src/tests/qtest/ws63-test.c"                    "$QEMU_DIR/tests/qtest
 #      0002 hw/riscv: register the machine (meson source set, Kconfig, trace-events)
 #      0003 tests/qtest: register ws63-test (qtests_riscv32)
 #      000N (version-specific) e.g. adapt the copied ws63.c to an older QEMU API
-#    Idempotent: skip if already applied (cached/incremental qemu/ tree).
-if ! grep -q "ws63_locipd" "$QEMU_DIR/target/riscv/cpu_helper.c"; then
-    echo "==> applying WS63 patch-series (patches/$QEMU_TAG/[0-9]*.patch)"
-    for p in "$PATCH_DIR"/[0-9]*.patch; do
-        echo "    git apply $(basename "$p")"
-        git -C "$QEMU_DIR" apply "$p"
-    done
-fi
+#    Deterministic regardless of cache state: the qemu/ tree may be restored from
+#    CI cache with the series already applied, while step 2 just re-copied the
+#    overlay source files PRISTINE (so their version-specific include rewrites in
+#    000N must re-run). A single "already applied?" marker can't express that mix,
+#    so instead reset the patched UPSTREAM files back to the pinned tag and replay
+#    the whole series from clean. The copied NEW files (ws63.c, bs2x.c, the xlinx
+#    decoder, the qtest) are untracked, so `git checkout` leaves the fresh copies
+#    in place for 000N to re-adapt. Only the handful of reset+repatched files get
+#    recompiled; the rest of the cached build is reused.
+echo "==> applying WS63 patch-series (patches/$QEMU_TAG/[0-9]*.patch)"
+git -C "$QEMU_DIR" checkout -- .
+for p in "$PATCH_DIR"/[0-9]*.patch; do
+    echo "    git apply $(basename "$p")"
+    git -C "$QEMU_DIR" apply "$p"
+done
 
 # 5. configure (once). --enable-slirp gives `-netdev user` (SLIRP NAT) for the
 #    Wi-Fi/Ethernet MAC model (needs libslirp-dev installed).
