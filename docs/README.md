@@ -10,7 +10,7 @@
 | **理解某件事为什么这样**（设计取舍 / 边界 / 可行性） | [explanation/](explanation/) | 理解导向：背景与权衡的讨论 |
 
 > 项目是什么：在 **QEMU** 上仿真 HiSilicon **WS63**（RISC-V RV32IMFC，Wi-Fi 6 + BLE + SLE/星闪 SoC），
-> 用于无硬件运行 [`ws63-rs`](https://github.com/hispark-rs/ws63-rs) 裸机固件与 fbb_ws63 C SDK 厂商固件。
+> 用于无硬件运行 [`ws63-rs`](https://github.com/hispark-rs/hisi-riscv-rs) 裸机固件与 fbb_ws63 C SDK 厂商固件。
 > 项目级概览见仓库根的 [README.md](../README.md)，规划见 [ROADMAP.md](../ROADMAP.md)，变更见 [CHANGELOG.md](../CHANGELOG.md)。
 
 ---
