@@ -187,7 +187,7 @@ void ws63_intc_set_cpu_env(DeviceState *intc, CPURISCVState *env)
     WS63_INTC(intc)->env = env;
 }
 
-static void ws63_intc_class_init(ObjectClass *oc, void *data)
+static void ws63_intc_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     dc->realize = ws63_intc_realize;
@@ -220,7 +220,7 @@ static RISCVException ws63_csr_read_zero(CPURISCVState *env, int csrno,
 }
 
 static RISCVException ws63_csr_write_ignore(CPURISCVState *env, int csrno,
-                                            target_ulong val)
+                                            target_ulong val WS63_CSR_WRITE_RA_ARG)
 {
     return RISCV_EXCP_NONE;
 }
@@ -260,7 +260,7 @@ static RISCVException ws63_loci_read(CPURISCVState *env, int csrno,
 }
 
 static RISCVException ws63_loci_write(CPURISCVState *env, int csrno,
-                                      target_ulong val)
+                                      target_ulong val WS63_CSR_WRITE_RA_ARG)
 {
     uint32_t v = (uint32_t)val;
     switch (csrno) {
@@ -441,7 +441,7 @@ static void ws63_uart_instance_init(Object *obj)
     sysbus_init_irq(sbd, &s->irq);
 }
 
-static void ws63_uart_class_init(ObjectClass *oc, void *data)
+static void ws63_uart_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     dc->realize = ws63_uart_realize;
@@ -707,7 +707,7 @@ static void ws63_timer_instance_init(Object *obj)
     }
 }
 
-static void ws63_timer_class_init(ObjectClass *oc, void *data)
+static void ws63_timer_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     dc->realize = ws63_timer_realize;
@@ -1559,7 +1559,7 @@ static void ws63_periph_realize(DeviceState *dev, Error **errp)
     sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq);
 }
 
-static void ws63_periph_class_init(ObjectClass *oc, void *data)
+static void ws63_periph_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     dc->realize = ws63_periph_realize;
@@ -2414,7 +2414,7 @@ static const Property ws63_netmac_props[] = {
     DEFINE_NIC_PROPERTIES(WS63NetMacState, conf),
 };
 
-static void ws63_netmac_class_init(ObjectClass *klass, void *data)
+static void ws63_netmac_class_init(ObjectClass *klass, WS63_QOM_CLASS_DATA *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -2636,7 +2636,7 @@ static void ws63_machine_init(MachineState *machine)
     s->intc.env = &s->cpu.env;
 }
 
-static void ws63_machine_class_init(ObjectClass *oc, void *data)
+static void ws63_machine_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     mc->desc = "HiSilicon WS63 (RV32IMFC Wi-Fi6/BLE/SLE SoC)";
