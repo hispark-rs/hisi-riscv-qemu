@@ -11,7 +11,8 @@
 
 ## 前置
 
-- **rustup**：第 4 步要用 Rust 工具链，请先装好 [rustup](https://rustup.rs/)（提供 `rustup` / `cargo`）。
+- **基础 Rust 环境（rustup）**：第 4 步的自定义工具链以 rustup 工具链形式安装，**依赖 rustup**。请先用
+  [官方安装器](https://rustup.rs/) 装好基础 Rust 环境（提供 `rustup` / `cargo`）；**若你之前已装过 Rust，可跳过**。
 - **sudo**：第 2 步装系统依赖需要。
 
 ## 第 1 步：克隆两个仓库
@@ -57,16 +58,25 @@ bash scripts/build.sh
 
 ## 第 4 步：安装 Rust 工具链
 
-示例固件需要 `hisi-riscv` 自定义 Rust 工具链（rv32imfc 硬浮点、无原子，内置为 builtin target）：
+示例固件需要 `hisi-riscv` 自定义 Rust 工具链（rv32imfc 硬浮点、无原子，内置为 builtin target）。这一步
+**需要前置的 rustup**（见上「前置」）。安装方式与上游 hisi-riscv-rs 一致——解压进 rustup 的 toolchains 目录，
+rustup 即自动识别（无需 `rustup toolchain link`）：
 
 ```bash
-curl -fLO https://github.com/hispark-rs/hisi-riscv-rust-toolchain/releases/download/v1.96.0-2/hisi-riscv-rust-1.96.0-x86_64-unknown-linux-gnu.tar.gz
-tar xzf hisi-riscv-rust-1.96.0-*.tar.gz
-rustup toolchain link hisi-riscv "$PWD/stage2"
+HOST=x86_64-unknown-linux-gnu   # aarch64-unknown-linux-gnu / aarch64-apple-darwin / x86_64-pc-windows-msvc
+curl -LO https://github.com/hispark-rs/hisi-riscv-rust-toolchain/releases/download/v1.96.0-2/hisi-riscv-rust-1.96.0-$HOST.tar.gz
+mkdir -p ~/.rustup/toolchains/hisi-riscv
+tar xzf hisi-riscv-rust-1.96.0-$HOST.tar.gz --strip-components=1 -C ~/.rustup/toolchains/hisi-riscv
 ```
 
-`rustup toolchain link` 把解压出的 `stage2` 注册为名为 `hisi-riscv` 的工具链——`hisi-riscv-rs` 的
-`rust-toolchain.toml` 会自动选用它。
+验证工具链已被识别（`hisi-riscv-rs` 的 `rust-toolchain.toml` 会自动选用它）：
+
+```bash
+rustup toolchain list | grep hisi-riscv   # 应输出 hisi-riscv
+```
+
+> 权威步骤与各平台细节以上游为准：
+> [hisi-riscv-rs · 安装 hisi-riscv 工具链](https://hispark-rs.github.io/hisi-riscv-rs/tutorials/app/01-setup.html#第-1-步安装-hisi-riscv-工具链)。
 
 ## 你装好了
 
