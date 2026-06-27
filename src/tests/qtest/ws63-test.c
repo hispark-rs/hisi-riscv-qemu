@@ -49,12 +49,18 @@
 
 /* DMA channel block: base + 0x100 + ch*0x20. */
 #define DMA_CH0      (DMA0_BASE + 0x100)
+#define DMA_EN_CHNS  0x10   /* global channel-enable (ChEnReg): the silicon start reg */
 #define DMA_ORI_INT_ST (DMA0_BASE + 0x0C)
 #define DMA_DST      0x04
 #define DMA_CFG      0x08   /* bit0 ch_enable triggers the transfer; fc_tt[9:11] */
 #define DMA_SRC      0x10
 #define DMA_CTRL     0x14   /* transfersize[0:11], swsize[18:20], dwsize[21:23],
                              * src_inc[26], dest_inc[27], tc_int_en[31] */
+#define SDMA_BASE    0x520A0000u   /* secure DMA: unprovisioned on WS63 silicon */
+
+/* Timer cnt_req/cnt_lock handshake bits (CONTROL bits 5/6) — issue #6. */
+#define TMR_CNT_REQ  (1u << 5)
+#define TMR_CNT_LOCK (1u << 6)
 
 /* ---- GPIO: DATA set/clear, output-enable + interrupt-enable read-back ---- */
 static void test_gpio(void)
@@ -158,6 +164,95 @@ static void test_dma_mem2mem(void)
     qtest_quit(qts);
 }
 
+/* ---- DMA: silicon start path — write EN_CHNS, poll EN_CHNS auto-clear (issue #5) ---- */
+static void test_dma_en_chns_start(void)
+{
+    QTestState *qts = qtest_init("-machine ws63");
+
+    const uint32_t src = SRAM_BASE + 0x3000;
+    const uint32_t dst = SRAM_BASE + 0x4000;
+    const uint32_t pat[4] = {0x11112222u, 0x33334444u, 0x55556666u, 0x77778888u};
+
+    for (int i = 0; i < 4; i++) {
+        qtest_writel(qts, src + i * 4, pat[i]);
+        qtest_writel(qts, dst + i * 4, 0);
+    }
+
+    /* Configure channel 0 WITHOUT CHN_CONFIG.ch_enable — on silicon that bit is
+     * config only; the transfer is started by the global EN_CHNS register. */
+    qtest_writel(qts, DMA_CH0 + DMA_DST, dst);
+    qtest_writel(qts, DMA_CH0 + DMA_SRC, src);
+    qtest_writel(qts, DMA_CH0 + DMA_CTRL,
+                 4u | (2u << 18) | (2u << 21) | (1u << 26) | (1u << 27));
+    qtest_writel(qts, DMA_CH0 + DMA_CFG, 0x0);  /* fc_tt=0, ch_enable NOT set */
+
+    /* Nothing has run yet: EN_CHNS reads 0, destination untouched. */
+    g_assert_cmphex(qtest_readl(qts, DMA0_BASE + DMA_EN_CHNS) & 0x1, ==, 0x0);
+    g_assert_cmphex(qtest_readl(qts, dst), ==, 0x0);
+
+    /* Start by setting the channel's bit in EN_CHNS (the silicon start). */
+    qtest_writel(qts, DMA0_BASE + DMA_EN_CHNS, 0x1);
+
+    for (int i = 0; i < 4; i++) {
+        g_assert_cmphex(qtest_readl(qts, dst + i * 4), ==, pat[i]);
+    }
+    /* Hardware auto-clears the channel's EN_CHNS bit on single-block completion. */
+    g_assert_cmphex(qtest_readl(qts, DMA0_BASE + DMA_EN_CHNS) & 0x1, ==, 0x0);
+    g_assert_cmphex(qtest_readl(qts, DMA_ORI_INT_ST) & 0x1, ==, 0x1);
+
+    qtest_quit(qts);
+}
+
+/* ---- SDMA @0x520A0000 is unprovisioned on WS63 silicon: never runs (issue #7) ---- */
+static void test_sdma_unprovisioned(void)
+{
+    QTestState *qts = qtest_init("-machine ws63");
+
+    const uint32_t src = SRAM_BASE + 0x5000;
+    const uint32_t dst = SRAM_BASE + 0x6000;
+    qtest_writel(qts, src, 0xcafef00du);
+    qtest_writel(qts, dst, 0x0);
+
+    qtest_writel(qts, SDMA_BASE + 0x100 + DMA_DST, dst);
+    qtest_writel(qts, SDMA_BASE + 0x100 + DMA_SRC, src);
+    qtest_writel(qts, SDMA_BASE + 0x100 + DMA_CTRL,
+                 1u | (2u << 18) | (2u << 21) | (1u << 26) | (1u << 27));
+
+    /* Neither start path runs on the secure controller. */
+    qtest_writel(qts, SDMA_BASE + 0x100 + DMA_CFG, 0x1);  /* CHN_CONFIG.ch_enable */
+    qtest_writel(qts, SDMA_BASE + DMA_EN_CHNS, 0x1);       /* EN_CHNS */
+
+    g_assert_cmphex(qtest_readl(qts, dst), ==, 0x0);             /* never copied */
+    g_assert_cmphex(qtest_readl(qts, SDMA_BASE + 0x0C) & 0x1, ==, 0x0); /* no done */
+
+    qtest_quit(qts);
+}
+
+/* ---- Timer CURRENT_VALUE is a latch refreshed by cnt_req/cnt_lock (issue #6) ---- */
+static void test_timer_current_latch(void)
+{
+    QTestState *qts = qtest_init("-machine ws63");
+
+    qtest_writel(qts, T0 + TMR_LOAD, 100000);
+    qtest_writel(qts, T0 + TMR_CONTROL, TMR_EN);
+
+    /* Raw read without the handshake returns the STALE latch (0), not a live
+     * count — a live counter would read ~100000 here. This is the gap. */
+    g_assert_cmpuint(qtest_readl(qts, T0 + TMR_CURRENT), ==, 0);
+
+    /* Handshake: write cnt_req, then cnt_lock reads 1 (snapshot ready). */
+    qtest_writel(qts, T0 + TMR_CONTROL, TMR_EN | TMR_CNT_REQ);
+    g_assert_cmpuint(qtest_readl(qts, T0 + TMR_CONTROL) & TMR_CNT_LOCK, ==, TMR_CNT_LOCK);
+
+    /* Now CURRENT reads a fresh, non-zero snapshot; the read clears cnt_lock. */
+    uint32_t snap = qtest_readl(qts, T0 + TMR_CURRENT);
+    g_assert_cmpuint(snap, >, 0);
+    g_assert_cmpuint(snap, <=, 100000);
+    g_assert_cmpuint(qtest_readl(qts, T0 + TMR_CONTROL) & TMR_CNT_LOCK, ==, 0);
+
+    qtest_quit(qts);
+}
+
 /* ---------------------------------------------------------------------------
  * Synthetic Wi-Fi/Ethernet MAC (ws63-netmac @ 0x44210000, IRQ 45). A real frame
  * round-trip: bind a SOCK_DGRAM socketpair as the netdev (`-nic socket,fd=`), so
@@ -257,7 +352,10 @@ int main(int argc, char **argv)
     qtest_add_func("/ws63/gpio", test_gpio);
     qtest_add_func("/ws63/uart", test_uart);
     qtest_add_func("/ws63/timer_intc", test_timer_and_intc);
+    qtest_add_func("/ws63/timer_current_latch", test_timer_current_latch);
     qtest_add_func("/ws63/dma_mem2mem", test_dma_mem2mem);
+    qtest_add_func("/ws63/dma_en_chns_start", test_dma_en_chns_start);
+    qtest_add_func("/ws63/sdma_unprovisioned", test_sdma_unprovisioned);
     qtest_add_func("/ws63/netmac", test_netmac);
     return g_test_run();
 }

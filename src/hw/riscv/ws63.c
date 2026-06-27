@@ -335,8 +335,13 @@ void ws63_register_custom_csrs(void)
 OBJECT_DECLARE_SIMPLE_TYPE(WS63UartState, WS63_UART)
 
 #define UART_DATA           0x04
+#define UART_DIV_H          0x0C        /* baud divider: integer high byte */
+#define UART_DIV_L          0x10        /* baud divider: integer low byte  */
+#define UART_DIV_FRA        0x14        /* baud divider: 6-bit fraction    */
 #define UART_LINE_STATUS    0x34
 #define UART_FIFO_STATUS    0x44
+/* HAL's post-clock_init assumption (160 MHz PLL base); see issue #2/#3. */
+#define WS63_UART_NOMINAL_CLK_HZ 160000000ULL
 #define FIFO_TX_FULL        (1u << 0)
 #define FIFO_TX_EMPTY       (1u << 1)
 #define FIFO_RX_FULL        (1u << 2)
@@ -386,6 +391,28 @@ static void ws63_uart_write(void *opaque, hwaddr off, uint64_t val,
         return;
     }
     s->shadow[(off / 4) % (WS63_UART_MMIO_SIZE / 4)] = (uint32_t)val;
+    /*
+     * The chardev passes bytes regardless of the programmed baud divider, so a
+     * wrong-divider / wrong-clock config that is garbled on real silicon still
+     * prints perfectly here. Log the effective baud whenever the divider changes
+     * so QEMU at least surfaces (with -d guest_errors) the mismatch that only
+     * shows up on hardware today. Issue #2 (and the clock-at-nominal gap, #3).
+     */
+    if (off == UART_DIV_H || off == UART_DIV_L || off == UART_DIV_FRA) {
+        uint32_t dh = s->shadow[UART_DIV_H / 4] & 0xff;
+        uint32_t dl = s->shadow[UART_DIV_L / 4] & 0xff;
+        uint32_t df = s->shadow[UART_DIV_FRA / 4] & 0x3f;
+        uint32_t div_int = (dh << 8) | dl;
+        /* baud = clk / (16 * (div_int + df/64)) = clk*64 / (16*(div_int*64 + df)) */
+        uint64_t denom = 16ULL * ((uint64_t)div_int * 64 + df);
+        uint64_t baud = denom ? (WS63_UART_NOMINAL_CLK_HZ * 64 / denom) : 0;
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "ws63-uart: baud divider set (int=%u frac=%u) -> effective baud ~= "
+            "%" PRIu64 " at the nominal %llu Hz UART clock. QEMU's chardev passes "
+            "bytes regardless of baud, so a wrong-clock/baud config still prints "
+            "here but is garbled on real silicon. Issue #2\n",
+            div_int, df, baud, (unsigned long long)WS63_UART_NOMINAL_CLK_HZ);
+    }
 }
 
 static const MemoryRegionOps ws63_uart_ops = {
@@ -469,6 +496,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(WS63TimerState, WS63_TIMER)
 #define TMR_CONTROL_EN      (1u << 0)
 #define TMR_CONTROL_ONESHOT (1u << 1)   /* mode[2:1]==01 */
 #define TMR_CONTROL_MASK    (1u << 3)
+#define TMR_CONTROL_CNT_REQ (1u << 5)   /* write 1: latch a fresh CURRENT_VALUE snapshot */
+#define TMR_CONTROL_CNT_LOCK (1u << 6)  /* reads 1 when the snapshot is ready */
 
 /* dw_apb timer: WS63 uses 3 channels (TIMER_0..2); BS21 has a 4th (TIMER_3 @
  * +0x400) that drives the LiteOS tick. Model 4 — the extra channel is inert on
@@ -483,6 +512,7 @@ struct WS63TimerState {
     uint32_t control[WS63_TIMER_CHANNELS];
     uint32_t raw_intr[WS63_TIMER_CHANNELS];
     int64_t  start_ns[WS63_TIMER_CHANNELS];
+    uint32_t latched[WS63_TIMER_CHANNELS];  /* CURRENT_VALUE snapshot (cnt_req/cnt_lock) */
 };
 
 /*
@@ -621,7 +651,17 @@ static uint64_t ws63_timer_read(void *opaque, hwaddr off, unsigned size)
         unsigned r = off & 0xFF;
         switch (r) {
         case 0x00: return s->load[i];
-        case 0x08: return ws63_timer_current(s, i);
+        case 0x08:
+            /*
+             * CURRENT_VALUE is a LATCH on TIMER_V150 silicon, not a live counter:
+             * it only refreshes on the cnt_req/cnt_lock handshake (CONTROL bits
+             * 5/6). A raw read without the handshake returns the stale snapshot
+             * (so silicon-faithful HAL code that polls cnt_lock works, and
+             * QEMU-shaped raw-read code reads stale — same as hardware). cnt_lock
+             * clears on read so a fresh snapshot needs a new cnt_req. Issue #6.
+             */
+            s->control[i] &= ~TMR_CONTROL_CNT_LOCK;
+            return s->latched[i];
         case 0x10: return s->control[i];
         case 0x14: /* EOI: read clears */
             s->raw_intr[i] = 0;
@@ -661,6 +701,11 @@ static void ws63_timer_write(void *opaque, hwaddr off, uint64_t val,
                 ws63_timer_arm(s, i);          /* disabled -> enabled */
             } else if ((old & TMR_CONTROL_EN) && !(val & TMR_CONTROL_EN)) {
                 timer_del(s->qt[i]);           /* enabled -> disabled */
+            }
+            /* cnt_req (bit5): latch a fresh CURRENT_VALUE and signal cnt_lock. */
+            if (val & TMR_CONTROL_CNT_REQ) {
+                s->latched[i] = ws63_timer_current(s, i);
+                s->control[i] |= TMR_CONTROL_CNT_LOCK;
             }
             ws63_timer_update_irq(s, i);
             break;
@@ -1486,7 +1531,16 @@ static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned s
             return;
         }
         break;
-    case PK_DMA:
+    case PK_DMA: {
+        /*
+         * SDMA (the secure controller @0x520A0000) is NEVER provisioned by the
+         * WS63 SDK (CONFIG_DMA_SUPPORT_SMDMA unset, g_sdma_base_addr unassigned):
+         * the block stays unclocked / security-gated, so a transfer issued at it
+         * stalls an AXI beat forever and drops the debug link. Model it as
+         * unprovisioned — never run a transfer, warn loudly. Vendor mem->mem
+         * always uses the primary M_DMA @0x4A000000. Issue #7.
+         */
+        bool secure = (s->base == 0x520A0000);
         if (off == 0x08) {                  /* DMAC_INT_CLR: int_trans_clr[0:7] / int_err_clr[8:15] */
             s->dma_done &= ~((v | (v >> 8)) & 0xFF); /* clear the channel on either field */
             if (s->dma_done == 0) {
@@ -1495,14 +1549,50 @@ static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned s
             s->shadow[off / 4] = 0;
             return;
         }
+        if (off == 0x10) {                  /* DMAC_EN_CHNS (ChEnReg): the silicon start reg */
+            /*
+             * DesignWare-style start: a transfer begins when the channel's bit is
+             * set in the global channel-enable register, and the hardware
+             * auto-clears that bit on single-block completion (the vendor HAL polls
+             * EN_CHNS==0 for "done"). Run each newly-enabled channel; because the
+             * copy is synchronous and ws63_dma_run() clears the channel's
+             * CHN_CONFIG.ch_enable, the computed EN_CHNS read returns 0 right after
+             * = the auto-clear the silicon-faithful driver polls for. Issue #5.
+             */
+            if (secure) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                    "ws63: SDMA @0x520A0000 EN_CHNS start ignored — secure DMA is "
+                    "unprovisioned on WS63 silicon (would stall AXI / hang the bus). "
+                    "Use the primary M_DMA @0x4A000000. Issue #7\n");
+                return;
+            }
+            for (int c = 0; c < 8; c++) {
+                if (v & (1u << c)) {
+                    ws63_dma_run(s, c);
+                }
+            }
+            return;
+        }
         if (off >= 0x100 && off < 0x100 + 8 * 0x20 &&
             ((off - 0x100) % 0x20) == 0x08 && (v & 1)) {
-            /* channel cfg write with ch_enable -> run the transfer */
+            /*
+             * CHN_CONFIG.ch_enable start. On silicon this bit is configuration
+             * only (the real start is the EN_CHNS write above), but QEMU-shaped
+             * firmware + the qtest start this way, so keep it for compatibility.
+             */
             s->shadow[(off / 4) % (WS63_PERIPH_MAXSIZE / 4)] = v;
+            if (secure) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                    "ws63: SDMA @0x520A0000 transfer ignored — secure DMA is "
+                    "unprovisioned on WS63 silicon (would stall AXI / hang). "
+                    "Use M_DMA @0x4A000000. Issue #7\n");
+                return;
+            }
             ws63_dma_run(s, (off - 0x100) / 0x20);
             return;
         }
         break;
+    }
     default:
         break;
     }
@@ -1520,7 +1610,33 @@ static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned s
         } else if (off == 0x04) {
             g_ws63_cken1 = v;
         } else {
+            uint32_t old_sel = g_ws63_clk_sel;
             g_ws63_clk_sel = v;
+            /*
+             * CLDO_CRG_CLK_SEL bit18 switches the flash clock to the PLL. On
+             * silicon, doing this while the CPU executes XIP from flash crashes
+             * instruction fetch (SFC XIP timing invalidated) and hangs the core +
+             * RISC-V Debug Module (UART-download recovery only). flashboot already
+             * sets up XIP, so an XIP app must NOT re-switch it. QEMU's SFC/XIP is
+             * not timing-sensitive, so this is a silent no-op here — warn loudly so
+             * the hazard is visible with -d guest_errors before hardware. Issue #4.
+             */
+            if ((old_sel ^ v) & (1u << 18)) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                    "ws63: flash clock switched via CLDO_CRG_CLK_SEL bit18 — on real "
+                    "silicon this crashes XIP instruction fetch if the CPU is running "
+                    "from flash (core + RISC-V DM hang). flashboot already set up XIP; "
+                    "an XIP app must not re-switch the flash clock. Issue #4\n");
+            }
+            /*
+             * The clock tree is modelled at NOMINAL (post-clock_init) values; real
+             * silicon at boot runs slower until clock_init, so timing/baud correct
+             * here can be wrong on hardware. Surface the selection. Issue #3.
+             */
+            qemu_log_mask(LOG_GUEST_ERROR,
+                "ws63: CLDO_CRG_CLK_SEL=0x%08x. NB: QEMU models clocks at nominal "
+                "(post-clock_init) rates; an app that skips clock_init mis-times on "
+                "silicon but not here. Issue #3\n", v);
         }
         if (off == 0x00 && g_ws63_timer &&
             timer_was_gated != ws63_timer_clock_gated()) {
