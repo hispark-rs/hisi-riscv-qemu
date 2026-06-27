@@ -31,6 +31,7 @@ jobs:
             --no-progress
             --max-retries 3
             --accept 200,206,429
+            --exclude 'hispark-rs\.github\.io/hisi-riscv-qemu'
             docs/**/*.md README.md ROADMAP.md patches/README.md
           fail: true
           jobSummary: true

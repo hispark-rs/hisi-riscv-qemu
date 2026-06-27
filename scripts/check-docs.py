@@ -120,27 +120,28 @@ for cat in ("tutorials", "how-to", "reference", "explanation"):
     if not d.is_dir() or not list(d.glob("*.md")):
         err(f"Diataxis category missing or empty: docs/{cat}/")
 
-# --- 4: orphan pages (reachable from docs/README.md) --------------------------
-index = Path("docs/README.md")
-if index.exists():
+# --- 4: orphan pages (every page is in the mdBook table of contents) ----------
+# docs/SUMMARY.md is the authoritative TOC: a page not listed there is dropped
+# from the built site (mdBook itself warns about it), so require every page to
+# appear in SUMMARY.md. SUMMARY.md itself is the TOC, not a content page.
+toc = Path("docs/SUMMARY.md")
+if toc.exists():
     linked: set[str] = set()
-    for m in LINK_RE.finditer(index.read_text(encoding="utf-8")):
+    for m in LINK_RE.finditer(toc.read_text(encoding="utf-8")):
         t = m.group(1).split("#")[0].strip()
         if not t or is_external(t):
             continue
-        r = (index.parent / t).resolve()
+        r = (toc.parent / t).resolve()
         if r.exists() and r.suffix == ".md":
             linked.add(str(r.relative_to(ROOT)))
-    # docs/README.md is the index; docs/SUMMARY.md is the mdBook table of contents
-    # (it links every page itself), so neither needs to be linked FROM the index.
     for p in Path("docs").rglob("*.md"):
         rel = str(p)
-        if rel in ("docs/README.md", "docs/SUMMARY.md"):
+        if rel == "docs/SUMMARY.md":
             continue
         if rel not in linked:
-            err(f"orphan page (not linked from docs/README.md): {rel}")
+            err(f"page missing from docs/SUMMARY.md (mdBook TOC): {rel}")
 else:
-    err("docs/README.md (documentation map) is missing")
+    err("docs/SUMMARY.md (mdBook table of contents) is missing")
 
 # --- 5: every page has an H1 --------------------------------------------------
 for p in Path("docs").rglob("*.md"):
