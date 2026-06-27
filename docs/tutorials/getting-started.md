@@ -14,14 +14,16 @@
 
 ## 第 0 步：准备目录
 
-本教程假设 `ws63-qemu` 与 `ws63-rs`（提供示例固件）是相邻的两个目录。两个仓库已更名为
-`hisi-riscv-qemu` / `hisi-riscv-rs`；下面**克隆进本地旧目录名**，让后续步骤与脚本默认路径（`../ws63-rs`）保持不变：
+本教程假设仿真器仓库 `hisi-riscv-qemu` 与固件仓库 `hisi-riscv-rs`（提供示例固件）是相邻的两个目录：
 
 ```bash
-git clone https://github.com/hispark-rs/hisi-riscv-qemu.git ws63-qemu
-git clone https://github.com/hispark-rs/hisi-riscv-rs.git ws63-rs
-cd ws63-qemu
+git clone https://github.com/hispark-rs/hisi-riscv-qemu.git
+git clone https://github.com/hispark-rs/hisi-riscv-rs.git
+cd hisi-riscv-qemu
 ```
+
+> 脚本默认从 `../ws63-rs` 找固件；因固件仓库已更名为 `hisi-riscv-rs`，下面用 `WS63_RS=../hisi-riscv-rs`
+> 显式指向它（或给 `run.sh` 传完整 ELF 路径）。
 
 ## 第 1 步：安装构建依赖
 
@@ -58,27 +60,27 @@ curl -fLO https://github.com/hispark-rs/hisi-riscv-rust-toolchain/releases/downl
 tar xzf hisi-riscv-rust-1.96.0-*.tar.gz
 rustup toolchain link hisi-riscv "$PWD/stage2"
 
-cd ../ws63-rs
+cd ../hisi-riscv-rs
 cargo build -p blinky --release
-cd ../ws63-qemu
+cd ../hisi-riscv-qemu
 ```
 
-固件产物落在 `../ws63-rs/target/riscv32imfc-unknown-none-elf/release/blinky`。
+固件产物落在 `../hisi-riscv-rs/target/riscv32imfc-unknown-none-elf/release/blinky`。
 
 ## 第 4 步：运行它
 
 ```bash
-bash scripts/run.sh
+WS63_RS=../hisi-riscv-rs bash scripts/run.sh
 ```
 
-不带参数时，`run.sh` 默认就跑 `ws63-rs` 的 `blinky`。你会看到 QEMU 启动并运行固件。
+不带额外参数时，`run.sh` 默认就跑固件仓库里的 `blinky`（`WS63_RS` 指向其位置）。你会看到 QEMU 启动并运行固件。
 
 **退出 QEMU**：先按 `Ctrl-A`，松开，再按 `X`。
 
 想看到 GPIO 翻转的痕迹，开追踪：
 
 ```bash
-DEBUG=1 bash scripts/run.sh
+DEBUG=1 WS63_RS=../hisi-riscv-rs bash scripts/run.sh
 #  随后查看 qemu.log，里面有中断/未建模访问等记录
 ```
 
@@ -87,8 +89,8 @@ DEBUG=1 bash scripts/run.sh
 `blinky` 只翻 GPIO、不打印。换 `uart_hello` 就能在终端直接看到串口输出：
 
 ```bash
-cd ../ws63-rs && cargo build -p uart_hello --release && cd ../ws63-qemu
-bash scripts/run.sh ../ws63-rs/target/riscv32imfc-unknown-none-elf/release/uart_hello
+cd ../hisi-riscv-rs && cargo build -p uart_hello --release && cd ../hisi-riscv-qemu
+bash scripts/run.sh ../hisi-riscv-rs/target/riscv32imfc-unknown-none-elf/release/uart_hello
 ```
 
 终端应打印：
