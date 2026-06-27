@@ -42,13 +42,14 @@
 - **TIMER_0 → IRQ 26**：rs 示例 `timer_irq` 与 C SDK `radar_timer_init`（`[RADAR_LOG] radar_timer_init succ`）
   **都用 IRQ 26**（标准 `mie` 位 + 向量化 mtvec）——两侧在 QEMU 同一中断模型上闭环，**IRQ 号与投递路径对齐**。
 - IRQ≥32（自定义 `LOCIxx` 本地中断）：rs 示例 `gpio_irq`（GPIO0→IRQ 33）验证；C SDK 同走该通路。
+  机制见 [中断控制器设计](interrupt-controller.md)。
 
 ## 内存映射 / 启动
 
 - BOOTROM/ROM/ITCM/DTCM/FLASH/SRAM 布局（`ws63-rt/memory.x` ↔ C SDK `memory_config_common.h`）一致：
   两侧固件在同一 QEMU 内存映射上正确 relocation/启动（rs blinky 等；C SDK app 完成 relocation/dyn_mem_cfg）。
 - 外设基址（UART `0x4401_x000`、TIMER `0x4400_2000`、GPIO `0x4402_8000`、SFC `0x4800_0000`、EFUSE `0x4400_8000`）
-  ：SVD ↔ C SDK 头文件 ↔ rs HAL/PAC 三方一致。
+  ：SVD ↔ C SDK 头文件 ↔ rs HAL/PAC 三方一致。详见 [内存映射](../reference/memory-map.md)。
 
 ## 发现与差异
 
@@ -56,8 +57,8 @@
 2. ✅ **TCXO 计数器**：C SDK 与 rs HAL（`ws63-hal/src/tcxo.rs` 的 `TcxoDriver`）都用 `0x440004C0` 的 64 位
    自由计数（同 refresh→valid→读过程），与 QEMU 模型一致。
 3. 🟡 **指令集**：C SDK 用 HiSilicon **xlinx 自定义指令**（GCC），rs 用标准 rv32imfc——功能等价，密度不同
-   （见 [`rust-toolchain-xlinx.md`](rust-toolchain-xlinx.md)）。
-4. ⬜ **flash/NV/efuse 内容**：需真实分区/标定数据（无 dump），属数据墙而非寄存器布局差异。
+   （见 [Rust 工具链是否需要 xlinx](rust-toolchain-xlinx.md)）。
+4. ⬜ **flash/NV/efuse 内容**：需真实分区/标定数据（无 dump），属数据墙而非寄存器布局差异（见 [已知边界](limitations.md)）。
 
 > 总评：在已建模的外设维度上，**ws63-rs HAL 的寄存器布局与时序与厂商 C SDK 一致**，并经「两侧固件跑在
 > 同一 QEMU 模型」运行时交叉验证（含 TCXO 64 位计数器，两侧均已对接 `0x440004C0`）。剩余差异是 xlinx

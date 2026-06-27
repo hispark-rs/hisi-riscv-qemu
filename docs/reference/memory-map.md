@@ -34,7 +34,7 @@
 ## 外设基址（来自 WS63.svd）
 
 状态:**已建模** = 专有 sysbus 设备(寄存器语义 + 必要时中断/搬运);**已建模(部分)** = 关键位真实、
-其余影子;**吸收** = `create_unimplemented_device` 兜底(读 0、不崩)。行为细节见 [`design.md`](design.md) 外设矩阵。
+其余影子;**吸收** = `create_unimplemented_device` 兜底(读 0、不崩)。行为细节见 [外设建模矩阵](peripheral-matrix.md)。
 
 | 外设 | 基址 | `ws63-qemu` 状态 |
 |------|------|------------------|
@@ -70,7 +70,7 @@
 
 > **建模 vs 吸收的实现**:已建模外设是注册的 sysbus 设备,映射**覆盖**在三个 `create_unimplemented_device`
 > 兜底窗口(`0x4000_0000` 256 MiB、`0x5200_0000`、`0x5700_0000`)之上;只有未建模子区落到兜底
-> （读 0、不崩,可用 `-d unimp` 追踪）。**全部 35 个 SVD 外设均已覆盖**(见 design.md 「外设建模覆盖」)。
+> （读 0、不崩,可用 `-d unimp` 追踪）。**全部 35 个 SVD 外设均已覆盖**(见 [外设建模矩阵](peripheral-matrix.md))。
 
 ## CPU
 
@@ -79,3 +79,9 @@
   完全一致（非超集；Zcb/Zcmp 禁用以让位 xlinx 自定义压缩编码）。复位 PC = ELF entry（`0x0023_0300`），
   无 OpenSBI / 无 FDT（裸机）。
   注：`zawrs` 在基础核默认开启且依赖 A，故一并关闭以保持 A 关闭。
+
+## 相关
+
+- 机器组件与自定义 UART 寄存器 → [机器模型](machine-model.md)
+- 各外设的行为细节 → [外设建模矩阵](peripheral-matrix.md)
+- 内存/启动为何这样设计 → [设计取舍](../explanation/design-rationale.md)

@@ -16,7 +16,7 @@
 
 | 工具链 | 自定义集合 | C SDK / ws63-rs 用哪个 |
 |--------|------------|------------------------|
-| **GCC**（`riscv32-linux-musl-gcc`，`-march=rv32imfcxlinxma_xlinxmb_xlinxmc`）| **完整集**：`l.li`、`{add,sub,or,xor,and}shf`、`b*i`、`muliadd`、`jal16`/`j16`、`ldmia`/`stmia`、`push`/`pop`/`popret`、`uxtb`/`uxth`、压缩 `lbu`/`lhu`/`sb`/`sh`（见 [`xlinx-isa.md`](xlinx-isa.md)）| **C SDK（ws63-liteos-app/flashboot）用 GCC 全集** |
+| **GCC**（`riscv32-linux-musl-gcc`，`-march=rv32imfcxlinxma_xlinxmb_xlinxmc`）| **完整集**：`l.li`、`{add,sub,or,xor,and}shf`、`b*i`、`muliadd`、`jal16`/`j16`、`ldmia`/`stmia`、`push`/`pop`/`popret`、`uxtb`/`uxth`、压缩 `lbu`/`lhu`/`sb`/`sh`（见 [xlinx ISA](../reference/xlinx-isa.md)）| **C SDK（ws63-liteos-app/flashboot）用 GCC 全集** |
 | **LLVM**（HiSpark fork 15.0.4，`xlinxma`）| **GROUP1 小集**：`c.neg`、`c.sbz`/`shz`/`swz`、`c.xori`（5 条）| ws63-rs **未用**（标准 rust = 标准 LLVM = 无 xlinx）|
 
 即：QEMU 里我实现的是 **GCC 全集**（C SDK 固件所需）；LLVM fork 的 GROUP1 是另一套、且是早期/部分移植，

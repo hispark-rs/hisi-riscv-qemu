@@ -124,6 +124,7 @@ BS21_BCTL_TRACE=1 qemu-system-riscv32 -M bs21 -nographic -serial mon:stdio \
   <flash1 64K chunks at 0x90100000..> \
   -device loader,addr=0x40000,cpu-num=0  2>bctl_trace.log
 ```
+
 (flashboot code = tail `code_size` bytes of the signed flashboot image; flash1 =
 the pre-trim BT-present build.)
 

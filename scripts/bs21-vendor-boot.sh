@@ -19,7 +19,7 @@
 #
 # Remaining to go further (flashboot banner / full chain): a BS21 ROM-call table
 # (the secure-libc + SFC functions the later stages call live in the ROM region;
-# see docs/bs21-vendor-firmware.md), the flashboot image format (trailer-based,
+# see docs/explanation/bs21-vendor-firmware.md), the flashboot image format (trailer-based,
 # different from loaderboot), and SFC/mask-ROM stubs.
 #
 # Usage: bs21-vendor-boot.sh <loaderboot_sign.bin> [seconds] [load_addr]

@@ -1,0 +1,42 @@
+name: docs
+
+# Documentation gate: deterministic, offline, fast. Runs on every push/PR that
+# touches docs or the doc-tooling. External URL reachability is checked separately
+# (link-check.yml, scheduled) so flaky third-party hosts never block a PR.
+on:
+  push:
+    paths:
+      - '**.md'
+      - 'scripts/check-docs.py'
+      - '.markdownlint-cli2.yaml'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - '**.md'
+      - 'scripts/check-docs.py'
+      - '.markdownlint-cli2.yaml'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+jobs:
+  # Internal links + anchors resolve, Diataxis layout intact, no orphan pages,
+  # every page has an H1, no stale pre-reorg paths. See scripts/check-docs.py.
+  content:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Links, anchors, layout & content checks
+        run: python3 scripts/check-docs.py
+
+  # Style/quality of the Diataxis doc set under docs/ (config: .markdownlint-cli2.yaml).
+  markdownlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: markdownlint
+        uses: DavidAnson/markdownlint-cli2-action@v23
+        with:
+          globs: 'docs/**/*.md'

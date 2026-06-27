@@ -16,8 +16,9 @@
  * (GPIO=33, UART=53, ...) use HiSilicon's in-core CLIC-style vectoring (custom
  * LOCIEN/LOCIPRI CSRs + a 32..72 mcause that does not fit RV32's 32-bit
  * mip/mie); their CSR state is modeled but exact in-core delivery would require
- * a target/riscv patch (documented in docs/design.md). Other peripherals are
- * absorbed (named in the trace by address; see docs/memory-map.md).
+ * a target/riscv patch (documented in docs/explanation/interrupt-controller.md).
+ * Other peripherals are absorbed (named in the trace by address; see
+ * docs/reference/memory-map.md).
  *
  * CPU: a single RV32IMFC_Zicsr hart, built from QEMU's configurable "rv32" core
  * with exactly I/M/F/C enabled and A (atomics) + D (double float) disabled.
