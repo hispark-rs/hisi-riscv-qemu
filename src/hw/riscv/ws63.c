@@ -534,6 +534,7 @@ static uint32_t g_ws63_cken0      = 0xFFFFFFFFu; /* CLDO_CRG_CKEN_CTL0 @0x440011
 static uint32_t g_ws63_cken1      = 0xFFFFFFFFu; /* CLDO_CRG_CKEN_CTL1 @0x44001104 */
 static uint32_t g_ws63_clk_sel    = 0;           /* CLDO_CRG_CLK_SEL   @0x44001134 */
 static WS63TimerState *g_ws63_timer;             /* for re-arm on gate toggle */
+static MemoryRegion *g_ws63_flash;               /* flash XIP region; disabled on the issue #4 hazard */
 
 /*
  * Effective clock for a peripheral domain: 0 if its CKEN gate is off, else its
@@ -1622,11 +1623,33 @@ static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned s
              * the hazard is visible with -d guest_errors before hardware. Issue #4.
              */
             if ((old_sel ^ v) & (1u << 18)) {
+                uint32_t pc = current_cpu ?
+                    (uint32_t)RISCV_CPU(current_cpu)->env.pc : 0;
+                bool from_xip = pc >= WS63_FLASH_BASE &&
+                                pc < WS63_FLASH_BASE + WS63_FLASH_SIZE;
                 qemu_log_mask(LOG_GUEST_ERROR,
-                    "ws63: flash clock switched via CLDO_CRG_CLK_SEL bit18 — on real "
-                    "silicon this crashes XIP instruction fetch if the CPU is running "
-                    "from flash (core + RISC-V DM hang). flashboot already set up XIP; "
-                    "an XIP app must not re-switch the flash clock. Issue #4\n");
+                    "ws63: flash clock switched via CLDO_CRG_CLK_SEL bit18 at pc=0x%08x "
+                    "(%s flash XIP). On silicon this invalidates the SFC XIP timing. "
+                    "Issue #4\n",
+                    pc, from_xip ? "FROM" : "not from");
+                if (from_xip && g_ws63_flash) {
+                    /*
+                     * Reproduce the silicon hang. An app re-switching the flash clock
+                     * while executing XIP from flash crashes instruction fetch (the SFC
+                     * XIP timing is no longer valid) and hangs the core + RISC-V Debug
+                     * Module (UART-download recovery only). Model it by disabling the
+                     * flash XIP window: every subsequent fetch/read from 0x200000.. now
+                     * faults, crashing the XIP app exactly as on hardware instead of
+                     * QEMU's false green. flashboot (executing from ITCM) switches the
+                     * flash clock too, but not from flash, so it is unaffected.
+                     */
+                    memory_region_set_enabled(g_ws63_flash, false);
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                        "ws63: flash XIP window (0x%08x..) disabled — the next fetch "
+                        "from flash will fault, modeling the silicon hang. flashboot "
+                        "already set up XIP; an XIP app must not re-switch the flash "
+                        "clock. Issue #4\n", WS63_FLASH_BASE);
+                }
             }
             /*
              * The clock tree is modelled at NOMINAL (post-clock_init) values; real
@@ -2612,6 +2635,7 @@ static void ws63_machine_init(MachineState *machine)
     ws63_make_ram(sys, &s->itcm, "ws63.itcm", WS63_ITCM_BASE, WS63_ITCM_SIZE);
     ws63_make_ram(sys, &s->dtcm, "ws63.dtcm", WS63_DTCM_BASE, WS63_DTCM_SIZE);
     ws63_make_ram(sys, &s->flash, "ws63.flash", WS63_FLASH_BASE, WS63_FLASH_SIZE);
+    g_ws63_flash = &s->flash;           /* for the issue #4 flash-clock-during-XIP fault */
     memory_region_add_subregion(sys, WS63_SRAM_BASE, machine->ram);
 
     /*

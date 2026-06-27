@@ -110,10 +110,10 @@ else
     echo "==> blinky: SKIP (build it: cargo build -p blinky --release)"
 fi
 
-# ---- dma_loopback: peripheral DMA (mem<->SPI handshaking) + SDMA channel ----
+# ---- dma_loopback: peripheral DMA (mem<->SPI handshaking) + mem->mem, both M_DMA ----
 DMA_ELF="$TARGET_DIR/dma_loopback"
 if [ -f "$DMA_ELF" ]; then
-    echo "==> dma_loopback: expecting mem<->SPI0 peripheral DMA + SDMA ch8 to pass"
+    echo "==> dma_loopback: expecting mem<->SPI0 peripheral DMA + mem->mem (M_DMA) to pass"
     timeout 8 "$QEMU_BIN" -M ws63 -nographic -serial mon:stdio \
         -kernel "$DMA_ELF" </dev/null >"$TMP/dma.out" 2>/dev/null || true
     if grep -q "DMA LOOPBACK TEST: PASS" "$TMP/dma.out"; then
@@ -124,6 +124,24 @@ if [ -f "$DMA_ELF" ]; then
     fi
 else
     echo "==> dma_loopback: SKIP (build it: cargo build -p dma_loopback --release)"
+fi
+
+# ---- xip_flash_clk_hazard: switching the flash clock from XIP must crash fetch (issue #4) ----
+XIP_ELF="$TARGET_DIR/xip_flash_clk_hazard"
+if [ -f "$XIP_ELF" ]; then
+    echo "==> xip_flash_clk_hazard: expecting the flash-clock-from-XIP switch to fault (no 'after' line)"
+    timeout 6 "$QEMU_BIN" -M ws63 -nographic -serial mon:stdio \
+        -kernel "$XIP_ELF" </dev/null >"$TMP/xip.out" 2>/dev/null || true
+    if grep -q "XIP-HAZARD: before flash-clock switch" "$TMP/xip.out" && \
+       ! grep -q "after switch" "$TMP/xip.out"; then
+        echo "    PASS: flash XIP window faulted after the clock switch (silicon hang reproduced)"
+    else
+        echo "    FAIL: the 'after switch' line printed — the #4 hazard was NOT caught. Got:"
+        tail -5 "$TMP/xip.out" | sed 's/^/      /'
+        fail=1
+    fi
+else
+    echo "==> xip_flash_clk_hazard: SKIP (build it: cargo build -p xip_flash_clk_hazard --release)"
 fi
 
 # ---- wifi_blob_link: link the vendor Wi-Fi ROM blob + resolve externals ----
