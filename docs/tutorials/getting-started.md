@@ -22,8 +22,8 @@ git clone https://github.com/hispark-rs/hisi-riscv-rs.git
 cd hisi-riscv-qemu
 ```
 
-> 脚本默认从 `../ws63-rs` 找固件；因固件仓库已更名为 `hisi-riscv-rs`，下面用 `WS63_RS=../hisi-riscv-rs`
-> 显式指向它（或给 `run.sh` 传完整 ELF 路径）。
+> 并排克隆后，脚本默认即从同级的 `../hisi-riscv-rs` 找固件，后续命令无需额外设环境变量。
+> 第 3 步要用 Rust：请先装好 [rustup](https://rustup.rs/)（提供 `rustup` / `cargo`）。
 
 ## 第 1 步：安装构建依赖
 
@@ -53,7 +53,7 @@ bash scripts/build.sh
 
 ## 第 3 步：准备一个固件
 
-我们用 `ws63-rs` 里的 `blinky` 示例。它需要 `hisi-riscv` 自定义 Rust 工具链（rv32imfc 硬浮点、无原子）：
+我们用 `hisi-riscv-rs` 里的 `blinky` 示例。它需要 `hisi-riscv` 自定义 Rust 工具链（rv32imfc 硬浮点、无原子）：
 
 ```bash
 curl -fLO https://github.com/hispark-rs/hisi-riscv-rust-toolchain/releases/download/v1.96.0-2/hisi-riscv-rust-1.96.0-x86_64-unknown-linux-gnu.tar.gz
@@ -70,17 +70,17 @@ cd ../hisi-riscv-qemu
 ## 第 4 步：运行它
 
 ```bash
-WS63_RS=../hisi-riscv-rs bash scripts/run.sh
+bash scripts/run.sh
 ```
 
-不带额外参数时，`run.sh` 默认就跑固件仓库里的 `blinky`（`WS63_RS` 指向其位置）。你会看到 QEMU 启动并运行固件。
+不带参数时，`run.sh` 默认就跑同级 `../hisi-riscv-rs` 里的 `blinky`。你会看到 QEMU 启动并运行固件。
 
 **退出 QEMU**：先按 `Ctrl-A`，松开，再按 `X`。
 
 想看到 GPIO 翻转的痕迹，开追踪：
 
 ```bash
-DEBUG=1 WS63_RS=../hisi-riscv-rs bash scripts/run.sh
+DEBUG=1 bash scripts/run.sh
 #  随后查看 qemu.log，里面有中断/未建模访问等记录
 ```
 
