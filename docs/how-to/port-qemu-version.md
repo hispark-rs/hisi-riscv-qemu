@@ -4,7 +4,7 @@ WS63 模型是上游 QEMU 的树外 overlay：**新增文件**（`hw/riscv/ws63.
 `build.sh` 拷入；**对既有 QEMU 文件的改动**走按版本分目录的 `git format-patch` 序列 `patches/<tag>/`。
 
 这些改动会随 QEMU 版本漂移（头文件搬家、结构体/字段偏移变化、惯用法变更），所以序列**按版本维护**。本指南讲怎么把序列
-移植到一个新的 QEMU tag。序列的结构与各补丁职责见 [patch-series 参考](../../patches/README.md)。
+移植到一个新的 QEMU tag。序列的结构与各补丁职责见 [patch-series 参考](https://github.com/hispark-rs/hisi-riscv-qemu/blob/master/patches/README.md)。
 
 ## 步骤
 
@@ -32,10 +32,10 @@ WS63 模型是上游 QEMU 的树外 overlay：**新增文件**（`hw/riscv/ws63.
   `CharBackend`→`CharFrontend`、`exec/`→`system/address-spaces.h`。
 - **10.2 → 11**：六个 `hw/*.h`→`hw/core/*.h` 头大迁移。
 
-——正因如此才按版本分目录维护。各版本 `0004`/`0005` 补丁的具体差异见 [patch-series 参考](../../patches/README.md)。
+——正因如此才按版本分目录维护。各版本 `0004`/`0005` 补丁的具体差异见 [patch-series 参考](https://github.com/hispark-rs/hisi-riscv-qemu/blob/master/patches/README.md)。
 
 ## 相关
 
-- 序列结构与各补丁职责 → [patch-series 参考](../../patches/README.md)
+- 序列结构与各补丁职责 → [patch-series 参考](https://github.com/hispark-rs/hisi-riscv-qemu/blob/master/patches/README.md)
 - 改 ROM 桩后如何落回 `0001` → [扩展掩膜 ROM 桩](extend-rom-stubs.md)
 - 为什么用 fork + patch-series 而非树外插件 → [设计取舍](../explanation/design-rationale.md)
