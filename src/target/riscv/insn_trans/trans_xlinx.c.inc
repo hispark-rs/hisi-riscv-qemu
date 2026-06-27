@@ -13,7 +13,7 @@
  * Encodings are ground truth, reverse-engineered via the vendor
  * assembler round-trip (assemble -> read raw bytes -> sweep each
  * operand field); semantics confirmed against vendor codegen.
- * See ws63-qemu/docs/xlinx-isa.md.
+ * See ws63-qemu/docs/reference/xlinx-isa.md.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */

@@ -1,0 +1,38 @@
+name: link-check
+
+# Full link reachability (internal files + external URLs) via lychee. External
+# hosts can rate-limit or blip, so this runs weekly and on demand rather than on
+# every PR — the per-PR docs.yml already validates internal links/anchors offline.
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Mondays 06:00 UTC
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - '**.md'
+      - '.github/workflows/link-check.yml'
+
+permissions:
+  contents: read
+  issues: write           # lychee can open/update a tracking issue on failure
+
+jobs:
+  lychee:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check links (docs + top-level, excl. historical CHANGELOG)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          # --accept 429: don't fail on rate-limit responses from busy hosts.
+          args: >-
+            --no-progress
+            --max-retries 3
+            --accept 200,206,429
+            docs/**/*.md README.md ROADMAP.md patches/README.md
+          fail: true
+          jobSummary: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

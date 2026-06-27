@@ -1,0 +1,18 @@
+# markdownlint-cli2 config — documentation quality gate (see .github/workflows/docs.yml).
+# Scoped to the Diataxis doc set under docs/. Lenient where the house style
+# intentionally diverges (long lines, CJK tables); strict on structure.
+globs:
+  - "docs/**/*.md"
+ignores:
+  - "qemu/**"          # cloned upstream QEMU tree (gitignored)
+  - "node_modules/**"
+config:
+  default: true
+  MD013: false   # line length — prose/tables are intentionally long
+  MD033: false   # inline HTML — not used, but harmless to allow
+  MD040: false   # fenced-code language — some blocks are raw firmware/UART output
+  MD041: false   # first line need not be a top-level heading (badges/quotes ok)
+  MD060: false   # table column style — full-width CJK cells confuse pipe spacing
+  MD024:         # duplicate headings — allowed when not siblings (e.g. "## 相关")
+    siblings_only: true
+  MD029: false   # ordered-list numbering style — mixed across step lists

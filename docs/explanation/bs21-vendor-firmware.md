@@ -166,10 +166,12 @@ a0–a3, result in a0) and resume at `ra`.
      unaffected.
 
    With these, flashboot runs **2953 insns** (was 723) through its full init and prints:
-   ```
+
+   ```text
    Flashboot Init! id = 0x0 / Power On / Reboot cause:0xF0F0 / Reboot count:0x0
    Flash Init ret = 0x80001341 / Load App Failed!
    ```
+
 8. **SFC flash ID fixed → flashboot LOADS the app and JUMPS to it (2026-06-09).** The
    `Flash Init ret=0x80001341` was a **flash-ID mismatch**: BS21's flashboot flash table
    is **GigaDevice** (`sfc_config_info_porting.c`: GD25LE80), and at `0x42122` it
@@ -177,13 +179,15 @@ a0–a3, result in a0) and resume at `ra`.
    but the shared `ws63-sfc` model answered RDID with WS63's Winbond W25Q16 (0x1560EF),
    so detection failed → error flag → 0x80001341. Made the SFC's RDID ID per-machine
    (`ws63_sfc_set_flash_id()`, default W25Q16; bs21.c sets `0x1460C8`). Now:
-   ```
+
+   ```text
    Flashboot Init! / Power On / Reboot cause:0xF0F0 / Reboot count:0x0
    Flash Init ret = 0x0 / No need to upgrade / Jump to addr = 0x90115300
    ```
+
    With the **full flash image** present (`bs21-build-flash.sh`, app @ flash 0x15000 →
    XIP 0x90115000), flashboot's flash detect ✓, upgrade-version check ✓, and it **loads
-   + jumps to the app at 0x90115300**. The app's RTOS startup then executes from XIP
+   and jumps to the app at 0x90115300**. The app's RTOS startup then executes from XIP
    (sets `mtvec`, clears `mstatus`/`mie`, programs the LOCI custom CSRs `0x7c2`/`0x7c3`,
    sets `gp` to DTCM `0x2000369c`). **flashboot's job is complete.** Reproduce:
    `bs21-vendor-boot.sh flashboot_sign_a.bin 8 0x40000 <full-flash.bin>` (the 4th arg is
@@ -358,17 +362,19 @@ a0–a3, result in a0) and resume at `ra`.
       target links securec against a **different** mask-ROM symbol file than bs20/bs22 —
       `rom_info/acore/acore.sym` (vsnprintf_s `0x3e962`) vs `acore_rom_n1200.sym`
       (`0x3ef92`). `bs21_rom_call` used the latter, so the app's real `vsnprintf_s` was
-      unmapped → the success-stub returned 0 with an empty buffer → `vsnprintf_s(...)="" `
+      unmapped → the success-stub returned 0 with an empty buffer → `vsnprintf_s(...)=""`
       → `UartPuts` returned early on `len==0` → no byte ever reached the UART. Repointed
       the securec cases to acore.sym + added `vsprintf_s`. Now the tcxo sample prints its
       full banner and **self-validates**:
-      ```
+
+      ```text
       Debug uart init succ! flash length:0x100000, version: bs21e 1.0.18
       APP|System Power On
       cpu 0 entering scheduler
       tcxo delay 1000ms!  ...  tcxo get ms work normall.
       tcxo delay 20000us! ...  tcxo get us work normall.   (loops)
       ```
+
       WS63 5/5 qtests + BS21 M1 green. **Milestone: a BS2X vendor peripheral sample boots
       AND produces validated UART output on `-M bs21`.** The print path is now unblocked
       for any future bare (non-connectivity) sample. Connectivity (§15) remains the
@@ -376,7 +382,7 @@ a0–a3, result in a0) and resume at `ra`.
 
 The infrastructure (CPU + xlinx [now incl. prefd + the muliadd imm fix + the ldmia/stmia
 bank selector] + memory map + UART/GPIO + SFC + flash1 + the disjoint-range ROM dispatch
-+ bs21_rom_call + the mask-ROM signature + the TCXO fix + the GigaDevice flash ID + the
+and bs21_rom_call + the mask-ROM signature + the TCXO fix + the GigaDevice flash ID + the
 32K-clock-detect status + the eFUSE v151 controller + the TCXO v150 16-bit count layout)
 is in place; **flashboot loads + jumps to the app, and the LiteOS app runs its full kernel
 init AND all clock/PMU/eFUSE/calibration bring-up crash-free**, then deliberately reboots
