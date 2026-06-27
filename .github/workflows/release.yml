@@ -184,6 +184,8 @@ jobs:
     # always(): publish whatever built even if the experimental Windows leg failed.
     if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
     steps:
+      - uses: actions/checkout@v5   # for CHANGELOG.md + the release-notes template
+
       - name: Download all host artifacts
         uses: actions/download-artifact@v4
         with:
@@ -201,6 +203,24 @@ jobs:
           (cd dist && sha256sum * > SHA256SUMS)
           ls -la dist
 
+      # Release notes = this tag's CHANGELOG section (if present) + the per-host
+      # download/install template. action-gh-release still appends GitHub's
+      # auto-generated "What's Changed" PR list (generate_release_notes: true).
+      - name: Build release notes from CHANGELOG + template
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          notes="$GITHUB_WORKSPACE/RELEASE_NOTES.md"
+          : > "$notes"
+          awk -v v="$ver" '
+            $0 ~ ("^## \\[" v "\\]") { p = 1; print; next }
+            p && /^## \[/ { exit }
+            p { print }
+          ' CHANGELOG.md >> "$notes" || true
+          if [ -s "$notes" ]; then printf '\n---\n\n' >> "$notes"; fi
+          sed "s/__QEMU_TAG__/${QEMU_TAG}/g" .github/release-template.md >> "$notes"
+          echo "==== RELEASE_NOTES.md ===="; cat "$notes"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -211,29 +231,4 @@ jobs:
             dist/qemu-system-riscv32-ws63-*
             dist/ws63-qemu-src-*.tar.gz
             dist/SHA256SUMS
-          body: |
-            ## WS63 / BS2X QEMU emulator (`-M ws63`, `-M bs21`, `-M bs21e`, `-M bs22`, `-M bs20`)
-
-            `qemu-system-riscv32` (fork of QEMU ${{ env.QEMU_TAG }}) with the HiSilicon
-            **WS63 / BS2X** machine models and the **xlinx custom RISC-V ISA**, so
-            unmodified vendor-compiled firmware runs without hardware.
-
-            ### Per-host downloads (runnable, libs bundled)
-            | Host | Asset |
-            |------|-------|
-            | Linux x86_64   | `hisi-riscv-qemu-x86_64-linux.tar.gz` |
-            | Linux aarch64  | `hisi-riscv-qemu-aarch64-linux.tar.gz` |
-            | macOS (Apple Silicon) | `hisi-riscv-qemu-aarch64-darwin.tar.gz` |
-            | Windows x86_64 | `hisi-riscv-qemu-x86_64-windows.zip` (experimental) |
-
-            Legacy `qemu-system-riscv32-ws63-*` (raw Ubuntu x86_64 binary) and the
-            OS-independent `ws63-qemu-src-*.tar.gz` source bundle (rebuild any host via
-            `scripts/build.sh`; this is how Intel-mac users build) are also attached.
-
-            **macOS:** binaries are unsigned — clear quarantine after extracting:
-            `xattr -dr com.apple.quarantine hisi-riscv-qemu-aarch64-darwin/`
-
-            ### Run
-            ```
-            ./qemu-system-riscv32 -M ws63 -nographic -serial mon:stdio -kernel <firmware.elf>
-            ```
+          body_path: ${{ github.workspace }}/RELEASE_NOTES.md
