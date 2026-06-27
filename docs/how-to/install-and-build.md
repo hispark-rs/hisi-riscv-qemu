@@ -1,7 +1,7 @@
 # 安装与构建仿真器
 
 本指南覆盖两条获得 `qemu-system-riscv32 -M ws63` 的路径：**下载预编译 Release**（最快）或**从源码构建**（可移植）。
-任选其一。第一次上手建议直接走 [快速上手教程](../tutorials/getting-started.md)。
+任选其一。第一次上手建议直接走教程 [环境准备与安装](../tutorials/01-install.md) → [跑通第一个固件](../tutorials/02-first-run.md)。
 
 ## 系统要求
 
