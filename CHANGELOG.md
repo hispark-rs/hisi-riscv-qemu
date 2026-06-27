@@ -8,6 +8,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-06-27
+
+On-silicon HIL bring-up surfaced six peripheral-model divergences (issues #2–#7,
+"modelled as X but silicon does Y"); this release aligns the models to silicon.
+
+### Changed
+
+- **DMA / TIMER / SDMA device models aligned to WS63 silicon:**
+  - **M_DMA (#5):** a transfer now also starts on the global channel-enable
+    register `DMAC_EN_CHNS` (DesignWare-style), and the channel's bit auto-clears
+    on single-block completion — the start/done path the vendor HAL and
+    silicon-faithful drivers use. The `CHN_CONFIG.ch_enable` start path is kept
+    for compatibility.
+  - **TIMER_V150 `CURRENT_VALUE` (#6):** now a latch refreshed by the
+    `cnt_req`/`cnt_lock` handshake (CONTROL bits 5/6), not a live counter — a raw
+    read without the handshake returns the stale snapshot, matching silicon (and
+    the vendor HAL, which always does the handshake).
+  - **SDMA (#7):** the secure DMA (`0x520A_0000`) is modelled as unprovisioned —
+    a transfer there never runs or completes (it would stall AXI and hang the bus
+    on silicon) and warns loudly. Vendor mem→mem always uses the primary M_DMA.
+- **Flash-clock-from-XIP hazard reproduced (#4):** switching the flash clock
+  (`CLDO_CRG_CLK_SEL` bit 18) while the CPU executes XIP from flash now disables
+  the flash XIP window so the next instruction fetch faults — reproducing the
+  silicon crash (SFC XIP timing invalidated → core + RISC-V DM hang) instead of
+  QEMU's false green. flashboot switches the flash clock from ITCM, so it is
+  unaffected.
+
+### Added
+
+- **UART / clock diagnostics (#2, #3):** the effective UART baud is logged on
+  divider writes, and `CLDO_CRG_CLK_SEL` writes note that clocks are modelled at
+  nominal (post-`clock_init`) rates — surfacing the wrong-clock/baud hazards QEMU
+  cannot otherwise reproduce. The clock-tree-at-nominal boundary (TCG does not
+  model CPU frequency; the chardev is not rate-limited; the PLL is locked by the
+  boot ROM that `-kernel` skips) is documented in `docs/explanation/limitations.md`
+  §6 (issue #3 closed as *not planned*).
+- New register-level qtests (`timer_current_latch`, `dma_en_chns_start`,
+  `sdma_unprovisioned`) and a smoke firmware (`xip_flash_clk_hazard`, from
+  ws63-examples) covering the above.
+
 ## [0.4.8] - 2026-06-27
 
 > This section consolidates everything notable since v0.3.0: the intermediate
@@ -261,7 +301,8 @@ vendor-compiled firmware without hardware.
 - **Tooling**: `scripts/{build,run,smoke-test,setup-deps}.sh`, a tag-triggered
   release workflow, and the `ROADMAP.md` / `docs/design.md` documentation set.
 
-[Unreleased]: https://github.com/hispark-rs/hisi-riscv-qemu/compare/v0.4.8...HEAD
+[Unreleased]: https://github.com/hispark-rs/hisi-riscv-qemu/compare/v0.4.9...HEAD
+[0.4.9]: https://github.com/hispark-rs/hisi-riscv-qemu/compare/v0.4.8...v0.4.9
 [0.4.8]: https://github.com/hispark-rs/hisi-riscv-qemu/compare/v0.3.0...v0.4.8
 [0.3.0]: https://github.com/hispark-rs/hisi-riscv-qemu/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/hispark-rs/hisi-riscv-qemu/compare/v0.1.0...v0.2.0
