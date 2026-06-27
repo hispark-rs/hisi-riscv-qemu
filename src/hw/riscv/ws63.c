@@ -1535,12 +1535,25 @@ static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned s
         /*
          * SDMA (the secure controller @0x520A0000) is NEVER provisioned by the
          * WS63 SDK (CONFIG_DMA_SUPPORT_SMDMA unset, g_sdma_base_addr unassigned):
-         * the block stays unclocked / security-gated, so a transfer issued at it
-         * stalls an AXI beat forever and drops the debug link. Model it as
-         * unprovisioned — never run a transfer, warn loudly. Vendor mem->mem
-         * always uses the primary M_DMA @0x4A000000. Issue #7.
+         * it stays unclocked / security-gated, so a real transfer there stalls an
+         * AXI beat forever and drops the debug link. Vendor mem->mem always uses
+         * the primary M_DMA @0x4A000000. We WARN loudly on any SDMA transfer but
+         * still execute it for now — an existing ws63-rs example (dma_loopback
+         * part2) drives SDMA ch8, so the hard "unprovisioned, never completes"
+         * model must land together with retargeting that example to M_DMA.
+         * Issue #7 (diagnostic; full no-op deferred).
          */
         bool secure = (s->base == 0x520A0000);
+        bool starts = (off == 0x10 && (v & 0xFF)) ||
+                      (off >= 0x100 && off < 0x100 + 8 * 0x20 &&
+                       ((off - 0x100) % 0x20) == 0x08 && (v & 1));
+        if (secure && starts) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                "ws63: SDMA @0x520A0000 transfer — the secure DMA is unprovisioned "
+                "on WS63 silicon (security-gated/unclocked); the same transfer would "
+                "stall AXI and hang the bus on hardware. Use M_DMA @0x4A000000. "
+                "Issue #7\n");
+        }
         if (off == 0x08) {                  /* DMAC_INT_CLR: int_trans_clr[0:7] / int_err_clr[8:15] */
             s->dma_done &= ~((v | (v >> 8)) & 0xFF); /* clear the channel on either field */
             if (s->dma_done == 0) {
@@ -1559,13 +1572,6 @@ static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned s
              * CHN_CONFIG.ch_enable, the computed EN_CHNS read returns 0 right after
              * = the auto-clear the silicon-faithful driver polls for. Issue #5.
              */
-            if (secure) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                    "ws63: SDMA @0x520A0000 EN_CHNS start ignored — secure DMA is "
-                    "unprovisioned on WS63 silicon (would stall AXI / hang the bus). "
-                    "Use the primary M_DMA @0x4A000000. Issue #7\n");
-                return;
-            }
             for (int c = 0; c < 8; c++) {
                 if (v & (1u << c)) {
                     ws63_dma_run(s, c);
@@ -1581,13 +1587,6 @@ static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned s
              * firmware + the qtest start this way, so keep it for compatibility.
              */
             s->shadow[(off / 4) % (WS63_PERIPH_MAXSIZE / 4)] = v;
-            if (secure) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                    "ws63: SDMA @0x520A0000 transfer ignored — secure DMA is "
-                    "unprovisioned on WS63 silicon (would stall AXI / hang). "
-                    "Use M_DMA @0x4A000000. Issue #7\n");
-                return;
-            }
             ws63_dma_run(s, (off - 0x100) / 0x20);
             return;
         }

@@ -56,7 +56,6 @@
 #define DMA_SRC      0x10
 #define DMA_CTRL     0x14   /* transfersize[0:11], swsize[18:20], dwsize[21:23],
                              * src_inc[26], dest_inc[27], tc_int_en[31] */
-#define SDMA_BASE    0x520A0000u   /* secure DMA: unprovisioned on WS63 silicon */
 
 /* Timer cnt_req/cnt_lock handshake bits (CONTROL bits 5/6) — issue #6. */
 #define TMR_CNT_REQ  (1u << 5)
@@ -203,31 +202,6 @@ static void test_dma_en_chns_start(void)
     qtest_quit(qts);
 }
 
-/* ---- SDMA @0x520A0000 is unprovisioned on WS63 silicon: never runs (issue #7) ---- */
-static void test_sdma_unprovisioned(void)
-{
-    QTestState *qts = qtest_init("-machine ws63");
-
-    const uint32_t src = SRAM_BASE + 0x5000;
-    const uint32_t dst = SRAM_BASE + 0x6000;
-    qtest_writel(qts, src, 0xcafef00du);
-    qtest_writel(qts, dst, 0x0);
-
-    qtest_writel(qts, SDMA_BASE + 0x100 + DMA_DST, dst);
-    qtest_writel(qts, SDMA_BASE + 0x100 + DMA_SRC, src);
-    qtest_writel(qts, SDMA_BASE + 0x100 + DMA_CTRL,
-                 1u | (2u << 18) | (2u << 21) | (1u << 26) | (1u << 27));
-
-    /* Neither start path runs on the secure controller. */
-    qtest_writel(qts, SDMA_BASE + 0x100 + DMA_CFG, 0x1);  /* CHN_CONFIG.ch_enable */
-    qtest_writel(qts, SDMA_BASE + DMA_EN_CHNS, 0x1);       /* EN_CHNS */
-
-    g_assert_cmphex(qtest_readl(qts, dst), ==, 0x0);             /* never copied */
-    g_assert_cmphex(qtest_readl(qts, SDMA_BASE + 0x0C) & 0x1, ==, 0x0); /* no done */
-
-    qtest_quit(qts);
-}
-
 /* ---- Timer CURRENT_VALUE is a latch refreshed by cnt_req/cnt_lock (issue #6) ---- */
 static void test_timer_current_latch(void)
 {
@@ -355,7 +329,6 @@ int main(int argc, char **argv)
     qtest_add_func("/ws63/timer_current_latch", test_timer_current_latch);
     qtest_add_func("/ws63/dma_mem2mem", test_dma_mem2mem);
     qtest_add_func("/ws63/dma_en_chns_start", test_dma_en_chns_start);
-    qtest_add_func("/ws63/sdma_unprovisioned", test_sdma_unprovisioned);
     qtest_add_func("/ws63/netmac", test_netmac);
     return g_test_run();
 }
