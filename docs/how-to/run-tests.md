@@ -1,7 +1,7 @@
 # 运行测试
 
-ws63-qemu 有三层测试，互补：**寄存器级 qtest**（免启动、毫秒级）、**真实固件冒烟**（整机启动 ws63-rs 各示例）、
-**C SDK 外设样例**（用厂商固件交叉验证）。本指南讲怎么各自跑起来。每层验证了什么、覆盖到哪，见
+ws63-qemu 有三层测试，互补：**寄存器级 qtest**（免启动、毫秒级）、**C SDK 外设样例**（仓库内预构建厂商固件）、
+**ws63-rs Rust 冒烟**（进阶/CI 覆盖）。本指南讲怎么各自跑起来。每层验证了什么、覆盖到哪，见
 [验证覆盖范围参考](../reference/verification.md)。
 
 ## 寄存器级 qtest（免启动回归）
@@ -15,16 +15,6 @@ bash scripts/qtest.sh          # 构建 tests/qtest/ws63-test 并运行（4 例,
 
 覆盖：GPIO 数据 set/clr/OEN/INT-EN 读写；UART FIFO/行状态复位值；timer 装载/使能/触发 + 经 INTC 投递
 IRQ 26（`qtest_irq_intercept_in`）；DMA 通道 0 mem→mem 搬运 + 完成位。
-
-## ws63-rs（Rust）冒烟
-
-`scripts/smoke-test.sh` 启动真实 ws63-rs 固件，端到端断言串口/MMIO 标志：
-
-```bash
-WS63_RS=../ws63-rs bash scripts/smoke-test.sh
-```
-
-固件列表与成功判据见 [验证覆盖范围 §ws63-rs 冒烟](../reference/verification.md#ws63-rsrust冒烟)。
 
 ## C SDK 外设样例
 
@@ -40,6 +30,17 @@ bash scripts/csdk-test.sh      # 当前 5/5 绿
 
 > 重新生成 fixture：`scripts/build-csdk-samples.sh`（从 fbb_ws63 checkout 选一个 `CONFIG_SAMPLE_SUPPORT_*`、
 > 干净构建、strip 到 ~400 KB）。
+
+## ws63-rs（Rust）冒烟
+
+`scripts/smoke-test.sh` 启动 ws63-rs Rust 固件，端到端断言串口/MMIO 标志。这是开发和 CI 验证路径，不是入门
+happy path；运行前需要先 checkout 并构建 `hisi-riscv-rs` 示例固件。
+
+```bash
+WS63_RS=../ws63-rs bash scripts/smoke-test.sh
+```
+
+固件列表与成功判据见 [验证覆盖范围 §ws63-rs 冒烟](../reference/verification.md#ws63-rsrust冒烟)。
 
 ## 在 CI 里跑的是什么
 

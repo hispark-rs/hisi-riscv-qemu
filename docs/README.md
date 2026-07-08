@@ -10,22 +10,23 @@
 | **理解某件事为什么这样**（设计取舍 / 边界 / 可行性） | [explanation/](explanation/) | 理解导向：背景与权衡的讨论 |
 
 > 项目是什么：在 **QEMU** 上仿真 HiSilicon **WS63**（RISC-V RV32IMFC，Wi-Fi 6 + BLE + SLE/星闪 SoC），
-> 用于无硬件运行 [`ws63-rs`](https://github.com/hispark-rs/hisi-riscv-rs) 裸机固件与 fbb_ws63 C SDK 厂商固件。
+> 用于无硬件运行仓库内预构建 fbb_ws63 C SDK 厂商固件，也可运行
+> [`ws63-rs`](https://github.com/hispark-rs/hisi-riscv-rs) 裸机固件做开发验证。
 > 项目级概览见仓库根的 [README.md](https://github.com/hispark-rs/hisi-riscv-qemu/blob/master/README.md)，规划见 [ROADMAP.md](https://github.com/hispark-rs/hisi-riscv-qemu/blob/master/ROADMAP.md)，变更见 [CHANGELOG.md](https://github.com/hispark-rs/hisi-riscv-qemu/blob/master/CHANGELOG.md)。
 
 ---
 
 ## 教程（Tutorials）— 学习导向
 
-- [教程 1：环境准备与安装](tutorials/01-install.md) —— 克隆仓库 → 装依赖 → 构建仿真器 → 装 Rust 工具链。
-- [教程 2：跑通第一个固件](tutorials/02-first-run.md) —— 构建 blinky → 运行 → 看到输出。
+- [教程 1：环境准备与安装](tutorials/01-install.md) —— 克隆仓库 → 装依赖 → 构建仿真器。
+- [教程 2：跑通第一个固件](tutorials/02-first-run.md) —— 运行预构建固件 → 看到输出。
 
 ## 操作指南（How-to）— 任务导向
 
 - [安装与构建仿真器](how-to/install-and-build.md) —— 下载预编译 Release，或从源码构建。
 - [运行固件](how-to/run-firmware.md) —— `run.sh` 用法、运行 C SDK app、用 `NV=1` 回填分区表/NV。
 - [调试与追踪](how-to/debug-and-trace.md) —— GDB（`-s -S`）、trace 事件、`qemu.log`。
-- [运行测试](how-to/run-tests.md) —— 寄存器级 qtest、真实固件冒烟、C SDK 样例。
+- [运行测试](how-to/run-tests.md) —— 寄存器级 qtest、C SDK fixture、Rust 冒烟。
 - [扩展掩膜 ROM 桩](how-to/extend-rom-stubs.md) —— 确认并新增一个 ROM 函数仿真。
 - [移植到新的 QEMU 版本](how-to/port-qemu-version.md) —— 为新 tag 补一套 patch-series。
 
@@ -37,7 +38,7 @@
 - [xlinx 自定义 ISA](reference/xlinx-isa.md) —— HiSilicon 私有指令编码与语义。
 - [掩膜 ROM 桩目录](reference/rom-stubs.md) —— 已仿真的 ROM 函数与设备桩清单。
 - [运行选项](reference/run-options.md) —— `run.sh` 环境变量与 QEMU 命令行。
-- [验证覆盖范围](reference/verification.md) —— CI 门禁、冒烟固件、C SDK 样例、覆盖边界。
+- [验证覆盖范围](reference/verification.md) —— CI 门禁、C SDK fixture、Rust 冒烟、覆盖边界。
 
 ## 解释（Explanation）— 理解导向
 
@@ -68,5 +69,6 @@
 
 ---
 
-真值来源：内存布局 = `ws63-rs/ws63-rt/{memory.x,layout.ld}`；外设基址/寄存器 = `ws63-rs/ws63-pac/ws63-svd/WS63.svd`；
-寄存器行为 = fbb_ws63 C SDK `hal_*_regs_def.h`。
+真值来源：内存布局 = `ws63-rs/ws63-rt/{memory.x,layout.ld}` 与 fbb_ws63 C SDK 板级配置相互对齐；
+外设基址/寄存器 = `ws63-rs/ws63-pac/ws63-svd/WS63.svd`；寄存器行为 = fbb_ws63 C SDK `hal_*_regs_def.h` +
+`ws63-rs` HAL 交叉验证。

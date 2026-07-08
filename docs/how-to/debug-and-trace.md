@@ -45,7 +45,7 @@ WS63 模型用 QEMU 正规 trace 事件暴露关键行为：
 | `ws63_gpio_set` / `ws63_gpio_clr` | GPIO 输出脚拉高 / 拉低 |
 | `ws63_dma_xfer` | DMA 通道搬运一次 |
 
-`smoke-test.sh` 即据 `ws63_gpio_*` 断言 blinky 的 GPIO 翻转。
+Rust 进阶冒烟里的 `smoke-test.sh` 即据 `ws63_gpio_*` 断言 blinky 的 GPIO 翻转。
 
 ## 典型排查路径
 

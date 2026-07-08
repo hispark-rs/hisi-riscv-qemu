@@ -8,7 +8,7 @@
 bash scripts/run.sh [firmware.elf] [额外 qemu 参数...]
 ```
 
-- 不带 `firmware.elf` 时默认跑 ws63-rs 的 `blinky`。
+- 不带 `firmware.elf` 时默认跑仓库内预构建 fixture：`tests/csdk/dma.elf`。
 - 额外参数原样透传给 QEMU（如 `-s -S`）。
 
 直接调用：
@@ -34,7 +34,7 @@ bash scripts/run.sh [firmware.elf] [额外 qemu 参数...]
 | 变量 | 作用 | 默认 |
 |------|------|------|
 | `QEMU_DIR` / `QEMU_BIN` | 仿真器位置 | `<repo>/qemu` |
-| `WS63_RS` | 取默认 blinky ELF 用的 ws63-rs 路径 | `../ws63-rs` |
+| `DEFAULT_ELF` | 无参运行时使用的固件 ELF | `tests/csdk/dma.elf` |
 | `FLASH_DIR` | NV overlay 目录 | `tests/csdk/flash/` |
 | `QEMU_TAG` | 构建用的 QEMU tag | `v10.0.0` |
 | `JOBS` | 构建并行度 | `nproc` |
@@ -55,6 +55,9 @@ bash scripts/run.sh [firmware.elf] [额外 qemu 参数...]
 ## 示例
 
 ```bash
+bash scripts/run.sh                         # 运行默认预构建 C SDK fixture
+bash scripts/run.sh tests/csdk/adc.elf      # 显式运行另一个 fixture
+DEFAULT_ELF=tests/csdk/tcxo.elf bash scripts/run.sh
 ICOUNT=1 bash scripts/run.sh fw.elf          # 可复现计时
 NV=1 bash scripts/run.sh ws63-liteos-app.elf # C SDK app + 分区表/NV
 DEBUG=1 bash scripts/run.sh fw.elf           # 写 qemu.log 追踪

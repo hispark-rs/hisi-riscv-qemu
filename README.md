@@ -1,7 +1,8 @@
 # ws63-qemu
 
 在 **QEMU** 上仿真 HiSilicon **WS63**（RISC-V RV32IMFC，Wi-Fi 6 + BLE + SLE/星闪 SoC），
-用于无硬件运行 [`ws63-rs`](https://github.com/hispark-rs/hisi-riscv-rs) 裸机固件。
+用于无硬件运行仓库内预构建厂商固件，也可运行 [`ws63-rs`](https://github.com/hispark-rs/hisi-riscv-rs)
+裸机固件做开发验证。
 
 仿照 [esp-qemu](https://github.com/espressif/qemu) 的做法：fork 一个固定版本的 QEMU，加入一个
 in-tree 板卡文件 `hw/riscv/ws63.c`（WS63 机器模型 + 自定义 UART），只构建 `riscv32-softmmu`。
@@ -29,23 +30,30 @@ bash scripts/setup-deps.sh
 bash scripts/build.sh
 #   产物：./qemu/build/qemu-system-riscv32，且 `-M help` 含 "ws63"
 
-# 3. 用 ws63 工具链构建固件（在 ws63-rs 仓库中）
-cd ../ws63-rs && cargo build -p blinky --release && cd -
-
-# 4. 运行
-bash scripts/run.sh                 # 默认跑 ws63-rs 的 blinky
-bash scripts/run.sh ../ws63-rs/target/riscv32imfc-unknown-none-elf/release/uart_hello
-bash scripts/run.sh ../ws63-rs/target/riscv32imfc-unknown-none-elf/release/timer_irq  # 定时器中断
+# 3. 运行仓库自带的预构建 C SDK 固件（默认 tests/csdk/dma.elf）
+bash scripts/run.sh
+bash scripts/run.sh tests/csdk/adc.elf
 #   退出 QEMU：Ctrl-A 然后 X
 
-# 5. 一键冒烟（启动真实固件：ws63-rs 各示例 + C SDK 样例）
+# 4. 一键跑仓库内 C SDK 外设样例回归
+bash scripts/csdk-test.sh
+
+# 可选：运行 ws63-rs Rust 固件做扩展验证
+cd ../ws63-rs && cargo build -p uart_hello --release && cd -
 WS63_RS=../ws63-rs bash scripts/smoke-test.sh
+```
 
-# 6. 寄存器级 qtest（免启动，直接驱动 GPIO/UART/timer/INTC/DMA 模型）
-bash scripts/qtest.sh
+Rust 固件路径始终也可以显式传给 `run.sh`：
 
-# semihosting：固件用 SYS_EXIT 设置 QEMU 退出码（CI 免解析 UART 即得 pass/fail）
+```bash
+bash scripts/run.sh ../ws63-rs/target/riscv32imfc-unknown-none-elf/release/uart_hello
 SEMIHOST=1 bash scripts/run.sh ../ws63-rs/target/riscv32imfc-unknown-none-elf/release/semihost_selftest
+```
+
+寄存器级 qtest 免启动固件，直接驱动 GPIO/UART/timer/INTC/DMA 模型：
+
+```bash
+bash scripts/qtest.sh
 ```
 
 直接调用：
@@ -95,7 +103,7 @@ ws63-qemu/
 │   ├── setup-deps.sh        # 安装构建依赖（含 libslirp-dev）
 │   ├── build.sh             # 克隆 QEMU@$QEMU_TAG + 拷源文件 + apply patches/$QEMU_TAG/ + 构建（幂等）
 │   ├── run.sh               # 运行固件 ELF（DEBUG/ICOUNT/NV/SEMIHOST 开关）
-│   ├── smoke-test.sh        # 启动真实固件冒烟（ws63-rs 各示例 + C SDK）
+│   ├── smoke-test.sh        # 启动 ws63-rs Rust 固件冒烟（进阶验证）
 │   ├── csdk-test.sh         # C SDK 外设样例回归
 │   └── qtest.sh             # 寄存器级 qtest 运行器
 ├── tests/csdk/              # 预构建 C SDK 样例 ELF + flash/NV 镜像（测试夹具）
@@ -105,9 +113,9 @@ ws63-qemu/
 
 ## 真值来源
 
-- 内存布局：`ws63-rs/ws63-rt/{memory.x,layout.ld}`（固件链接地址）。
+- 内存布局：`ws63-rs/ws63-rt/{memory.x,layout.ld}` 与 fbb_ws63 C SDK 板级配置相互对齐。
 - 外设基址 / 寄存器：`ws63-rs/ws63-pac/ws63-svd/WS63.svd`（svd 现为 ws63-pac 的嵌套子模块）。
-- UART 行为：`ws63-rs/ws63-hal/src/uart.rs` + fbb_ws63 `hal_uart_v151_regs_def.h`。
+- 寄存器行为：fbb_ws63 C SDK `hal_*_regs_def.h` + `ws63-rs` HAL 交叉验证。
 
 ## 许可
 

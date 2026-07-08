@@ -12,7 +12,8 @@
 # fight gdb for the terminal — `tail -f` it in another window if you need it.
 #
 # Env overrides:
-#   QEMU_DIR / QEMU_BIN / WS63_RS  (as in run.sh)
+#   QEMU_DIR / QEMU_BIN  QEMU location (same meaning as run.sh)
+#   WS63_RS              hisi-riscv-rs checkout for resolving bare example names
 #   PORT            gdbstub TCP port (default 1234)
 #   RUST_GDB        gdb binary rust-gdb drives (default gdb-multiarch; plain `gdb`
 #                   usually can't do riscv:rv32). `apt-get install gdb-multiarch`.

@@ -9,29 +9,12 @@ ws63-qemu「覆盖」分三层：**持续 CI 验证**（每次提交都跑）、
 
 1. 构建 `qemu-system-riscv32`（带 WS63 机器）；
 2. **机器注册** sanity（`-M help` 含 ws63）；
-3. **ws63-rs 冒烟**（`smoke-test.sh`，见下）；
-4. **C SDK 外设样例**（`csdk-test.sh`，见下，**5/5**）；
+3. **C SDK 外设样例**（`csdk-test.sh`，见下，**5/5**，使用仓库内预构建 fixture）；
+4. **ws63-rs 冒烟**（`smoke-test.sh`，见下，进阶/CI 覆盖）；
 5. **寄存器级 qtest**（`qtest.sh`，免启动驱动 GPIO/UART/timer/INTC/DMA，**4/4**）。
 
 `release.yml`（打 `v*` tag 时）额外做全新构建 + 冒烟，然后发布二进制。
 `qtest-matrix.yml` 在每个有 `patches/<tag>/` 的 QEMU 版本上跑 qtest（v9.2.4 + v10.0.0 + v10.2.3 + v11.0.1 全绿）。
-
-## ws63-rs（Rust）冒烟
-
-`scripts/smoke-test.sh`（真值见脚本）；每条都是端到端、断言串口/MMIO 标志：
-
-| 固件 | 验证什么 | 成功判据 |
-|------|----------|----------|
-| `blinky` | GPIO0 输出翻转 + xlinx/启动正确 | 0 非法指令陷阱 + 观察到 GPIO 翻转（pin0 拉高）|
-| `uart_hello` | 自定义 UART0 TX | 串口打印 `Hello from WS63 on QEMU!` |
-| `timer_irq` | TIMER_0→**IRQ 26**→ISR（mie 类中断）| 串口 `timer irq #N` 递增 + `OK: timer interrupts delivered` |
-| `gpio_irq` | GPIO0→**IRQ 33**→ISR（**≥32 自定义本地中断**）| 串口 `gpio irq #N` + `OK: custom local IRQ (>=32) delivered` |
-| `reset_demo` | `software_reset()` + `reset_reason()` 往返 | 重启 ≥2 次 + `OK: software reset observed`（reset_reason=Software）|
-| `dma_loopback` | mem↔SPI0 外设 DMA + SDMA 通道 | `DMA LOOPBACK TEST: PASS` |
-| `wifi_blob_link` | 链接 `libwifi_rom_data.a` + 重定位 | `BLOB LINK SPIKE: PASS` |
-| `rf_port_demo` | ws63-rf-rs porting 层 + blob 经其链接 | `RF PORT DEMO: PASS` |
-| `sched_selftest` | ws63-rf-rs 协作调度器（上下文切换 + 信号量）| `SCHED SELFTEST: PASS` |
-| `semihost_selftest` | semihosting 退出码（M/F/Zicsr 自检）| **QEMU 退出码 0**（免解析 UART;见 [运行选项](run-options.md) `SEMIHOST`）|
 
 ## C SDK 外设样例
 
@@ -56,6 +39,24 @@ ws63-qemu「覆盖」分三层：**持续 CI 验证**（每次提交都跑）、
 
 > 重新生成 fixture：`scripts/build-csdk-samples.sh`（从 fbb_ws63 checkout 选一个 `CONFIG_SAMPLE_SUPPORT_*`、
 > 干净构建、strip 到 ~400 KB）。
+
+## ws63-rs（Rust）冒烟
+
+`scripts/smoke-test.sh`（真值见脚本）属于进阶/CI 验证路径，入门不需要相邻的 `hisi-riscv-rs` checkout。每条都是端到端、
+断言串口/MMIO 标志：
+
+| 固件 | 验证什么 | 成功判据 |
+|------|----------|----------|
+| `blinky` | GPIO0 输出翻转 + xlinx/启动正确 | 0 非法指令陷阱 + 观察到 GPIO 翻转（pin0 拉高）|
+| `uart_hello` | 自定义 UART0 TX | 串口打印 `Hello from WS63 on QEMU!` |
+| `timer_irq` | TIMER_0→**IRQ 26**→ISR（mie 类中断）| 串口 `timer irq #N` 递增 + `OK: timer interrupts delivered` |
+| `gpio_irq` | GPIO0→**IRQ 33**→ISR（**≥32 自定义本地中断**）| 串口 `gpio irq #N` + `OK: custom local IRQ (>=32) delivered` |
+| `reset_demo` | `software_reset()` + `reset_reason()` 往返 | 重启 ≥2 次 + `OK: software reset observed`（reset_reason=Software）|
+| `dma_loopback` | mem↔SPI0 外设 DMA + SDMA 通道 | `DMA LOOPBACK TEST: PASS` |
+| `wifi_blob_link` | 链接 `libwifi_rom_data.a` + 重定位 | `BLOB LINK SPIKE: PASS` |
+| `rf_port_demo` | ws63-rf-rs porting 层 + blob 经其链接 | `RF PORT DEMO: PASS` |
+| `sched_selftest` | ws63-rf-rs 协作调度器（上下文切换 + 信号量）| `SCHED SELFTEST: PASS` |
+| `semihost_selftest` | semihosting 退出码（M/F/Zicsr 自检）| **QEMU 退出码 0**（免解析 UART;见 [运行选项](run-options.md) `SEMIHOST`）|
 
 ## 外设建模覆盖
 

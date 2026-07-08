@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Run a hisi-riscv-rs firmware ELF on the WS63 QEMU machine.
+# Run a firmware ELF on the WS63 QEMU machine.
 #
 # Usage:
 #   scripts/run.sh <firmware.elf> [extra qemu args...]
-#   scripts/run.sh                      # defaults to the hisi-riscv-rs blinky ELF
+#   scripts/run.sh                      # defaults to a prebuilt C SDK fixture
 #
 # Env overrides:
 #   QEMU_DIR      (default <repo>/qemu)     location of the built QEMU
-#   WS63_RS       (default ../hisi-riscv-rs)      hisi-riscv-rs checkout (for the default ELF)
+#   DEFAULT_ELF   (default tests/csdk/dma.elf)    default firmware when no ELF is given
 #   DEBUG=1       add `-d int,guest_errors -D qemu.log` for tracing
 #   ICOUNT=1      deterministic instruction-counted timing (`-icount shift=N`):
 #                 reproducible run-to-run, IPC=1 at ~250 MHz. NOT cycle-accurate.
@@ -18,17 +18,17 @@
 #   SEMIHOST=1    enable RISC-V semihosting (-semihosting): firmware can call
 #                 SYS_EXIT to set the QEMU process exit code (pass/fail for CI
 #                 without UART scraping) and SYS_WRITE0 to print to the console.
-#                 See hisi-riscv-rs ws63-examples/semihost_selftest.
+#                 See the ws63-rs semihost_selftest example.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QEMU_DIR="${QEMU_DIR:-$HERE/qemu}"
 QEMU_BIN="${QEMU_BIN:-$QEMU_DIR/build/qemu-system-riscv32}"
-WS63_RS="${WS63_RS:-$HERE/../hisi-riscv-rs}"
+DEFAULT_ELF="${DEFAULT_ELF:-$HERE/tests/csdk/dma.elf}"
 
 ELF="${1:-}"
 if [ -z "$ELF" ]; then
-    ELF="$WS63_RS/target/riscv32imfc-unknown-none-elf/release/blinky"
+    ELF="$DEFAULT_ELF"
     echo "==> no ELF given, defaulting to $ELF"
 fi
 shift || true

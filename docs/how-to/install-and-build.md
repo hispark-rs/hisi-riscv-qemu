@@ -93,9 +93,31 @@ bash scripts/build.sh
 
 ## 准备固件
 
-仿真器本身不含固件，你需要一个 **ELF** 来跑。两条路径：
+仿真器运行任意 WS63 ELF。入门和测试不需要另准备固件：仓库已经带了预构建 fixture；自行构建 C SDK 或 Rust 固件是进阶路径。
 
-**(a) ws63-rs（Rust 裸机）** —— 需要 `hisi-riscv` 自定义 Rust 工具链（rv32imfc 硬浮点、无原子，内置为 builtin
+**(a) 仓库自带预构建 C SDK fixture** —— `tests/csdk/` 里提交了 fbb_ws63 C SDK 外设样例 ELF，可直接运行：
+
+```bash
+bash scripts/run.sh                 # 默认 tests/csdk/dma.elf
+bash scripts/run.sh tests/csdk/adc.elf
+DEFAULT_ELF=tests/csdk/tcxo.elf bash scripts/run.sh
+```
+
+这些 fixture 由 `scripts/csdk-test.sh` 在 CI 中使用，适合做 happy path 和外设模型回归。
+
+**(b) fbb_ws63 C SDK（厂商 gcc）** —— 用 [`hispark-rs/fbb_ws63-qemu`](https://github.com/hispark-rs/fbb_ws63-qemu)
+（fbb_ws63 C SDK 的 QEMU 适配 fork，已为本仿真器预裁剪 BT/WiFi），SDK 内置工具链：
+
+```bash
+# 在 fbb_ws63-qemu 仓库中
+cd src && python3 build.py ws63-liteos-app -c -ninja
+#   产物:output/ws63/acore/ws63-liteos-app/ws63-liteos-app.elf
+```
+
+> 重新生成本仓库测试 fixture：`scripts/build-csdk-samples.sh`（从 fbb_ws63 checkout 选一个
+> `CONFIG_SAMPLE_SUPPORT_*`、干净构建、strip 到约 400 KB）。
+
+**(c) ws63-rs（Rust 裸机）** —— 需要 `hisi-riscv` 自定义 Rust 工具链（rv32imfc 硬浮点、无原子，内置为 builtin
 target）。**先装好基础 Rust 环境（[rustup](https://rustup.rs/)）**——本工具链以 rustup 工具链形式安装，依赖 rustup；
 若已装过可跳过。安装方式与上游 hisi-riscv-rs 一致（解压进 rustup 的 toolchains 目录，自动识别，无需 `toolchain link`）：
 
@@ -112,18 +134,6 @@ cargo build -p blinky --release
 
 > 工具链安装的权威步骤与各平台细节以上游为准：
 > [hisi-riscv-rs · 安装 hisi-riscv 工具链](https://hispark-rs.github.io/hisi-riscv-rs/tutorials/app/01-setup.html#第-1-步安装-hisi-riscv-工具链)。
-
-**(b) fbb_ws63 C SDK（厂商 gcc）** —— 用 [`hispark-rs/fbb_ws63-qemu`](https://github.com/hispark-rs/fbb_ws63-qemu)
-（fbb_ws63 C SDK 的 QEMU 适配 fork，已为本仿真器预裁剪 BT/WiFi），SDK 内置工具链：
-
-```bash
-# 在 fbb_ws63-qemu 仓库中
-cd src && python3 build.py ws63-liteos-app -c -ninja
-#   产物:output/ws63/acore/ws63-liteos-app/ws63-liteos-app.elf
-```
-
-> 跑 C SDK app **不需要**自己装工具链来用仓库自带的测试 fixture——`tests/csdk/` 里已有预编译样例
-> ELF，见 [运行测试 §C SDK 样例](run-tests.md#c-sdk-外设样例)。
 
 ## QEMU 官方文档
 
