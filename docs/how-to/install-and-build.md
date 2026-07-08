@@ -6,6 +6,8 @@
 ## 系统要求
 
 - **OS**：Linux（主要在 Ubuntu/Debian x86_64 上验证）；其他平台请走「从源码构建」。
+- **默认测试范围**：happy path 只覆盖仍处于官方维护周期内的 Ubuntu/Debian。Ubuntu 以标准维护期为准，
+  不含 Ubuntu Pro / ESM / Legacy add-on 等延长服务；Debian 不含 ELTS 等延长支持。
 - **磁盘**：QEMU 源码树 + 构建产物约 **2 GB**。
 - **首次构建耗时**：约 **10–20 分钟**（`build.sh` 只构建 `riscv32-softmmu` 单目标）。
 - **运行时**：仅需 `qemu-system-riscv32` 二进制（动态依赖 glib/pixman）。
