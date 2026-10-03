@@ -13,7 +13,7 @@ name: release
 # added alongside.
 #
 # NOTE: there is no free Intel-macOS GitHub runner anymore (macos-13 retired
-# 2025-12-08), so x86_64-darwin is not built; Apple-Silicon (macos-14) covers
+# 2025-12-08), so x86_64-darwin is not built; Apple-Silicon (macos-15) covers
 # macOS, and Intel-mac users can build from the source bundle via scripts/build.sh.
 on:
   push:
@@ -46,7 +46,7 @@ jobs:
             runner: ubuntu-24.04-arm
             shell: bash
           - host: aarch64-darwin
-            runner: macos-14
+            runner: macos-15
             shell: bash
           - host: x86_64-windows
             runner: windows-latest
@@ -181,8 +181,10 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
-    # always(): publish whatever built even if the experimental Windows leg failed.
-    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
+    # A failed required leg (including macOS) must block publication so the
+    # release cannot be created with a missing host artifact. The experimental
+    # Windows leg remains non-blocking through its matrix continue-on-error.
+    if: ${{ needs.build.result == 'success' && startsWith(github.ref, 'refs/tags/') }}
     steps:
       - uses: actions/checkout@v5   # for CHANGELOG.md + the release-notes template
 
