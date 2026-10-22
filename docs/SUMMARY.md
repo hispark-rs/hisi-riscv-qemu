@@ -15,6 +15,7 @@
 - [参考](reference/index.md)
   - [内存映射与外设基址](reference/memory-map.md)
   - [机器模型](reference/machine-model.md)
+  - [WS53 RAM 实验模型](reference/ws53-ram.md)
   - [外设建模矩阵](reference/peripheral-matrix.md)
   - [xlinx 自定义 ISA](reference/xlinx-isa.md)
   - [掩膜 ROM 桩目录](reference/rom-stubs.md)

@@ -4,6 +4,7 @@
 
 - [内存映射与外设基址](memory-map.md) —— 内存区域 + 各外设 `baseAddress`。
 - [机器模型](machine-model.md) —— 机器组件、自定义 UART 寄存器布局、中断控制器 CSR 与 IRQ 号。
+- [WS53 RAM 实验模型](ws53-ram.md) —— 应用核 MCU 模式 1、UART/定时器验证与未实现范围。
 - [外设建模矩阵](peripheral-matrix.md) —— 全部 35 个外设的建模状态。
 - [xlinx 自定义 ISA](xlinx-isa.md) —— HiSilicon 私有指令编码与语义。
 - [掩膜 ROM 桩目录](rom-stubs.md) —— 已仿真的 ROM 函数与设备桩清单。
