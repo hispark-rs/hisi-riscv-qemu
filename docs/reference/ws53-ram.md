@@ -5,8 +5,9 @@ environment, not a flash-bootable product or the vendor control-core firmware.
 Supported build pin: QEMU v10.0.0 (`7c949c53e936aa3a658d84ab53bae5cadaa5d59c`).
 
 Mapped regions: acore ITCM `0x20000..0x30000`, DTCM
-`0x20010000..0x20060000`, three basic UARTs, two 32 MHz timers, local interrupt
-controller/custom CSRs. There are no catch-all MMIO absorbers, flash/ROM stubs,
+`0x20010000..0x20060000`, three basic UARTs, two 32 MHz timers, three GPIO banks,
+MCU/AON/TZPC pad controls and local interrupt controller/custom CSRs.
+There are no catch-all MMIO absorbers, flash/ROM stubs,
 shared-memory aliases or fake control-core responses.
 
 The 32 MHz rate follows the pinned SDK application `dev_work_clock_init()`;
@@ -102,7 +103,31 @@ also reports unimplemented rather than silently pretending to filter input.
 Fifteen negative accesses/signals enforce this. Only debounce-disabled operation
 is exercised. These qtests alone are not Rust GPIO ISR proof.
 
-The optional `gpio-smoke` RAM image exercises the HAL's borrowed Input/Output
+The default machine connects the three GPIO banks through `ws53-pinctrl`.
+The SDK-derived fixture covers 31 canonical pads and 30 GPIO routes across MCU,
+AON and TZPC register domains. Mode 0 routes GPIO; input-enable gates sampling,
+pulls resolve undriven inputs, and an external driver overrides a weak pull.
+The model exposes level, drive-enable, floating and contention signals. A
+conflict deterministically resolves to the GPIO output and floating resolves
+low; neither rule predicts an analog voltage. Drive and Schmitt codes are
+retained without modeling current or hysteresis. Unsupported encodings/accesses
+are diagnosed and rejected. Valid alternate modes disconnect GPIO but diagnose
+the unimplemented peripheral route; UART chardevs remain independent test paths.
+
+The reset profile selects GPIO, enables inputs and removes pulls, retaining
+external driver state. It is a RAM-test profile, not a silicon reset claim.
+RST_N chip reset, clock gating, low-power halfword access and alternate UART/SPI/
+SDIO signal routing remain unimplemented. `-M ws53,gpio-direct=on` disconnects
+the pad model only for isolated GPIO register tests. The integrated tests check
+ten behavior classes plus eleven expected unsupported-access diagnostics.
+
+The optional `gpio-smoke` RAM image first configures all 28 non-debug, non-reset
+pads through HAL PAC accessors. Each `WS53 PAD NN READY` handshake checks the
+target mux/pad addresses against the independently SDK-checked fixture. Input
+disabled rejects GPIO ownership transfer; enabled mode 0 allows it. These full
+pad sweeps are simulation-only and must never be run on the physical board.
+
+The image then exercises the HAL's borrowed Input/Output
 drivers and `embedded-hal` digital traits on GPIO0 bit2, GPIO1 bit3 and GPIO2
 bit2. `scripts/ws53_gpio_ram_test.py` supplies external digital inputs through
 qtest and synchronizes with UART2. The 66 ordered stages verify output preload,

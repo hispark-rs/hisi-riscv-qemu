@@ -23,6 +23,7 @@
 #include "hisi_riscv31.h"
 #include "ws53_uart.c.inc"
 #include "ws53_gpio.c.inc"
+#include "ws53_pinctrl.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -44,6 +45,7 @@ struct WS53MachineState {
     RISCVCPU cpu;
     MemoryRegion itcm, dtcm, timer_mmio;
     WS53TimerChannel timers[2];
+    bool gpio_direct;
 };
 
 static void ws53_timer_irq(WS53TimerChannel *c)
@@ -192,6 +194,13 @@ static void ws53_init(MachineState *machine)
         sysbus_connect_irq(SYS_BUS_DEVICE(uart), 0, qdev_get_gpio_in(intc, irqs[i]));
     }
     const hwaddr gpio_bases[] = { 0x5700c000, 0x57028000, 0x57010000 };
+    DeviceState *pinctrl = qdev_new(TYPE_WS53_PINCTRL);
+    object_property_add_child(OBJECT(machine), "pinctrl", OBJECT(pinctrl));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(pinctrl), &error_fatal);
+    const hwaddr pin_bases[] = { 0x52008000, 0x57036000, 0x5703a000 };
+    for (unsigned i = 0; i < 3; i++) {
+        sysbus_mmio_map(SYS_BUS_DEVICE(pinctrl), i, pin_bases[i]);
+    }
     const unsigned gpio_irqs[] = { 34, 33, 29 };
     const unsigned gpio_widths[] = { 23, 12, 3 };
     for (unsigned i = 0; i < 3; i++) {
@@ -202,6 +211,18 @@ static void ws53_init(MachineState *machine)
         sysbus_realize_and_unref(SYS_BUS_DEVICE(gpio), &error_fatal);
         sysbus_mmio_map(SYS_BUS_DEVICE(gpio), 0, gpio_bases[i]);
         sysbus_connect_irq(SYS_BUS_DEVICE(gpio), 0, qdev_get_gpio_in(intc, gpio_irqs[i]));
+        if (!s->gpio_direct) {
+            for (unsigned j = 0; j < ARRAY_SIZE(ws53_pad_desc); j++) {
+                const WS53PadDesc *d = &ws53_pad_desc[j];
+                if (d->bank != i) { continue; }
+                qdev_connect_gpio_out_named(gpio, "out", d->bit,
+                    qdev_get_gpio_in_named(pinctrl, "gpio-out", d->id));
+                qdev_connect_gpio_out_named(gpio, "output-enable", d->bit,
+                    qdev_get_gpio_in_named(pinctrl, "gpio-oe", d->id));
+                qdev_connect_gpio_out_named(pinctrl, "gpio-in", d->id,
+                    qdev_get_gpio_in_named(gpio, "pin", d->bit));
+            }
+        }
     }
     if (machine->kernel_filename &&
         load_elf(machine->kernel_filename, NULL, NULL, NULL, &entry, NULL,
@@ -217,6 +238,14 @@ static void ws53_init(MachineState *machine)
     qemu_register_reset(ws53_reset, s);
 }
 
+static bool ws53_get_gpio_direct(Object *obj, Error **errp)
+{
+    return WS53_MACHINE(obj)->gpio_direct;
+}
+static void ws53_set_gpio_direct(Object *obj, bool value, Error **errp)
+{
+    WS53_MACHINE(obj)->gpio_direct = value;
+}
 static void ws53_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -225,6 +254,9 @@ static void ws53_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
     mc->max_cpus = 1;
     mc->default_cpu_type = TYPE_RISCV_CPU_WS63;
     mc->default_ram_size = 0;
+    object_class_property_add_bool(oc, "gpio-direct", ws53_get_gpio_direct, ws53_set_gpio_direct);
+    object_class_property_set_description(oc, "gpio-direct",
+        "Bypass pad routing for isolated GPIO register-contract tests only");
 }
 
 static const TypeInfo ws53_type = {
@@ -237,6 +269,7 @@ static void ws53_register_types(void)
 {
     type_register_static(&ws53_uart_type);
     type_register_static(&ws53_gpio_type);
+    type_register_static(&ws53_pinctrl_type);
     type_register_static(&ws53_type);
 }
 type_init(ws53_register_types)

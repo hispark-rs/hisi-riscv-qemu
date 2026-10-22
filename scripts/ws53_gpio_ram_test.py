@@ -14,6 +14,10 @@ from ws53_gpio_test import connect, BANKS
 
 def gpio_ram_test(qemu, elf, all_features=False):
     transcript = []
+    fixture = Path(__file__).resolve().parents[1] / "tests/fixtures/ws53-pins.csv"
+    pads = [list(map(int, line.split(",")[1:])) for line in fixture.read_text().splitlines()
+            if line.startswith("PAD,")]
+    pads = [row for row in pads if row[0] not in (44, 45, 46)]
     stages = [(bank, stage, step) for bank in range(3) for stage, step in (
         [("HIGH", 0), ("LOW", 0), ("HIGH", 1), ("RELEASED", 0), ("INPUT", 0)]
         + [(stage, step) for step in range(6) for stage in ("BASE", "ARM")]
@@ -53,6 +57,7 @@ def gpio_ram_test(qemu, elf, all_features=False):
                 if all_features:
                     stream.write(b"\x00\xffWS53-RX\n")
                 cursor = 0
+                pad_cursor = 0
                 while True:
                     line = stream.readline().decode().strip()
                     assert line, ("EOF", transcript)
@@ -60,7 +65,18 @@ def gpio_ram_test(qemu, elf, all_features=False):
                     assert "FAIL" not in line, transcript
                     if line.startswith("WS53 PASS gpio_banks="):
                         assert cursor == len(stages), (cursor, stages[cursor:])
+                        assert pad_cursor == 28, "pad configuration stages missing"
                         break
+                    if line.startswith("WS53 PAD "):
+                        _, _, pad_text, state = line.split()
+                        pad, _, drive_bits, mux, control = pads[pad_cursor]
+                        assert int(pad_text) == pad and state == "READY", line
+                        expected = 0x2f | (0xc0 if drive_bits == 4 else 0)
+                        assert int(command(f"readl {control:#x}")[0], 0) == expected, line
+                        assert int(command(f"readl {mux:#x}")[0], 0) == 0, line
+                        pad_cursor += 1
+                        stream.write(b"g")
+                        continue
                     if not line.startswith("WS53 GPIO "):
                         continue
                     _, _, bank_text, stage, step_text = line.split()
@@ -73,7 +89,9 @@ def gpio_ram_test(qemu, elf, all_features=False):
                     def read(offset):
                         return int(command(f"readl {base + offset:#x}")[0], 0)
                     def pin(high):
-                        command(f"set_irq_in /machine/gpio{bank} pin {bit} {int(high)}")
+                        pad = (2, 35, 47)[bank]
+                        command(f"set_irq_in /machine/pinctrl external-level {pad} {int(high)}")
+                        command(f"set_irq_in /machine/pinctrl external-drive {pad} 1")
                     neighbor = 1 << (4, 5, 0)[bank]
                     valid = (1 << BANKS[bank][1]) - 1
                     assert read(4) & ~mask == valid & ~mask, "changed another pin's direction"
@@ -112,15 +130,17 @@ def gpio_ram_test(qemu, elf, all_features=False):
             _, errors = proc.communicate(timeout=5)
     assert b"unimplemented" not in errors.lower() and b"Invalid" not in errors, errors.decode()
     assert "WS53 PASS timer_irq=53 count=3" in transcript, transcript
+    assert "WS53 PASS pinctrl_pads=28 readback=1 transfer=1" in transcript, transcript
     if all_features:
         for expected in ("WS53 PASS uart2_rx=10 empty=1",
                          "WS53 PASS uart_errors=3 partial=1 recovery=1",
                          "WS53 PASS uart_irq=39,41,42 notifications=6 masks=1 recovery=1"):
             assert expected in transcript, transcript
-    return {"uart": transcript, "stages": len(stages), "banks": 3,
+    return {"uart": transcript, "stages": len(stages), "pad_configuration_stages": 28, "banks": 3,
             "irqs": [34, 33, 29], "notifications_per_bank": 6,
             "all_features": all_features, "hardware_verified": False,
-            "pad_mux_and_clock_verified": False}
+            "gpio_pad_configuration_verified_in_model": True,
+            "alternate_peripheral_routes_and_clock_verified": False}
 
 
 if __name__ == "__main__":

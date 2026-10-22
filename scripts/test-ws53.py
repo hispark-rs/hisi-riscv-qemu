@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from ws53_gpio_test import gpio_test
 from ws53_gpio_ram_test import gpio_ram_test
+from ws53_pinctrl_test import pinctrl_test
 
 
 def connect(path):
@@ -302,7 +303,8 @@ if __name__ == "__main__":
     parser.add_argument("--elf-all", type=Path, help="RAM test built with all UART and GPIO features")
     args = parser.parse_args()
     result = {"model": model_test(args.qemu), "unsupported": unsupported_test(args.qemu),
-              "uart": uart_test(args.qemu), "gpio": gpio_test(args.qemu), "hardware_verified": False}
+              "uart": uart_test(args.qemu), "gpio": gpio_test(args.qemu),
+              "pinctrl": pinctrl_test(args.qemu), "hardware_verified": False}
     if args.elf:
         result["ram"] = ram_test(args.qemu, args.elf)
     if args.elf_uart_rx:
