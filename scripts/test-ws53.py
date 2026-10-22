@@ -18,6 +18,7 @@ from ws53_nmi_test import nmi_test
 from ws53_wdt_test import wdt_test
 from ws53_tcxo_test import tcxo_test
 from ws53_rtc_test import rtc_test
+from ws53_pwm_test import pwm_test
 
 
 def connect(path):
@@ -312,6 +313,7 @@ if __name__ == "__main__":
               "wdt": wdt_test(args.qemu),
               "tcxo": tcxo_test(args.qemu),
               "rtc": rtc_test(args.qemu),
+              "pwm": pwm_test(args.qemu),
               "hardware_verified": False}
     if args.elf:
         result["ram"] = ram_test(args.qemu, args.elf)

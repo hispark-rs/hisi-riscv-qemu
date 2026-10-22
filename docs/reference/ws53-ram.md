@@ -317,3 +317,46 @@ was obtained from QEMU's official GitHub mirror. The new host compiler reports
 additional warnings in QEMU 10 and dtc: `meson configure -Dc_args=-Wno-error`
 was used for this local build. These are build-environment adjustments, not
 changes to guest hardware behavior. They do not suppress actual compile errors.
+
+## PWM channel model with explicit timing assumptions
+
+`ws53-pwm` maps the four groups/eight channels at `0x52082000`, IRQ71/72,
+plus only the PWM gate halfword at `0x52000040` and divider halfword at
+`0x5200007c`. The rest of M_CRG remains unimplemented. Source layout is SDK
+`163d9150` / RDL `f188fd4`; no chip reset values are inferred. Unsupported
+widths, holes, RO writes, WO reads, nonzero high count halves, DMA enable and
+unknown divider profiles are diagnosed and rejected.
+
+START commands require `-global ws53-pwm.assume-timing=on`. Its one-time
+notice declares the assumed 32MHz/low16 count profile, immediate clear-start,
+and deferred commit at the next block end. These latch, counter, mask and
+output-enable conventions require silicon verification. Divider16 requires
+a rising LOAD command and enable/gate/input clock; pauses preserve fractional
+ticks. No undocumented upstream divider relationship is inferred.
+
+Each channel has shadow/active/deferred configuration, phase and block counters,
+output polarity/enable, sticky completion and independently staged stop. The
+model emits named `out` and `output-enable` channel signals, without mapping
+them to guessed physical pads. Group/count configuration errors feed IRQ71;
+step-end flags feed IRQ72. Masked events remain latched until selected W1C
+acknowledgement. Invalid group commits are atomic in this profile. Reset clears
+owned state and timers but retains the external `/machine/pwm clock` fault.
+
+`scripts/ws53_pwm_test.py` is part of the WS53 suite. It covers all groups and
+channels, shadow updates, fractional edges, zero/full duty, polarity, concurrent
+finite/repeating outputs, mask/ack, both error sources, clock pause/recovery,
+16-bit count wrap, maximum block, reset and 29 rejected MMIO operations. It
+also exposes the late-stop hazard: with a short block the SDK's 1us two-commit
+sequence has already emitted extra blocks before the second command.
+
+The parent's QEMU-only `pwm_control` Rust fixture verifies actual generated PAC
+access, all eight completion flags via ISR72, duty traits, route retention and
+Drop. The HAL now conservatively returns `FiniteDeadlineMissed` and stops the
+whole group if a finite completion flag appears during staging. Both PWM IRQs
+are suspended for that transaction; unrelated interrupts remain enabled.
+The check may reject a block that ended just after the stop command, cannot
+undo pulses, and does not prove silicon status-propagation timing. A second
+fixture injects stopped clock and checks absence of events plus cleanup;
+`start()` does not detect an absent clock. Synthetic pad permissions in these
+fixtures are not a usable board pin map. Physical output, clock ownership,
+control-core cooperation, DMA and silicon stop latency remain unverified.
