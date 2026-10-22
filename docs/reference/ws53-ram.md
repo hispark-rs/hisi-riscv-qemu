@@ -53,9 +53,18 @@ TX currently goes straight to the chardev: no TX FIFO, shift-register delay or
 baud-accurate serial line is claimed. Modem/TX IRQs, auto flow control, PRO fields,
 DMA and unsupported MMIO are diagnosed rather than absorbed. FIFO-mode changes
 without an explicit RX reset are also unmodeled. Preserved configuration values
-alone are not proof of framing/divider hardware behavior. UART error flags are
-modeled, but the bootstrap HAL still lacks a fallible receive-error API and
-full clock/pin configuration; it must not be marked a complete UART driver.
+alone are not proof of framing/divider hardware behavior. The experimental HAL
+now has fallible receive APIs, but full clock/pin configuration and physical
+validation remain open; it must not be marked a complete UART driver.
+
+Optional `--elf-uart-errors` runs the RAM example built with `uart-error-smoke`.
+It tests the actual Rust HAL on all three UARTs: simultaneous error flags,
+corrupt-head discard, preservation of queued bytes on overrun, a good prefix
+before an errored byte, deferred error delivery after a partial read, zero-length
+read preservation and recovery. This image deliberately resets RX FIFOs and
+injects errors through FAR; it is not the default board image. `--elf-uart-combined`
+expects both UART test features and additionally injects ten chardev bytes.
+Break decoding has host coverage only; no break-injection hardware proof is claimed.
 
 Build with `scripts/build.sh` using a private QEMU source tree. Then:
 

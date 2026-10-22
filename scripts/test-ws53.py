@@ -261,7 +261,7 @@ def uart_test(qemu):
             "hardware_timeout_verified": False}
 
 
-def ram_test(qemu, elf, receive=False):
+def ram_test(qemu, elf, receive=False, receive_errors=False):
     proc = subprocess.Popen([qemu, "-M", "ws53", "-display", "none",
         "-monitor", "none", "-serial", "null", "-serial", "null", "-serial", "stdio",
         "-kernel", str(elf), "-d", "guest_errors"], stdin=subprocess.PIPE if receive else subprocess.DEVNULL,
@@ -275,6 +275,8 @@ def ram_test(qemu, elf, receive=False):
     assert b"WS53 PASS timer_irq=53 count=3" in output, output.decode(errors="replace")
     if receive:
         assert b"WS53 PASS uart2_rx=10 empty=1" in output, output.decode(errors="replace")
+    if receive_errors:
+        assert b"WS53 PASS uart_errors=3 partial=1 recovery=1" in output, output.decode(errors="replace")
     assert b"unimplemented" not in errors.lower(), errors.decode(errors="replace")
     assert b"Invalid" not in errors, errors.decode(errors="replace")
     return output.decode().splitlines()
@@ -285,6 +287,8 @@ if __name__ == "__main__":
     parser.add_argument("--qemu", required=True)
     parser.add_argument("--elf", type=Path)
     parser.add_argument("--elf-uart-rx", type=Path, help="RAM example built with uart-rx-smoke")
+    parser.add_argument("--elf-uart-errors", type=Path, help="RAM example built with uart-error-smoke")
+    parser.add_argument("--elf-uart-combined", type=Path, help="RAM example built with both UART test features")
     args = parser.parse_args()
     result = {"model": model_test(args.qemu), "unsupported": unsupported_test(args.qemu),
               "uart": uart_test(args.qemu), "hardware_verified": False}
@@ -292,4 +296,8 @@ if __name__ == "__main__":
         result["ram"] = ram_test(args.qemu, args.elf)
     if args.elf_uart_rx:
         result["ram_uart_rx"] = ram_test(args.qemu, args.elf_uart_rx, receive=True)
+    if args.elf_uart_errors:
+        result["ram_uart_errors"] = ram_test(args.qemu, args.elf_uart_errors, receive_errors=True)
+    if args.elf_uart_combined:
+        result["ram_uart_combined"] = ram_test(args.qemu, args.elf_uart_combined, receive=True, receive_errors=True)
     print(json.dumps(result, indent=2))
