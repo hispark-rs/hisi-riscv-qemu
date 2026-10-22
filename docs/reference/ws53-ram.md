@@ -66,6 +66,18 @@ injects errors through FAR; it is not the default board image. `--elf-uart-combi
 expects both UART test features and additionally injects ten chardev bytes.
 Break decoding has host coverage only; no break-injection hardware proof is claimed.
 
+`--elf-uart-irq` runs the `uart-irq-smoke` RAM variant. Each of IRQs 39, 41 and
+42 enters the real Rust runtime/handler six times, testing queued data on unmask,
+data arriving after a one-shot notification, deferred parity/framing and overrun
+errors, injected character timeout, cancellation and recovery. The ISR captures
+IIR, masks RX/error notifications and disables/acknowledges the local IRQ. It
+does not read FIFO data or read-clear LSR, so the foreground HAL retains the
+error report. Rearming requires both peripheral and controller enable; an empty
+FIFO must not retrigger. The runner explicitly injects a 100000 ns timeout for
+this variant. This tests deferral, not hardware timeout timing or async support.
+`--elf-uart-all` expects all three test features and exercises them together;
+`--elf-uart-combined` retains the original RX-plus-errors two-feature meaning.
+
 Build with `scripts/build.sh` using a private QEMU source tree. Then:
 
 ```sh

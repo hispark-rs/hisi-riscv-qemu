@@ -261,8 +261,10 @@ def uart_test(qemu):
             "hardware_timeout_verified": False}
 
 
-def ram_test(qemu, elf, receive=False, receive_errors=False):
-    proc = subprocess.Popen([qemu, "-M", "ws53", "-display", "none",
+def ram_test(qemu, elf, receive=False, receive_errors=False, receive_irq=False):
+    # An explicit model-only timeout, never advertised as silicon UART timing.
+    timeout = ["-global", "ws53-uart.rx-timeout-ns=100000"] if receive_irq else []
+    proc = subprocess.Popen([qemu, "-M", "ws53", *timeout, "-display", "none",
         "-monitor", "none", "-serial", "null", "-serial", "null", "-serial", "stdio",
         "-kernel", str(elf), "-d", "guest_errors"], stdin=subprocess.PIPE if receive else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -277,6 +279,9 @@ def ram_test(qemu, elf, receive=False, receive_errors=False):
         assert b"WS53 PASS uart2_rx=10 empty=1" in output, output.decode(errors="replace")
     if receive_errors:
         assert b"WS53 PASS uart_errors=3 partial=1 recovery=1" in output, output.decode(errors="replace")
+    if receive_irq:
+        assert b"WS53 PASS uart_irq=39,41,42 notifications=6 masks=1 recovery=1" in output, output.decode(errors="replace")
+    assert b"WS53 FAIL" not in output, output.decode(errors="replace")
     assert b"unimplemented" not in errors.lower(), errors.decode(errors="replace")
     assert b"Invalid" not in errors, errors.decode(errors="replace")
     return output.decode().splitlines()
@@ -289,6 +294,8 @@ if __name__ == "__main__":
     parser.add_argument("--elf-uart-rx", type=Path, help="RAM example built with uart-rx-smoke")
     parser.add_argument("--elf-uart-errors", type=Path, help="RAM example built with uart-error-smoke")
     parser.add_argument("--elf-uart-combined", type=Path, help="RAM example built with both UART test features")
+    parser.add_argument("--elf-uart-irq", type=Path, help="RAM example built with uart-irq-smoke (QEMU only)")
+    parser.add_argument("--elf-uart-all", type=Path, help="RAM example built with all three UART test features")
     args = parser.parse_args()
     result = {"model": model_test(args.qemu), "unsupported": unsupported_test(args.qemu),
               "uart": uart_test(args.qemu), "hardware_verified": False}
@@ -300,4 +307,8 @@ if __name__ == "__main__":
         result["ram_uart_errors"] = ram_test(args.qemu, args.elf_uart_errors, receive_errors=True)
     if args.elf_uart_combined:
         result["ram_uart_combined"] = ram_test(args.qemu, args.elf_uart_combined, receive=True, receive_errors=True)
+    if args.elf_uart_irq:
+        result["ram_uart_irq"] = ram_test(args.qemu, args.elf_uart_irq, receive_irq=True)
+    if args.elf_uart_all:
+        result["ram_uart_all"] = ram_test(args.qemu, args.elf_uart_all, receive=True, receive_errors=True, receive_irq=True)
     print(json.dumps(result, indent=2))
