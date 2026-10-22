@@ -203,6 +203,49 @@ scenarios: each command-readback profile, stopped input clock and stalled latch.
 No physical device is accessed. Control-core coordination, ROM execution,
 automatic clock setup and LPM compensation are not implemented by this device.
 
+## RTC two-channel counter and explicit timing profile
+
+`ws53-rtc` maps application channels `0x57029100` and `0x57029200`, with IRQs
+49/50. The SDK profile selects 32-bit counts; upper-word/common-bank accesses
+are diagnosed, not silently supplied. CONTROL ready/status fields are read-only;
+EOI only accepts the source driver's write-one command. Unknown RSTFSM effects,
+live LOAD/mode changes, invalid widths, unsampled counts and holes are rejected.
+No register reset values or board clock provisioning are inferred.
+
+Counter/mask control is rejected unless a named test enables
+`-global ws53-rtc.assume-timing=on`. The first such control access per channel
+prints the assumed profile: 32768 Hz, expiry after count+1 ticks, active-high
+mask, reload on enable, one-shot modes 0/2, periodic mode1 reloading LOAD, and
+free-run mode3 wrapping to u32::MAX after its first expiry. These conventions
+are explicit modeling assumptions, not silicon evidence. Start is immediate in
+this profile; the HAL's 65/32 us synchronization waits are not measured hardware
+latencies. Counts retain fractional cycles across input-clock pauses.
+
+Each channel exposes qtest inputs `clock`, `stall-snapshot` and test-only
+`expire-on-request` on `/machine/rtc0` or `/machine/rtc1`. The last input expires
+a one-shot between the guest's CONTROL read and its request write, once. This
+reproduces stale ENABLE being written back and rearming the counter. The HAL
+fix protects the request and pending check from ISR acknowledgement, stops an
+expired one-shot without consuming its event, restores IRQ state, then waits
+32 us. The Rust fixture verifies both channels return Expired and still deliver
+one original IRQ each. Physical status-propagation timing remains unverified.
+
+`sticky-request=on` keeps request readback set; the default reads it as zero.
+Both profiles test the HAL's avoidance of unrelated request replay. A fresh
+request invalidates old data until the enabled, clocked, unstalled channel can
+latch. Snapshot reads then remain stable while the counter advances. Model
+reset disables channels and clears owned IRQ state, retaining external fault
+inputs. This is a deterministic fixture reset, not a silicon reset claim.
+
+`scripts/ws53_rtc_test.py` covers both channels/masks/IRQs, modes0/1/2/3,
+zero/max loads, fractional pause, latch recovery, stop/restart, channel isolation,
+the stale-control expiry race and 44 rejected accesses. The parent `rtc_control`
+fixture adds six actual Rust scenarios: normal and sticky request readback,
+clock stall, snapshot stall, expiry race under each readback profile. These
+exercise real ISR entry/return and already-pending stop/Drop cancellation.
+Shared clock/reset ownership, ROM code, common-bank/64-bit support and sleep or
+physical recovery are not implemented or certified by this model.
+
 ## Watchdog command and assumed-timing model
 
 `ws53-wdt` at `0x5702b000` implements 32-bit command/status views from RDL

@@ -27,6 +27,7 @@
 #include "ws53_nmi.c.inc"
 #include "ws53_wdt.c.inc"
 #include "ws53_tcxo.c.inc"
+#include "ws53_rtc.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -178,6 +179,14 @@ static void ws53_init(MachineState *machine)
     object_property_add_child(OBJECT(machine), "intc", OBJECT(intc));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(intc), &error_fatal);
     for (unsigned i = 0; i < 2; i++) {
+        DeviceState *rtc = qdev_new(TYPE_WS53_RTC);
+        g_autofree char *name = g_strdup_printf("rtc%u", i);
+        object_property_add_child(OBJECT(machine), name, OBJECT(rtc));
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(rtc), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(rtc), 0, 0x57029100 + 0x100 * i);
+        sysbus_connect_irq(SYS_BUS_DEVICE(rtc), 0, qdev_get_gpio_in(intc, 49 + i));
+    }
+    for (unsigned i = 0; i < 2; i++) {
         s->timers[i].irq = qdev_get_gpio_in(intc, 53 + i);
         s->timers[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                          ws53_timer_expire, &s->timers[i]);
@@ -292,6 +301,7 @@ static void ws53_register_types(void)
     type_register_static(&ws53_nmi_type);
     type_register_static(&ws53_wdt_type);
     type_register_static(&ws53_tcxo_type);
+    type_register_static(&ws53_rtc_type);
     type_register_static(&ws53_type);
 }
 type_init(ws53_register_types)
