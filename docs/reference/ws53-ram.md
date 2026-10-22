@@ -14,12 +14,21 @@ it overwrites the menuconfig's initial 30 MHz value. This is a boot-profile
 assumption, not an oscillator measurement on the attached board.
 
 The timer model supports the first milestone's 32-bit path: one-shot/periodic,
-counter snapshot, mask/unmask, per-channel/global W1C, stop and reset. SDK profile
+counter snapshot, mask/unmask, per-channel W1C, stop and reset. SDK profile
 `CONFIG_TIMER_0_WIDTH_64=0` and `CONFIG_TIMER_1_WIDTH_64=0`. High-half/permission/
 clock-management/low-power behavior is not yet modeled. UART uses the existing
 basic family model; UART2 TX is covered by the RAM integration test. Full UART
 FIFO/error/timing/reset validation is outstanding. None of these results prove
 silicon timing, electrical properties or control-core coexistence.
+
+The SDK common-register C structure and its comments disagree by 0x10. Neither
+common window is modeled: reads/writes are diagnosed as unimplemented. Tests use
+local raw/masked status at channel +0x18/+0x1c. The SDK writes one to channel EOI,
+but that does not establish read behavior; EOI reads also report unimplemented.
+All normal tests must run without these diagnostics. A separate negative test
+requires diagnostics for 11 unsupported reads and 3 unsupported writes, so an
+unknown register returning zero cannot silently satisfy a test. Zero state after
+model reset is deterministic simulation initialization, not a silicon reset claim.
 
 Build with `scripts/build.sh` using a private QEMU source tree. Then:
 
@@ -29,8 +38,10 @@ uv run scripts/test-ws53.py --qemu /path/to/qemu-system-riscv32 \
 QTEST_QEMU_BINARY=/path/to/qemu-system-riscv32 /path/to/build/tests/qtest/ws63-test
 ```
 
-Observed 2026-10-22: all 9 named timer checks, RAM data/BSS + UART2 output +
-three real IRQ 53 entries/returns, and all 8 existing WS63 qtests passed.
+The test checks 9 named timer behaviors plus the unsupported-access diagnostics.
+With the RAM ELF it also checks data/BSS, UART2 output and three IRQ 53 entries
+and returns through the guest runtime. All are simulation tests; the 20-round
+physical-board RAM/IRQ acceptance remains outstanding.
 
 Build host notes: this host's system Python lacked distlib; a uv Python 3.12
 virtualenv with distlib, meson 1.5.0, ninja and pycotap was passed to QEMU

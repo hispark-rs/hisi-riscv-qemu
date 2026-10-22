@@ -82,19 +82,8 @@ static uint32_t ws53_timer_count(WS53TimerChannel *c)
 static uint64_t ws53_timer_read(void *opaque, hwaddr off, unsigned size)
 {
     WS53MachineState *s = opaque;
-    if (off == 0x7c || off == 0x80) {
-        uint32_t bits = 0;
-        for (unsigned i = 0; i < 2; i++) {
-            WS53TimerChannel *c = &s->timers[i];
-            if (c->pending && (off == 0x7c || !(c->control & 8))) {
-                bits |= 1u << i;
-            }
-        }
-        return bits;
-    }
-    if (off == 0x78) { /* EOI is write-one-clear, reading is not an ack. */
-        return 0;
-    }
+    /* The SDK's common-register structure disagrees with its comments.
+     * No common window or EOI read semantics are claimed for this profile. */
     if (off >= 0x100 && off < 0x220) {
         unsigned i = (off >> 8) - 1;
         WS53TimerChannel *c = &s->timers[i];
@@ -102,7 +91,6 @@ static uint64_t ws53_timer_read(void *opaque, hwaddr off, unsigned size)
         case 0x00: return c->load;
         case 0x08: return c->latched;
         case 0x10: return c->control;
-        case 0x14: return 0;
         case 0x18: return c->pending;
         case 0x1c: return c->pending && !(c->control & 8);
         }
@@ -114,15 +102,6 @@ static uint64_t ws53_timer_read(void *opaque, hwaddr off, unsigned size)
 static void ws53_timer_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
 {
     WS53MachineState *s = opaque;
-    if (off == 0x78) {
-        for (unsigned i = 0; i < 2; i++) {
-            if (val & (1u << i)) {
-                s->timers[i].pending = false;
-                ws53_timer_irq(&s->timers[i]);
-            }
-        }
-        return;
-    }
     if (off >= 0x100 && off < 0x220) {
         WS53TimerChannel *c = &s->timers[(off >> 8) - 1];
         switch (off & 0xff) {
@@ -171,6 +150,7 @@ static void ws53_reset(void *opaque)
     for (unsigned i = 0; i < 2; i++) {
         WS53TimerChannel *c = &s->timers[i];
         timer_del(c->timer);
+        /* Deterministic model initialization, not measured silicon resets. */
         c->load = c->control = c->latched = 0;
         c->pending = false;
         ws53_timer_irq(c);

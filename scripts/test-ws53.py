@@ -56,8 +56,6 @@ def model_test(qemu):
                 assert read(0x118) == 0, "timer fired early"
                 step(1)
                 assert read(0x118) == 1 and read(0x110) & 1 == 0
-                read(0x114)
-                assert read(0x118) == 1, "EOI reads must not clear"
                 write(0x114, 0)
                 assert read(0x118) == 1, "EOI zero must not clear"
                 write(0x114, 1)
@@ -67,13 +65,13 @@ def model_test(qemu):
                 write(0x200, 320_000)
                 write(0x210, 11)  # periodic, masked
                 step(10_000_000)
-                assert read(0x7c) == 2 and read(0x80) == 0
+                assert read(0x218) == 1 and read(0x21c) == 0
                 write(0x210, 3)  # unmask already pending interrupt
-                assert read(0x80) == 2
-                write(0x78, 1)  # clearing channel 0 must preserve channel 1
-                assert read(0x7c) == 2
-                write(0x78, 2)
-                assert read(0x7c) == 0
+                assert read(0x21c) == 1
+                write(0x114, 1)  # clearing channel 0 must preserve channel 1
+                assert read(0x218) == read(0x21c) == 1
+                write(0x214, 1)
+                assert read(0x218) == read(0x21c) == 0
                 step(10_000_000)
                 assert read(0x218) == 1, "periodic timer did not reload"
                 write(0x214, 1)
@@ -97,13 +95,40 @@ def model_test(qemu):
                             assert "error" not in response, response
                     execute("qmp_capabilities")
                     execute("system_reset")
-                assert read(0x100) == read(0x200) == read(0x7c) == 0
+                assert read(0x100) == read(0x200) == read(0x118) == read(0x218) == 0
         finally:
             proc.terminate()
             _, errors = proc.communicate(timeout=5)
         assert b"unimplemented" not in errors.lower(), errors.decode(errors="replace")
         return ["32MHz", "one-shot", "periodic", "mask/unmask", "W1C",
                 "channel isolation", "snapshot", "stop", "system reset"]
+
+
+def unsupported_test(qemu):
+    """Unknown addresses must be diagnosed, not accepted as zero-valued MMIO."""
+    reads = (0x60, 0x64, 0x68, 0x78, 0x7c, 0x80, 0x88, 0x8c, 0x90, 0x114, 0x214)
+    writes = (0x64, 0x78, 0x88)
+    with tempfile.TemporaryDirectory(prefix="ws53-unknown-") as tmp:
+        qt = Path(tmp) / "qtest"
+        proc = subprocess.Popen([qemu, "-M", "ws53", "-accel", "qtest",
+            "-display", "none", "-monitor", "none", "-serial", "null",
+            "-qtest", f"unix:{qt},server=on,wait=off", "-d", "guest_errors"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            with connect(qt) as sock, sock.makefile("rwb", buffering=0) as io:
+                for operation, offsets in (("read", reads), ("write", writes)):
+                    for off in offsets:
+                        value = " 1" if operation == "write" else ""
+                        io.write(f"{operation}l {0x52002000 + off:#x}{value}\n".encode())
+                        assert io.readline().startswith(b"OK")
+        finally:
+            proc.terminate()
+            _, errors = proc.communicate(timeout=5)
+        for operation, offsets in (("read", reads), ("write", writes)):
+            for off in offsets:
+                diagnostic = f"ws53: unimplemented TIMER {operation} +{off:#x}"
+                assert diagnostic.encode() in errors, errors.decode(errors="replace")
+        return {"diagnosed_reads": len(reads), "diagnosed_writes": len(writes)}
 
 
 def ram_test(qemu, elf):
@@ -127,7 +152,8 @@ if __name__ == "__main__":
     parser.add_argument("--qemu", required=True)
     parser.add_argument("--elf", type=Path)
     args = parser.parse_args()
-    result = {"model": model_test(args.qemu), "hardware_verified": False}
+    result = {"model": model_test(args.qemu), "unsupported": unsupported_test(args.qemu),
+              "hardware_verified": False}
     if args.elf:
         result["ram"] = ram_test(args.qemu, args.elf)
     print(json.dumps(result, indent=2))
