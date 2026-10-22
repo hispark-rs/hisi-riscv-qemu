@@ -74,7 +74,8 @@ if [ -f "$UART_ELF" ]; then
     echo "==> uart_hello: expecting UART banner"
     timeout 5 "$QEMU_BIN" -M ws63 -nographic -serial mon:stdio \
         -kernel "$UART_ELF" >"$TMP/uart.out" 2>/dev/null
-    if grep -q "Hello from WS63 on QEMU" "$TMP/uart.out"; then
+    if grep -qF "Hello from WS63 (HAL UART driver)!" "$TMP/uart.out" &&
+       grep -qF "tick 0" "$TMP/uart.out"; then
         echo "    PASS: $(grep -m1 Hello "$TMP/uart.out")"
     else
         echo "    FAIL: banner not found. Got:"; head -5 "$TMP/uart.out" | sed 's/^/      /'

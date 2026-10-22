@@ -19,6 +19,7 @@
 #define UART0_BASE   0x44010000u
 #define GPIO0_BASE   0x44028000u
 #define DMA0_BASE    0x4A000000u
+#define SPI0_BASE    0x44020000u
 #define SRAM_BASE    0x00A00000u   /* 0x90000 bytes of system RAM */
 
 /* GPIO register offsets. */
@@ -130,6 +131,85 @@ static void test_timer_and_intc(void)
     g_assert_cmpuint(qtest_readl(qts, T0 + TMR_RAW_ST), ==, 0);
     g_assert_false(qtest_get_irq(qts, WS63_IRQ_TIMER0));
 
+    qtest_quit(qts);
+}
+
+/* SSI v151 DRNM is a FIFO window, not RAM and not only the +0x60 alias. */
+static void test_spi_fifo_window(void)
+{
+    QTestState *qts = qtest_init("-machine ws63");
+
+    for (uint32_t off = 0x2c; off < 0xbc; off += 4) {
+        qtest_writel(qts, SPI0_BASE + off, 0xa5000000 | off);
+        g_assert_cmphex(qtest_readl(qts, SPI0_BASE + 0xdc), ==, 1);
+        g_assert_cmphex(qtest_readl(qts, SPI0_BASE + 0xe4) & 0x10, ==, 0x10);
+        g_assert_cmphex(qtest_readl(qts, SPI0_BASE + 0x2c), ==, 0xa5000000 | off);
+        g_assert_cmphex(qtest_readl(qts, SPI0_BASE + 0xdc), ==, 0);
+    }
+    qtest_writeb(qts, SPI0_BASE + 0x2c, 0x5a);
+    qtest_writew(qts, SPI0_BASE + 0xb8, 0xa55a);
+    g_assert_cmphex(qtest_readb(qts, SPI0_BASE + 0x60), ==, 0x5a);
+    g_assert_cmphex(qtest_readw(qts, SPI0_BASE + 0x2c), ==, 0xa55a);
+    g_assert_cmphex(qtest_readl(qts, SPI0_BASE + 0xe4) & 0x10, ==, 0);
+
+    /* Control words and unaligned byte lanes must not become FIFO aliases. */
+    qtest_writeb(qts, SPI0_BASE + 0x2d, 0xff);
+    qtest_writel(qts, SPI0_BASE + 0xd8, 3);
+    qtest_writeb(qts, SPI0_BASE + 0xd8, 9);
+    g_assert_cmphex(qtest_readl(qts, SPI0_BASE + 0xd8), ==, 3);
+    g_assert_cmphex(qtest_readl(qts, SPI0_BASE + 0xdc), ==, 0);
+    qtest_quit(qts);
+}
+
+/* The shared helper must not impose WS63's DRNM window on BS2X. */
+static void test_bs2x_spi_layout(void)
+{
+    const char *machines[] = {"bs20", "bs21", "bs21e", "bs22"};
+    const uint32_t spi = 0x52087000;
+    for (size_t i = 0; i < G_N_ELEMENTS(machines); i++) {
+        g_autofree char *args = g_strdup_printf("-machine %s", machines[i]);
+        QTestState *qts = qtest_init(args);
+
+        qtest_writel(qts, spi + 0x2c, 0x1234);
+        g_assert_cmphex(qtest_readl(qts, spi + 0xdc), ==, 0);
+        qtest_writel(qts, spi + 0x60, 0xa55a);
+        g_assert_cmphex(qtest_readl(qts, spi + 0xdc), ==, 1);
+        g_assert_cmphex(qtest_readl(qts, spi + 0x60), ==, 0xa55a);
+        g_assert_cmphex(qtest_readl(qts, spi + 0xdc), ==, 0);
+        qtest_quit(qts);
+    }
+}
+
+/* Actual HAL endpoint/width: bytes through SPI0 DRNM[0], MDMA TX then RX.
+ * This functional model services queued beats synchronously; this does not
+ * assert request pacing or peripheral DMA-enable gating. */
+static void test_spi_dma_bytes(void)
+{
+    QTestState *qts = qtest_init("-machine ws63");
+    const uint32_t src = SRAM_BASE + 0x7000;
+    const uint32_t dst = SRAM_BASE + 0x7100;
+    const uint8_t pat[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+
+    qtest_memwrite(qts, src, pat, sizeof(pat));
+    qtest_memset(qts, dst - 1, 0xcc, sizeof(pat) + 2);
+    qtest_writel(qts, DMA_CH0 + DMA_SRC, src);
+    qtest_writel(qts, DMA_CH0 + DMA_DST, SPI0_BASE + 0x2c);
+    qtest_writel(qts, DMA_CH0 + DMA_CTRL, sizeof(pat) | (1u << 26));
+    qtest_writel(qts, DMA_CH0 + DMA_CFG, 1u | (7u << 5) | (1u << 9));
+    g_assert_cmphex(qtest_readl(qts, SPI0_BASE + 0xdc), ==, sizeof(pat));
+
+    qtest_writel(qts, DMA_CH0 + DMA_SRC, SPI0_BASE + 0x2c);
+    qtest_writel(qts, DMA_CH0 + DMA_DST, dst);
+    qtest_writel(qts, DMA_CH0 + DMA_CTRL, sizeof(pat) | (1u << 27));
+    qtest_writel(qts, DMA_CH0 + DMA_CFG, 1u | (8u << 1) | (2u << 9));
+    for (size_t i = 0; i < sizeof(pat); i++) {
+        g_assert_cmphex(qtest_readb(qts, dst + i), ==, pat[i]);
+    }
+    g_assert_cmphex(qtest_readb(qts, dst - 1), ==, 0xcc);
+    g_assert_cmphex(qtest_readb(qts, dst + sizeof(pat)), ==, 0xcc);
+    g_assert_cmphex(qtest_readl(qts, SPI0_BASE + 0xdc), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, DMA0_BASE + DMA_EN_CHNS) & 1, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, DMA_ORI_INT_ST) & 1, ==, 1);
     qtest_quit(qts);
 }
 
@@ -354,6 +434,9 @@ int main(int argc, char **argv)
     qtest_add_func("/ws63/timer_intc", test_timer_and_intc);
     qtest_add_func("/ws63/timer_current_latch", test_timer_current_latch);
     qtest_add_func("/ws63/dma_mem2mem", test_dma_mem2mem);
+    qtest_add_func("/ws63/spi_fifo_window", test_spi_fifo_window);
+    qtest_add_func("/ws63/spi_dma_bytes", test_spi_dma_bytes);
+    qtest_add_func("/ws63/bs2x_spi_layout", test_bs2x_spi_layout);
     qtest_add_func("/ws63/dma_en_chns_start", test_dma_en_chns_start);
     qtest_add_func("/ws63/sdma_unprovisioned", test_sdma_unprovisioned);
     qtest_add_func("/ws63/netmac", test_netmac);

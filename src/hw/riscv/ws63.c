@@ -1381,6 +1381,18 @@ static uint32_t ws63_fifo_pop(WS63PeriphState *s)
     return v;
 }
 
+/* SSI v151 DRNM[36] starts at +0x2c (SDK hal_spi_v151_regs_def.h).
+ * Every aligned entry addresses the same FIFO, including the old +0x60
+ * test address. DMA uses byte/halfword beats at these register addresses. */
+static bool ws63_spi_data_register(WS63PeriphState *s, hwaddr off)
+{
+    /* BS2X shares the functional engine, not the WS63 register window. */
+    if (s->base != 0x44020000 && s->base != 0x44021000) {
+        return off == 0x60;
+    }
+    return off >= 0x2c && off < 0xbc && (off & 3) == 0;
+}
+
 static uint64_t ws63_periph_read(void *opaque, hwaddr off, unsigned size)
 {
     WS63PeriphState *s = opaque;
@@ -1446,7 +1458,7 @@ static uint64_t ws63_periph_read(void *opaque, hwaddr off, unsigned size)
         }
         break;
     case PK_SPI:
-        if (off == 0x60) return ws63_fifo_pop(s);   /* DR: pop RX (loopback) FIFO */
+        if (ws63_spi_data_register(s, off)) return ws63_fifo_pop(s);
         if (off == 0xE4) {                          /* WSR */
             /* HiSilicon SSI v151 status layout (NOT textbook DesignWare): txfnf=bit11,
              * txfe=bit12, rxfne=bit4 (busy=bit15). Idle = 0x1800. Matches the silicon
@@ -1490,7 +1502,7 @@ static void ws63_periph_write(void *opaque, hwaddr off, uint64_t val, unsigned s
         else if (off == 0x18) { ws63_fifo_push(s, v & 0xff); } /* TXR -> loopback RX */
         break;
     case PK_SPI:
-        if (off == 0x60) { ws63_fifo_push(s, v); }       /* DR -> loopback RX FIFO */
+        if (ws63_spi_data_register(s, off)) { ws63_fifo_push(s, v); }
         break;
     case PK_LSADC:
         if (off == 0x1C && (v & 0x1)) {                  /* CTRL_8 lsadc_start: scan */
@@ -1681,6 +1693,26 @@ static const MemoryRegionOps ws63_periph_ops = {
     .valid = { .min_access_size = 4, .max_access_size = 4 },
 };
 
+static bool ws63_spi_accepts(void *opaque, hwaddr off, unsigned size,
+                             bool is_write, MemTxAttrs attrs)
+{
+    WS63PeriphState *s = opaque;
+    /* Do not widen the MMIO contract of unrelated control registers or IPs.
+     * In particular, +0x2d is not another FIFO register. */
+    return (off & 3) == 0 &&
+           (size == 4 || (ws63_spi_data_register(s, off) &&
+                          (size == 1 || size == 2)));
+}
+
+static const MemoryRegionOps ws63_spi_ops = {
+    .read = ws63_periph_read,
+    .write = ws63_periph_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .impl = { .min_access_size = 1, .max_access_size = 4 },
+    .valid = { .min_access_size = 1, .max_access_size = 4,
+               .accepts = ws63_spi_accepts },
+};
+
 static void ws63_periph_realize(DeviceState *dev, Error **errp)
 {
     WS63PeriphState *s = WS63_PERIPH(dev);
@@ -1692,7 +1724,8 @@ static void ws63_periph_realize(DeviceState *dev, Error **errp)
         s->shadow[0x00 / 4] = 0xFFFFFFFFu;  /* CKEN_CTL0 (matches g_ws63_cken0) */
         s->shadow[0x04 / 4] = 0xFFFFFFFFu;  /* CKEN_CTL1 (matches g_ws63_cken1) */
     }
-    memory_region_init_io(&s->iomem, OBJECT(dev), &ws63_periph_ops, s,
+    memory_region_init_io(&s->iomem, OBJECT(dev),
+                          s->kind == PK_SPI ? &ws63_spi_ops : &ws63_periph_ops, s,
                           TYPE_WS63_PERIPH, s->size ? s->size : WS63_PERIPH_MAXSIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
     sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq);

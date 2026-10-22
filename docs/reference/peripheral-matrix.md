@@ -16,7 +16,7 @@
 | 中断控制器 | ✅ 真实 | IRQ 26–31（mie 类）+ ≥32（自定义 LOCIxx，target/riscv 补丁）均完整投递；`LOCIPRI` 优先级 + `PRITHD` 阈值已强制（严格 `>`、最高优先级优先、同级取小号）|
 | **SFC（Flash 控制器）** | ✅ 真实(部分) | SPI 命令接口（RDID→W25Q16、RDSR→ready、命令完成）；flash XIP 窗口（0x200000）为 RAM 背靠，默认空——可用 `run.sh NV=1` 回填分区表+NV（见 [运行固件](../how-to/run-firmware.md)）|
 | **I2C0/1**（0x44018000/0x44018100）| ✅ **真实(行为完整)** | 真实回环 FIFO：TXR→RXR 多字节顺序回读、SR 完成位、COM 命令位自动清、IRQ 31/32 |
-| **SPI0/1**（0x44020000/0x44021000）| ✅ **真实(行为完整)** | 真实回环 FIFO：DR 写入→顺序读回、WSR 反映 FIFO（rxfne/txfe）、RLR 深度、IRQ 43/52 |
+| **SPI0/1**（0x44020000/0x44021000）| 部分行为模型 | DRNM 窗口 `+0x2c..+0xb8` 的 36 个对齐地址共享回环 FIFO；数据口支持字节/半字/字访问，WSR/RLR 反映队列。尚未实现 SPI IRQ、时钟/使能门控、FIFO 错误及 DMA 请求节拍；不能据回环通过宣称完整支持。BS2X 保留独立的 `+0x60` 数据口布局。 |
 | **PWM**（0x44024000）| ✅ 真实(部分) | 寄存器影子 + PERIODLOAD_FLAG=1 + START 自清 |
 | **I2S**（0x44025000）| ✅ 真实(行为完整) | LEFT/RIGHT TX→RX 回环 |
 | **LSADC**（0x4400C000）| ✅ **真实(行为完整)** | CTRL_8 触发转换 → rne=1/bsy=0、CTRL_9 弹出 14-bit 采样 + 完成 IRQ 72（读清）|
