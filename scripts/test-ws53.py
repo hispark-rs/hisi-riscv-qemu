@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from ws53_gpio_test import gpio_test
 
 
 def connect(path):
@@ -298,7 +299,7 @@ if __name__ == "__main__":
     parser.add_argument("--elf-uart-all", type=Path, help="RAM example built with all three UART test features")
     args = parser.parse_args()
     result = {"model": model_test(args.qemu), "unsupported": unsupported_test(args.qemu),
-              "uart": uart_test(args.qemu), "hardware_verified": False}
+              "uart": uart_test(args.qemu), "gpio": gpio_test(args.qemu), "hardware_verified": False}
     if args.elf:
         result["ram"] = ram_test(args.qemu, args.elf)
     if args.elf_uart_rx:

@@ -78,6 +78,30 @@ this variant. This tests deferral, not hardware timeout timing or async support.
 `--elf-uart-all` expects all three test features and exercises them together;
 `--elf-uart-combined` retains the original RX-plus-errors two-feature meaning.
 
+The machine also supplies three independent `ws53-gpio` basic banks at
+0x5700c000/0x57028000/0x57010000, with 23/12/3 bit spans and IRQs 34/33/29.
+`scripts/ws53_gpio_test.py` (also called by `test-ws53.py`) checks input versus
+output-latch reads, word SET/CLR commands, output and drive-enable wires,
+rising/falling/dual edges, high/low levels, masking, selective EOI, isolation
+and system reset. Tests drive named `pin` inputs and observe `out` and
+`output-enable` signals: behavior is not satisfied by register storage alone.
+
+GPIO model policies are explicit: edges latch only on enabled input/edge pins;
+masking retains a captured edge; disabling hides it without acknowledging it;
+EOI clears edge latches but cannot suppress an active level. Configuration
+changes alone do not fabricate an edge. Deterministic reset disables/masks
+interrupts and clears output latches while preserving external input levels.
+These are simulation contracts awaiting physical validation. The 23-bit bank
+is not a claim of 23 independently bonded pads: pad/SDK aliases, mux routing,
+SWD reservation, shared clocks and analog electrical effects are not integrated.
+
+SW_CTL's data-source encoding, LOCK/LP registers, MULTISYSTEM extensions and
+debounce timing are not established. Reads/writes of those unsupported controls,
+command reads and RO-status writes must report diagnostics; enabling debounce
+also reports unimplemented rather than silently pretending to filter input.
+Fifteen negative accesses/signals enforce this. Only debounce-disabled operation
+is exercised. No GPIO HAL or Rust GPIO ISR support is implied by these qtests.
+
 Build with `scripts/build.sh` using a private QEMU source tree. Then:
 
 ```sh

@@ -55,6 +55,7 @@ cp "$HERE/src/hw/riscv/bs20.c"                            "$QEMU_DIR/hw/riscv/bs
 cp "$HERE/src/hw/riscv/bs21e.c"                           "$QEMU_DIR/hw/riscv/bs21e.c"
 cp "$HERE/src/hw/riscv/ws53.c"                            "$QEMU_DIR/hw/riscv/ws53.c"
 cp "$HERE/src/hw/riscv/ws53_uart.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_uart.c.inc"
+cp "$HERE/src/hw/riscv/ws53_gpio.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_gpio.c.inc"
 cp "$HERE/src/target/riscv/insn_trans/trans_xlinx.c.inc" "$QEMU_DIR/target/riscv/insn_trans/trans_xlinx.c.inc"
 cp "$HERE/src/tests/qtest/ws63-test.c"                    "$QEMU_DIR/tests/qtest/ws63-test.c"
 

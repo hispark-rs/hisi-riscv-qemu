@@ -22,6 +22,7 @@
 #include "elf.h"
 #include "hisi_riscv31.h"
 #include "ws53_uart.c.inc"
+#include "ws53_gpio.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -190,6 +191,18 @@ static void ws53_init(MachineState *machine)
         sysbus_mmio_map(SYS_BUS_DEVICE(uart), 0, bases[i]);
         sysbus_connect_irq(SYS_BUS_DEVICE(uart), 0, qdev_get_gpio_in(intc, irqs[i]));
     }
+    const hwaddr gpio_bases[] = { 0x5700c000, 0x57028000, 0x57010000 };
+    const unsigned gpio_irqs[] = { 34, 33, 29 };
+    const unsigned gpio_widths[] = { 23, 12, 3 };
+    for (unsigned i = 0; i < 3; i++) {
+        DeviceState *gpio = qdev_new(TYPE_WS53_GPIO);
+        g_autofree char *name = g_strdup_printf("gpio%u", i);
+        object_property_add_child(OBJECT(machine), name, OBJECT(gpio));
+        qdev_prop_set_uint32(gpio, "width", gpio_widths[i]);
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(gpio), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(gpio), 0, gpio_bases[i]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(gpio), 0, qdev_get_gpio_in(intc, gpio_irqs[i]));
+    }
     if (machine->kernel_filename &&
         load_elf(machine->kernel_filename, NULL, NULL, NULL, &entry, NULL,
                  NULL, NULL, 0, EM_RISCV, 0, 0) <= 0) {
@@ -223,6 +236,7 @@ static const TypeInfo ws53_type = {
 static void ws53_register_types(void)
 {
     type_register_static(&ws53_uart_type);
+    type_register_static(&ws53_gpio_type);
     type_register_static(&ws53_type);
 }
 type_init(ws53_register_types)
