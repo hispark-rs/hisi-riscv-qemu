@@ -12,6 +12,7 @@ import tempfile
 import time
 from pathlib import Path
 from ws53_gpio_test import gpio_test
+from ws53_gpio_ram_test import gpio_ram_test
 
 
 def connect(path):
@@ -297,6 +298,8 @@ if __name__ == "__main__":
     parser.add_argument("--elf-uart-combined", type=Path, help="RAM example built with both UART test features")
     parser.add_argument("--elf-uart-irq", type=Path, help="RAM example built with uart-irq-smoke (QEMU only)")
     parser.add_argument("--elf-uart-all", type=Path, help="RAM example built with all three UART test features")
+    parser.add_argument("--elf-gpio", type=Path, help="RAM GPIO traits/IRQ test (gpio-smoke, QEMU only)")
+    parser.add_argument("--elf-all", type=Path, help="RAM test built with all UART and GPIO features")
     args = parser.parse_args()
     result = {"model": model_test(args.qemu), "unsupported": unsupported_test(args.qemu),
               "uart": uart_test(args.qemu), "gpio": gpio_test(args.qemu), "hardware_verified": False}
@@ -312,4 +315,8 @@ if __name__ == "__main__":
         result["ram_uart_irq"] = ram_test(args.qemu, args.elf_uart_irq, receive_irq=True)
     if args.elf_uart_all:
         result["ram_uart_all"] = ram_test(args.qemu, args.elf_uart_all, receive=True, receive_errors=True, receive_irq=True)
+    if args.elf_gpio:
+        result["ram_gpio"] = gpio_ram_test(args.qemu, args.elf_gpio)
+    if args.elf_all:
+        result["ram_all"] = gpio_ram_test(args.qemu, args.elf_all, all_features=True)
     print(json.dumps(result, indent=2))

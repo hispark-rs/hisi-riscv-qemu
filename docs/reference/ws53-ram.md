@@ -100,7 +100,26 @@ debounce timing are not established. Reads/writes of those unsupported controls,
 command reads and RO-status writes must report diagnostics; enabling debounce
 also reports unimplemented rather than silently pretending to filter input.
 Fifteen negative accesses/signals enforce this. Only debounce-disabled operation
-is exercised. No GPIO HAL or Rust GPIO ISR support is implied by these qtests.
+is exercised. These qtests alone are not Rust GPIO ISR proof.
+
+The optional `gpio-smoke` RAM image exercises the HAL's borrowed Input/Output
+drivers and `embedded-hal` digital traits on GPIO0 bit2, GPIO1 bit3 and GPIO2
+bit2. `scripts/ws53_gpio_ram_test.py` supplies external digital inputs through
+qtest and synchronizes with UART2. The 66 ordered stages verify output preload,
+set/clear/toggle, input sampling, unchanged neighboring configuration, six real
+ISR notifications per bank (IRQ34/33/29), and cancellation with an edge already
+pending. Both explicit release and Drop are checked; a held active level must
+not cause an interrupt storm after the one-shot handler masks the local IRQ.
+
+```sh
+uv run --script scripts/test-ws53.py --qemu /path/to/qemu-system-riscv32 \
+  --elf-gpio /path/to/gpio-smoke.elf --elf-all /path/to/all-features.elf
+```
+
+`--elf-all` expects all UART and GPIO features together. `--elf-uart-all` still
+means only the three UART features. These explicit injection images are for
+QEMU, not the default hardware RAM test. No physical pad mux, clock handoff,
+electrical behavior, debounce timing or GPIO silicon qualification is implied.
 
 Build with `scripts/build.sh` using a private QEMU source tree. Then:
 
