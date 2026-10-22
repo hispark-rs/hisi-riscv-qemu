@@ -32,14 +32,14 @@ def connect(path):
 
 
 @contextmanager
-def running(qemu, direct_gpio=True):
+def running(qemu, direct_gpio=True, extra_args=()):
     with tempfile.TemporaryDirectory(prefix="ws53-gpio-") as tmp:
         qt, qm = Path(tmp) / "qtest", Path(tmp) / "qmp"
         machine = "ws53,gpio-direct=on" if direct_gpio else "ws53"
         proc = subprocess.Popen([qemu, "-M", machine, "-accel", "qtest", "-display", "none",
             "-monitor", "none", "-serial", "null", "-qtest-log", "/dev/null",
             "-qtest", f"unix:{qt},server=on,wait=off", "-qmp", f"unix:{qm},server=on,wait=off",
-            "-d", "guest_errors"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            "-d", "guest_errors", *extra_args], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         diagnostics = []
         try:
             with connect(qt) as sock, sock.makefile("rwb", buffering=0) as io:

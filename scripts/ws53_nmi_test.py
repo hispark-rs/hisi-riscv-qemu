@@ -54,16 +54,18 @@ def nmi_test(qemu):
             source(bit, False)
             raw &= ~(1 << bit)
             check(raw, 0x3e)  # no output drop until the final active input clears
-        source(1, True)
+        source(2, True)
         source(4, True)
-        write(0x12)
-        check(0x12, 0x12)
+        write(0x14)
+        check(0x14, 0x14)
         reset()
-        check(0x12, 0)  # model reset must not fabricate source deassertion
-        write(2)
-        check(0x12, 2)
-        source(1, False)
-        check(0x10, 2)
+        # WDT now owns source 1 and legitimately clears it on peripheral reset.
+        # Use unowned external inputs to isolate aggregation reset semantics.
+        check(0x14, 0)
+        write(4)
+        check(0x14, 4)
+        source(2, False)
+        check(0x10, 4)
         write(0x10)
         check(0x10, 0x10)
         source(4, False)
@@ -108,7 +110,8 @@ def nmi_test(qemu):
                        "no ordinary local IRQ route", "invalid accesses retain state",
                        "CPU delivery gap always diagnosed"],
             "status_model": "source-driven levels; peripheral latches outside this block",
-            "cpu_nmi_delivery_modeled": False, "watchdog_source_modeled": False,
+            "cpu_nmi_delivery_modeled": False, "watchdog_source_modeled": True,
+            "watchdog_timing_requires_explicit_assumption": True,
             "hardware_verified": False}
 
 

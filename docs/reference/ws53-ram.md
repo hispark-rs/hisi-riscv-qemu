@@ -158,16 +158,64 @@ enables but retains externally driven levels; this is not a silicon reset claim.
 `scripts/ws53_nmi_test.py` checks all 1024 source/enable combinations, held
 sources across mask/reset, last-source release and 16 invalid accesses/signals.
 Wrong widths, holes, unmodeled bits and status writes are diagnosed and leave
-state unchanged. Tests inject source levels via `/machine/nmi source`; there
-is no watchdog timer connected yet. These source names alone do not establish
+state unchanged. Tests inject source levels via `/machine/nmi source`; the WDT
+device now drives source bit1 and clears it on peripheral reset. The aggregate's
+held-input reset test uses independent source bits2/4. These source names alone do not establish
 usable DMA engines or application ownership.
 
 **CPU NMI delivery is unimplemented.** The output is deliberately not connected
 to the ordinary local IRQ controller, and the first asserted output emits an
 `unimplemented CPU NMI delivery` diagnostic. Only the named aggregation tests
-expect this diagnostic; RAM success paths still reject every unimplemented
+and the explicitly named watchdog model tests expect this diagnostic; RAM success paths still reject every unimplemented
 access. The model neither claims CPU entry/return, NMI nesting/maskability nor
-watchdog reset behavior. It must not silently make NMI-using firmware pass.
+watchdog SoC reset behavior. It must not silently make NMI-using firmware pass.
+
+### Watchdog command and assumed-timing model
+
+`ws53-wdt` at `0x5702b000` implements 32-bit command/status views from RDL
+4939cd2. `scripts/ws53_wdt_test.py` is included in the normal model regression.
+Unlock/restart use `0x5a5a5a5a`; EOI consumes a read and never infers an independent
+write-clear effect. Raw status survives masking and feeding. Snapshot requests
+clear validity until completion, and counter reads consume the captured value,
+not a continuously changing counter. The WDT output connects to NMI source bit1.
+
+The SDK does **not** establish the initial low counter byte, zero-expiry edge,
+reload between stages, or the stage effect of EOI versus kick. Therefore the
+default device rejects reload/counting/snapshot requests with an `unimplemented`
+diagnostic. It must not silently supply guessed watchdog timing to firmware.
+Only explicit tests may select:
+
+```sh
+-global ws53-wdt.assume-timing=on -global ws53-wdt.assumed-load-low-byte=255
+```
+
+This opt-in profile uses an inherited 32000 Hz clock, expiry after `count+1`
+ticks, reload after a non-reset expiry, kick restarting the first stage without
+clearing raw status, and EOI clearing raw status without restarting the stage.
+Enable reloads the counter; disable freezes its remaining interval. LOAD's
+reserved low byte reads zero; the independently assumed counter low byte is
+0..255 (default255), swept at both extremes by tests. These are explicit model
+assumptions, **not new silicon facts**. One diagnostic announces the profile on
+first use. Counts at `u32::MAX`, valid zero and fractional clock pause/resume are
+tested without wrapping the duration arithmetic.
+
+Test-only named inputs `/machine/wdt clock 0` and `stall-snapshot 0` pause the
+input clock and block snapshot completion. Resuming the clock retains fractional
+tick phase. A stalled snapshot never returns ready; releasing the stall completes
+the pending request. System reset clears model state and owned interrupt outputs
+but retains external clock/stall levels. Initial locked/disabled/zero state is a
+deterministic fixture initialization, not a claimed hardware reset value.
+
+The `reset-request` output is observable, but **SoC reset topology and pulse
+timing are unimplemented**. Assertion diagnoses that gap and stops counting until
+the fixture resets the device; it does not reset a CPU behind the guest's back or
+pretend a reset completed. The pulse-length register is retained but not timed.
+CPU NMI delivery likewise remains explicitly diagnosed by the aggregation model.
+Wrong widths, holes, write-only reads, read-only writes, unsampled CNT, unknown
+commands, LPIF/busy state and writes under unknown lock protection are rejected
+with diagnostics. In particular this is not a complete low-power/reset model or
+permission to run a physical watchdog test. Named model tests accept only their
+exact expected diagnostics; ordinary RAM tests still reject them.
 
 The shared Python qtest context now sends QMP `quit` with its qtest channel
 still open. This avoids racing socket closure/SIGTERM against QEMU's log timer
