@@ -78,3 +78,10 @@ jobs:
 
       - name: QTest (register-level regression)
         run: bash scripts/qtest.sh
+
+      - uses: astral-sh/setup-uv@v7
+        if: matrix.qemu_tag == 'v10.0.0'
+
+      - name: WS53 timer contracts (supported WS53 base)
+        if: matrix.qemu_tag == 'v10.0.0'
+        run: uv run --script scripts/test-ws53.py --qemu ./qemu/build/qemu-system-riscv32

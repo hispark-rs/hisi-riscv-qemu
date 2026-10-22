@@ -1,0 +1,8 @@
+diff --git a/hw/riscv/meson.build b/hw/riscv/meson.build
+--- a/hw/riscv/meson.build
++++ b/hw/riscv/meson.build
+@@ -1,3 +1,4 @@
+ riscv_ss = ss.source_set()
++riscv_ss.add(when: 'CONFIG_WS63', if_true: files('ws53.c'))
+ riscv_ss.add(files('boot.c'))
+ riscv_ss.add(when: 'CONFIG_RISCV_NUMA', if_true: files('numa.c'))

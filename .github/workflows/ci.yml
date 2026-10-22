@@ -31,6 +31,11 @@ jobs:
       - name: Sanity — ws63 machine is registered
         run: ./qemu/build/qemu-system-riscv32 -M help | grep -q ws63
 
+      - uses: astral-sh/setup-uv@v7
+
+      - name: WS53 RAM-profile timer model contracts
+        run: uv run --script scripts/test-ws53.py --qemu ./qemu/build/qemu-system-riscv32
+
       - name: Install hisi-riscv Rust toolchain
         run: |
           curl -fLO https://github.com/hispark-rs/hisi-riscv-rust-toolchain/releases/download/v1.96.0-2/hisi-riscv-rust-1.96.0-x86_64-unknown-linux-gnu.tar.gz
