@@ -16,9 +16,9 @@ assumption, not an oscillator measurement on the attached board.
 The timer model supports the first milestone's 32-bit path: one-shot/periodic,
 counter snapshot, mask/unmask, per-channel W1C, stop and reset. SDK profile
 `CONFIG_TIMER_0_WIDTH_64=0` and `CONFIG_TIMER_1_WIDTH_64=0`. High-half/permission/
-clock-management/low-power behavior is not yet modeled. UART uses the existing
-basic family model; UART2 TX is covered by the RAM integration test. Full UART
-FIFO/error/timing/reset validation is outstanding. None of these results prove
+clock-management/low-power behavior is not yet modeled. UART uses a WS53-specific
+word-access model instead of the legacy family's different receive flags.
+Full UART TX FIFO/timing/flow-control/DMA validation is outstanding. None of these results prove
 silicon timing, electrical properties or control-core coexistence.
 
 The SDK common-register C structure and its comments disagree by 0x10. Neither
@@ -29,6 +29,33 @@ All normal tests must run without these diagnostics. A separate negative test
 requires diagnostics for 11 unsupported reads and 3 unsupported writes, so an
 unknown register returning zero cannot silently satisfy a test. Zero state after
 model reset is deterministic simulation initialization, not a silicon reset claim.
+
+The UART model owns a 64-byte RX FIFO for each of the three instances. It models
+FIFO order, drop-new-data FIFO overrun, overwrite-on-overrun non-FIFO mode,
+parity/framing test injection, read-clear line
+errors, RX thresholds, IRQ masks and pending delivery, FIFO reset and system
+reset. SDK FIFO access mode (`FAR` / `RX_FIFO_WRITE`) supplies controlled data and
+error inputs; DATA TX also supports loopback. `FIFO_STATUS` bit2 means not-empty
+and bit3 full; LINE_STATUS data-available is bit5. The RAM test's optional
+`--elf-uart-rx` image (build with `uart-rx-smoke`) consumes ten actual chardev
+bytes through the Rust HAL and checks that the FIFO then reports empty.
+
+The SDK does not establish the character-timeout duration. The model's
+`rx-timeout-ns` property defaults to zero (no synthesized timeout); tests inject
+100000 ns explicitly to exercise IRQ ID12 and cancellation. This is a test input,
+not a WS53 timing constant. Error-before-data IRQ priority is also a model policy
+awaiting hardware verification. UART reset supplies an explicitly configured
+console handoff, not measured silicon resets. Register width follows SDK word
+accesses; rejection of halfword accesses is the model contract, not a claim
+that silicon rejects them.
+
+TX currently goes straight to the chardev: no TX FIFO, shift-register delay or
+baud-accurate serial line is claimed. Modem/TX IRQs, auto flow control, PRO fields,
+DMA and unsupported MMIO are diagnosed rather than absorbed. FIFO-mode changes
+without an explicit RX reset are also unmodeled. Preserved configuration values
+alone are not proof of framing/divider hardware behavior. UART error flags are
+modeled, but the bootstrap HAL still lacks a fallible receive-error API and
+full clock/pin configuration; it must not be marked a complete UART driver.
 
 Build with `scripts/build.sh` using a private QEMU source tree. Then:
 

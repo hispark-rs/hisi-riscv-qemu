@@ -15,11 +15,13 @@
 #include "hw/qdev-properties.h"
 #include "hw/qdev-properties-system.h"
 #include "chardev/char.h"
+#include "chardev/char-fe.h"
 #include "system/system.h"
 #include "system/reset.h"
 #include "exec/address-spaces.h"
 #include "elf.h"
 #include "hisi_riscv31.h"
+#include "ws53_uart.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -167,6 +169,7 @@ static void ws53_init(MachineState *machine)
     ws63_make_ram(sys, &s->dtcm, "ws53.acore.dtcm", 0x20010000, 0x50000);
     /* No ROM, flash, shared-memory or catch-all unimplemented-device regions. */
     DeviceState *intc = qdev_new(TYPE_WS63_INTC);
+    object_property_add_child(OBJECT(machine), "intc", OBJECT(intc));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(intc), &error_fatal);
     for (unsigned i = 0; i < 2; i++) {
         s->timers[i].irq = qdev_get_gpio_in(intc, 53 + i);
@@ -179,7 +182,9 @@ static void ws53_init(MachineState *machine)
     const hwaddr bases[] = { 0x52081000, 0x52080000, 0x57014000 };
     const unsigned irqs[] = { 39, 41, 42 };
     for (unsigned i = 0; i < 3; i++) {
-        DeviceState *uart = qdev_new(TYPE_WS63_UART);
+        DeviceState *uart = qdev_new(TYPE_WS53_UART);
+        g_autofree char *name = g_strdup_printf("uart%u", i);
+        object_property_add_child(OBJECT(machine), name, OBJECT(uart));
         qdev_prop_set_chr(uart, "chardev", serial_hd(i));
         sysbus_realize_and_unref(SYS_BUS_DEVICE(uart), &error_fatal);
         sysbus_mmio_map(SYS_BUS_DEVICE(uart), 0, bases[i]);
@@ -215,5 +220,9 @@ static const TypeInfo ws53_type = {
     .instance_size = sizeof(WS53MachineState),
     .class_init = ws53_class_init,
 };
-static void ws53_register_types(void) { type_register_static(&ws53_type); }
+static void ws53_register_types(void)
+{
+    type_register_static(&ws53_uart_type);
+    type_register_static(&ws53_type);
+}
 type_init(ws53_register_types)
