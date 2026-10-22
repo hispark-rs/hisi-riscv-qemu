@@ -170,7 +170,7 @@ and the explicitly named watchdog model tests expect this diagnostic; RAM succes
 access. The model neither claims CPU entry/return, NMI nesting/maskability nor
 watchdog SoC reset behavior. It must not silently make NMI-using firmware pass.
 
-### Watchdog command and assumed-timing model
+## Watchdog command and assumed-timing model
 
 `ws53-wdt` at `0x5702b000` implements 32-bit command/status views from RDL
 4939cd2. `scripts/ws53_wdt_test.py` is included in the normal model regression.
