@@ -24,6 +24,7 @@
 #include "ws53_uart.c.inc"
 #include "ws53_gpio.c.inc"
 #include "ws53_pinctrl.c.inc"
+#include "ws53_nmi.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -194,6 +195,12 @@ static void ws53_init(MachineState *machine)
         sysbus_connect_irq(SYS_BUS_DEVICE(uart), 0, qdev_get_gpio_in(intc, irqs[i]));
     }
     const hwaddr gpio_bases[] = { 0x5700c000, 0x57028000, 0x57010000 };
+    DeviceState *nmi = qdev_new(TYPE_WS53_NMI);
+    object_property_add_child(OBJECT(machine), "nmi", OBJECT(nmi));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(nmi), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(nmi), 0, 0x52000700);
+    /* Do not route NMI through the ordinary local interrupt controller. CPU
+     * NMI semantics are pending; the device diagnoses any asserted output. */
     DeviceState *pinctrl = qdev_new(TYPE_WS53_PINCTRL);
     object_property_add_child(OBJECT(machine), "pinctrl", OBJECT(pinctrl));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(pinctrl), &error_fatal);
@@ -270,6 +277,7 @@ static void ws53_register_types(void)
     type_register_static(&ws53_uart_type);
     type_register_static(&ws53_gpio_type);
     type_register_static(&ws53_pinctrl_type);
+    type_register_static(&ws53_nmi_type);
     type_register_static(&ws53_type);
 }
 type_init(ws53_register_types)

@@ -6,7 +6,7 @@ Supported build pin: QEMU v10.0.0 (`7c949c53e936aa3a658d84ab53bae5cadaa5d59c`).
 
 Mapped regions: acore ITCM `0x20000..0x30000`, DTCM
 `0x20010000..0x20060000`, three basic UARTs, two 32 MHz timers, three GPIO banks,
-MCU/AON/TZPC pad controls and local interrupt controller/custom CSRs.
+MCU/AON/TZPC pad controls, NMI aggregation and local interrupt controller/custom CSRs.
 There are no catch-all MMIO absorbers, flash/ROM stubs,
 shared-memory aliases or fake control-core responses.
 
@@ -145,6 +145,33 @@ uv run --script scripts/test-ws53.py --qemu /path/to/qemu-system-riscv32 \
 means only the three UART features. These explicit injection images are for
 QEMU, not the default hardware RAM test. No physical pad mux, clock handoff,
 electrical behavior, debounce timing or GPIO silicon qualification is implied.
+
+The application NMI aggregation window is at `0x52000700`, following
+`hisi-registers` 4939cd2 and the SDK's selected `non_os` source profile. It accepts
+only halfword accesses at enable/raw/masked offsets 0/4/8. Five named source
+positions (bits1..5: WDT, XIP control, XIP cache, MDMA, SMDMA) drive raw status;
+enabled active sources produce the `pending` output. Reads do not acknowledge
+sources. Peripheral-side latching belongs to the source device and is not
+invented by this block. The deterministic RAM reset profile disables all
+enables but retains externally driven levels; this is not a silicon reset claim.
+
+`scripts/ws53_nmi_test.py` checks all 1024 source/enable combinations, held
+sources across mask/reset, last-source release and 16 invalid accesses/signals.
+Wrong widths, holes, unmodeled bits and status writes are diagnosed and leave
+state unchanged. Tests inject source levels via `/machine/nmi source`; there
+is no watchdog timer connected yet. These source names alone do not establish
+usable DMA engines or application ownership.
+
+**CPU NMI delivery is unimplemented.** The output is deliberately not connected
+to the ordinary local IRQ controller, and the first asserted output emits an
+`unimplemented CPU NMI delivery` diagnostic. Only the named aggregation tests
+expect this diagnostic; RAM success paths still reject every unimplemented
+access. The model neither claims CPU entry/return, NMI nesting/maskability nor
+watchdog reset behavior. It must not silently make NMI-using firmware pass.
+
+The shared Python qtest context now sends QMP `quit` with its qtest channel
+still open. This avoids racing socket closure/SIGTERM against QEMU's log timer
+teardown; strict NMI diagnostic checks retain no unrelated host warnings.
 
 Build with `scripts/build.sh` using a private QEMU source tree. Then:
 

@@ -53,20 +53,31 @@ def running(qemu, direct_gpio=True):
                             continue
                         assert parts and parts[0] == "OK", (text, parts)
                         return parts[1:]
-                def reset():
+                def qmp_execute(operation):
                     with connect(qm) as qmp, qmp.makefile("rwb", buffering=0) as stream:
                         json.loads(stream.readline())
-                        for name in ("qmp_capabilities", "system_reset"):
+                        for name in ("qmp_capabilities", operation):
                             stream.write(json.dumps({"execute": name}).encode() + b"\n")
                             while True:
                                 response = json.loads(stream.readline())
                                 assert "error" not in response, response
                                 if "return" in response:
                                     break
-                yield command, irq, reset, diagnostics
+                def reset():
+                    qmp_execute("system_reset")
+                try:
+                    yield command, irq, reset, diagnostics
+                finally:
+                    # Quit while the qtest channel is still open. Closing it
+                    # concurrently with SIGTERM races qtest's log timer teardown.
+                    if proc.poll() is None:
+                        qmp_execute("quit")
         finally:
-            proc.terminate()
-            _, errors = proc.communicate(timeout=5)
+            try:
+                _, errors = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                _, errors = proc.communicate(timeout=5)
             diagnostics.append(errors.decode(errors="replace"))
 
 
