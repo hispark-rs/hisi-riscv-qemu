@@ -26,6 +26,7 @@
 #include "ws53_pinctrl.c.inc"
 #include "ws53_nmi.c.inc"
 #include "ws53_wdt.c.inc"
+#include "ws53_tcxo.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -206,6 +207,10 @@ static void ws53_init(MachineState *machine)
     sysbus_mmio_map(SYS_BUS_DEVICE(wdt), 0, 0x5702b000);
     sysbus_connect_irq(SYS_BUS_DEVICE(wdt), 0,
                        qdev_get_gpio_in_named(nmi, "source", 1));
+    DeviceState *tcxo = qdev_new(TYPE_WS53_TCXO);
+    object_property_add_child(OBJECT(machine), "tcxo", OBJECT(tcxo));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(tcxo), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(tcxo), 0, 0x57000200);
     /* Do not route NMI through the ordinary local interrupt controller. CPU
      * NMI semantics are pending; the device diagnoses any asserted output. */
     DeviceState *pinctrl = qdev_new(TYPE_WS53_PINCTRL);
@@ -286,6 +291,7 @@ static void ws53_register_types(void)
     type_register_static(&ws53_pinctrl_type);
     type_register_static(&ws53_nmi_type);
     type_register_static(&ws53_wdt_type);
+    type_register_static(&ws53_tcxo_type);
     type_register_static(&ws53_type);
 }
 type_init(ws53_register_types)

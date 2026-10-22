@@ -59,6 +59,7 @@ cp "$HERE/src/hw/riscv/ws53_gpio.c.inc"                   "$QEMU_DIR/hw/riscv/ws
 cp "$HERE/src/hw/riscv/ws53_pinctrl.c.inc"                "$QEMU_DIR/hw/riscv/ws53_pinctrl.c.inc"
 cp "$HERE/src/hw/riscv/ws53_nmi.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_nmi.c.inc"
 cp "$HERE/src/hw/riscv/ws53_wdt.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_wdt.c.inc"
+cp "$HERE/src/hw/riscv/ws53_tcxo.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_tcxo.c.inc"
 cp "$HERE/src/target/riscv/insn_trans/trans_xlinx.c.inc" "$QEMU_DIR/target/riscv/insn_trans/trans_xlinx.c.inc"
 cp "$HERE/src/tests/qtest/ws63-test.c"                    "$QEMU_DIR/tests/qtest/ws63-test.c"
 

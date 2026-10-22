@@ -170,6 +170,39 @@ and the explicitly named watchdog model tests expect this diagnostic; RAM succes
 access. The model neither claims CPU entry/return, NMI nesting/maskability nor
 watchdog SoC reset behavior. It must not silently make NMI-using firmware pass.
 
+## TCXO application counter and snapshot model
+
+`ws53-tcxo` maps only `0x57000200..0x57000213`: the adjacent control-core window
+is not modeled. The five 32-bit slots follow RDL 4939cd2 and SDK 163d9150.
+The four count slots expose a single captured 64-bit counter, 16 bits per slot.
+Refresh invalidates stale data before completion; invalid snapshots, wrong
+widths, unknown commands, RO writes and reserved offsets produce diagnostics.
+Clear explicitly starts a new epoch; enable preserves the inherited epoch.
+
+The default 32 MHz input is the SDK reference configuration, not a measurement
+or clock-register model. `clock-frequency` accepts any nonzero u32 frequency.
+Counting uses QEMU virtual time with fractional cycles preserved across pauses;
+64-bit wrap is intentional. Test-only `clock` and `stall-snapshot` inputs on
+`/machine/tcxo` exercise stop/resume and incomplete snapshot handshakes. A pending
+request completes when both conditions allow it. Disable pauses this model;
+its physical semantics and latency are not claimed as verified silicon facts.
+
+`initial-count` seeds an inherited fixture epoch. `sticky-commands=on` retains
+the last written command bits on reads; the default returns zero for them.
+Both alternatives are tested so the HAL cannot rely on speculative self-clear
+timing or accidentally replay CLEAR during refresh. Immediate completion and
+model reset (disabled, invalid, seeded epoch) are deterministic test behavior,
+not silicon timing or reset values. External clock/stall inputs survive reset.
+
+`scripts/ws53_tcxo_test.py`, included in the standard WS53 model suite, checks
+stable snapshots, counter assembly, valid zero, clear, fractional clocks,
+stall/clock recovery, wrap across all data-word boundaries, extreme rates,
+both command-readback profiles and invalid accesses. The parent repository's
+`tcxo_control` RAM fixture additionally runs the actual Rust HAL in four
+scenarios: each command-readback profile, stopped input clock and stalled latch.
+No physical device is accessed. Control-core coordination, ROM execution,
+automatic clock setup and LPM compensation are not implemented by this device.
+
 ## Watchdog command and assumed-timing model
 
 `ws53-wdt` at `0x5702b000` implements 32-bit command/status views from RDL

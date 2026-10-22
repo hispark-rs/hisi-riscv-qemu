@@ -16,6 +16,7 @@ from ws53_gpio_ram_test import gpio_ram_test
 from ws53_pinctrl_test import pinctrl_test
 from ws53_nmi_test import nmi_test
 from ws53_wdt_test import wdt_test
+from ws53_tcxo_test import tcxo_test
 
 
 def connect(path):
@@ -308,6 +309,7 @@ if __name__ == "__main__":
               "uart": uart_test(args.qemu), "gpio": gpio_test(args.qemu),
               "pinctrl": pinctrl_test(args.qemu), "nmi": nmi_test(args.qemu),
               "wdt": wdt_test(args.qemu),
+              "tcxo": tcxo_test(args.qemu),
               "hardware_verified": False}
     if args.elf:
         result["ram"] = ram_test(args.qemu, args.elf)
