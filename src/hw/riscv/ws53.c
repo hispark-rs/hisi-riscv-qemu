@@ -191,6 +191,8 @@ static void ws53_init(MachineState *machine)
     /* A-board PWM_CFG retains pending after its initial load flag is ACKed
      * while LOCIEN72 is masked. Other sources need independent evidence. */
     ws63_intc_latch_source(intc, 72);
+    /* MDMA completion held high across local pending clear still delivers. */
+    ws63_intc_reassert_on_clear(intc, 58);
     object_property_add_child(OBJECT(machine), "intc", OBJECT(intc));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(intc), &error_fatal);
     DeviceState *tsensor = qdev_new(TYPE_WS53_TSENSOR);

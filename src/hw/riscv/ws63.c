@@ -139,6 +139,8 @@ struct WS63IntcState {
     CPURISCVState *env;            /* target hart (set by the machine) */
     uint32_t loci[0x40];           /* LOCIPRI/PRITHD read-back (0xBC0..0xBFF) */
     uint64_t latched_inputs[2];    /* machine-qualified sources only */
+    uint64_t reassert_on_clear[2]; /* qualified LOCIPCLR re-sampling */
+    uint64_t input_levels[2];
 };
 
 /* Single global so the (context-free) custom-CSR ops can reach the intc. */
@@ -159,6 +161,9 @@ static void ws63_intc_set_irq(void *opaque, int n, int level)
     if (n < 0 || n >= WS63_IRQ_MAX) {
         return;
     }
+    uint64_t bit = 1ULL << (n & 63);
+    if (level) { s->input_levels[n >> 6] |= bit; }
+    else { s->input_levels[n >> 6] &= ~bit; }
     if (!s->env) {
         return;
     }
@@ -198,6 +203,12 @@ void ws63_intc_latch_source(DeviceState *intc, unsigned irq)
 {
     g_assert(irq >= 32 && irq < WS63_IRQ_MAX);
     WS63_INTC(intc)->latched_inputs[irq >> 6] |= 1ULL << (irq & 63);
+}
+
+void ws63_intc_reassert_on_clear(DeviceState *intc, unsigned irq)
+{
+    g_assert(irq >= 32 && irq < WS63_IRQ_MAX);
+    WS63_INTC(intc)->reassert_on_clear[irq >> 6] |= 1ULL << (irq & 63);
 }
 
 static void ws63_intc_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
@@ -295,6 +306,15 @@ static RISCVException ws63_loci_write(CPURISCVState *env, int csrno,
         int irq = v & 0xFFF;
         if (irq >= 32 && irq < 128) {
             env->ws63_locipd[irq >> 6] &= ~(1ULL << (irq & 63));
+            /* A-board IRQ58 remains pending when its peripheral line is high
+             * across LOCIPCLR. Do not extend this evidence to other sources
+             * or infer retention after the peripheral source deasserts. */
+            if (g_ws63_intc && g_ws63_intc->env == env) {
+                uint64_t bit = 1ULL << (irq & 63);
+                env->ws63_locipd[irq >> 6] |= bit &
+                    g_ws63_intc->reassert_on_clear[irq >> 6] &
+                    g_ws63_intc->input_levels[irq >> 6];
+            }
             riscv_cpu_interrupt(env);
         }
         break;

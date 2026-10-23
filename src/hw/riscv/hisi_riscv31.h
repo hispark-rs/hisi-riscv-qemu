@@ -55,6 +55,9 @@ void ws63_intc_set_cpu_env(DeviceState *intc, CPURISCVState *env);
  * survives peripheral deassertion. Unselected sources retain legacy behavior. */
 void ws63_intc_latch_source(DeviceState *intc, unsigned irq);
 
+/* Machine-qualified input sampled again after LOCIPCLR, while held high. */
+void ws63_intc_reassert_on_clear(DeviceState *intc, unsigned irq);
+
 /* Override the shared TCXO model's TCXO_COUNT block offset (default WS63 0x4C0).
  * BS21 places TCXO_COUNT at the region base (TCXO_COUNT_BASE_ADDR 0x57000200), so
  * bs21.c sets this to 0. Call after qdev_new, before realize. */
