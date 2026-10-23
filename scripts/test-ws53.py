@@ -81,6 +81,13 @@ def model_test(qemu):
                 def step(ns):
                     command(f"clock_step {ns}")
                 assert read(0x110) == read(0x210) == 0
+                load_patterns = (0,1,2,7,15,16,17,31,32,33,0xff,0x100,
+                                 0x12345670,0x89abcdef,0xfffffff0,0xffffffff)
+                for offset in (0x100,0x200):
+                    for value in load_patterns:
+                        write(offset,value)
+                        assert read(offset) == value | 15
+                        assert read(offset) == value | 15
                 write(0x100, 320_000)
                 write(0x110, 1)  # one-shot, 10 ms at the SDK's 32 MHz
                 step(9_999_999)

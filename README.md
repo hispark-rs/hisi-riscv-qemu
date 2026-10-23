@@ -182,3 +182,13 @@ IRQ RAM镜像，7个字节全部经peer与AGPIO2采样，检查两次IRQ42通知
 格式、接收中改分频拒绝及禁止后端旁路；纳入完整 `test-ws53.py`。
 `pad-rx-frames` / `pad-rx-aborted` 为只读QOM统计。没有RX电气、过采样抗扰、
 Break、其他帧格式或精准分数分频调制的验收结论。
+
+### WS53 TIMER LOAD 读回
+
+`hisi-registers/evidence/ws53-timer-load-hil.json` 记录了A板两路TIMER各16种
+写入模式：CPU重复读回均为 `written | 0xF`，配置/运行/停止/到期阶段也一致。
+模型已分离“请求的计数”和“LOAD读回”，修正原先逐位返回写入值的假设；普通
+HAL仍完整写入32位请求，不做基于读回值的RMW。计时仍采用既有32MHz/请求计数
+假设，不能把低4位读回推断为实际16tick量化。未写过LOAD时的模型复位零值仍是
+确定性测试初值，没有实板POR证据。主工程两路TIMER async RAM测试同时观察该
+读回和中断取消；没有模拟低功耗或更改时钟后的延时补偿。

@@ -53,7 +53,7 @@ typedef struct WS53TimerChannel {
     QEMUTimer *timer;
     qemu_irq irq;
     uint32_t load, control, latched;
-    bool pending;
+    bool pending, load_written;
     int64_t start;
 } WS53TimerChannel;
 
@@ -110,7 +110,9 @@ static uint64_t ws53_timer_read(void *opaque, hwaddr off, unsigned size)
         unsigned i = (off >> 8) - 1;
         WS53TimerChannel *c = &s->timers[i];
         switch (off & 0xff) {
-        case 0x00: return c->load;
+        /* A-board CPU reads after writes force the low nibble high. Keep the
+         * requested countdown separate: sub16-tick timing is not qualified. */
+        case 0x00: return c->load_written ? (c->load | 0xf) : c->load;
         case 0x08: return c->latched;
         case 0x10: return c->control;
         case 0x18: return c->pending;
@@ -127,7 +129,7 @@ static void ws53_timer_write(void *opaque, hwaddr off, uint64_t val, unsigned si
     if (off >= 0x100 && off < 0x220) {
         WS53TimerChannel *c = &s->timers[(off >> 8) - 1];
         switch (off & 0xff) {
-        case 0x00: c->load = val; return;
+        case 0x00: c->load = val; c->load_written = true; return;
         case 0x14:
             if (val & 1) { c->pending = false; }
             ws53_timer_irq(c);
@@ -174,7 +176,7 @@ static void ws53_reset(void *opaque)
         timer_del(c->timer);
         /* Deterministic model initialization, not measured silicon resets. */
         c->load = c->control = c->latched = 0;
-        c->pending = false;
+        c->pending = c->load_written = false;
         ws53_timer_irq(c);
     }
 }
