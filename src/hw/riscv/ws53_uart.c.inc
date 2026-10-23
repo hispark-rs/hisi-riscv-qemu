@@ -37,6 +37,13 @@ struct WS53UartState {
     unsigned pad_rx_phase;
     uint8_t pad_rx_byte;
     uint64_t pad_rx_bit_ns, pad_rx_frames, pad_rx_aborted;
+    bool peer_profile, peer_active;
+    uint32_t peer_baud;
+    QEMUTimer *peer_timer;
+    qemu_irq peer_level, peer_drive;
+    uint8_t peer_bytes[WS53_UART_DEPTH], peer_byte;
+    unsigned peer_head, peer_count, peer_phase;
+    uint64_t peer_frames;
 };
 
 /* Wire profiles share divisor arithmetic at an assumed stable32MHz input.
@@ -428,9 +435,41 @@ static const MemoryRegionOps ws53_uart_ops = {
     .impl = { .min_access_size = 4, .max_access_size = 4 },
 };
 
+/* Independent8N1 host peer. It drives a fixed board pad, never calls RX FIFO
+ * push. Chip clock/reset cannot pause an external sender. Whole-machine reset
+ * resets this virtual peer too; no CTS/RTS or electrical behavior is inferred. */
+static void ws53_uart_peer_resume(WS53UartState *s)
+{
+    if (s->peer_active || !s->peer_count) { return; }
+    s->peer_byte = s->peer_bytes[s->peer_head];
+    s->peer_head = (s->peer_head + 1) % WS53_UART_DEPTH;
+    s->peer_count--;
+    s->peer_active = true;
+    s->peer_phase = 0;
+    qemu_set_irq(s->peer_level, 0);
+    timer_mod(s->peer_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              DIV_ROUND_UP(1000000000ULL, s->peer_baud));
+    qemu_chr_fe_accept_input(&s->chr);
+}
+static void ws53_uart_peer_tick(void *opaque)
+{
+    WS53UartState *s = opaque;
+    if (++s->peer_phase < 10) {
+        qemu_set_irq(s->peer_level, s->peer_phase == 9 ? 1 :
+                     ((s->peer_byte >> (s->peer_phase - 1)) & 1));
+        timer_mod(s->peer_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  DIV_ROUND_UP(1000000000ULL, s->peer_baud));
+    } else {
+        s->peer_frames++;
+        s->peer_active = false;
+        ws53_uart_peer_resume(s);
+    }
+}
+
 static int ws53_uart_can_receive(void *opaque)
 {
     WS53UartState *s = opaque;
+    if (s->peer_profile) { return WS53_UART_DEPTH - s->peer_count; }
     /* Wire-profile input must traverse pad selection, not the logical byte
      * backend. A serial virtual peer may drive that pad separately. */
     return s->soft_reset_asserted || s->pad_rx_profile ? 0 : ws53_uart_capacity(s) - s->count;
@@ -439,6 +478,17 @@ static int ws53_uart_can_receive(void *opaque)
 static void ws53_uart_receive(void *opaque, const uint8_t *buf, int size)
 {
     WS53UartState *s = opaque;
+    if (s->peer_profile) {
+        for (int i = 0; i < size; i++) {
+            if (s->peer_count == WS53_UART_DEPTH) {
+                qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: peer input exceeded advertised capacity\n");
+                break;
+            }
+            s->peer_bytes[(s->peer_head + s->peer_count++) % WS53_UART_DEPTH] = buf[i];
+        }
+        ws53_uart_peer_resume(s);
+        return;
+    }
     if (s->soft_reset_asserted || s->pad_rx_profile) { return; }
     for (int i = 0; i < size; i++) {
         ws53_uart_push(s, buf[i], 0);
@@ -453,6 +503,13 @@ static void ws53_uart_reset(void *opaque)
     timer_del(s->tx_timer);
     ws53_uart_pad_rx_abort(s);
     s->pad_rx_frames = s->pad_rx_aborted = 0;
+    if (s->peer_profile) {
+        timer_del(s->peer_timer);
+        s->peer_active = false;
+        s->peer_head = s->peer_count = s->peer_frames = 0;
+        qemu_set_irq(s->peer_level, 1);
+        qemu_set_irq(s->peer_drive, 1);
+    }
     s->tx_head = s->tx_count = 0;
     s->tx_active = s->tx_halt = false; s->transmitted = 0;
     s->head = s->count = 0;
@@ -520,9 +577,16 @@ static void ws53_uart_realize(DeviceState *dev, Error **errp)
     if (s->pad_rx_profile) {
         qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: RX pad8N1 center sampling assumes stable32MHz; physical timing unqualified\n");
     }
+    if (s->peer_profile) {
+        if (!s->pad_rx_profile || s->peer_baud < 1200 || s->peer_baud > 4000000) {
+            error_setg(errp, "ws53-uart: RX peer requires RX pad profile and baud1200..4000000"); return;
+        }
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: host8N1 peer drives fixed RX board pad; no flow control\n");
+    }
     s->timeout = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_uart_timeout, s);
     s->tx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_uart_tx_complete, s);
     s->pad_rx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_uart_pad_rx_sample, s);
+    s->peer_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_uart_peer_tick, s);
     qemu_chr_fe_set_handlers(&s->chr, ws53_uart_can_receive, ws53_uart_receive,
                             NULL, NULL, s, NULL, true);
     qemu_register_reset(ws53_uart_reset, s);
@@ -534,6 +598,8 @@ static const Property ws53_uart_properties[] = {
     DEFINE_PROP_BOOL("assume-dma-profile", WS53UartState, dma_profile, false),
     DEFINE_PROP_BOOL("assume-pad-tx", WS53UartState, pad_profile, false),
     DEFINE_PROP_BOOL("assume-pad-rx", WS53UartState, pad_rx_profile, false),
+    DEFINE_PROP_BOOL("assume-rx-peer", WS53UartState, peer_profile, false),
+    DEFINE_PROP_UINT32("rx-peer-baud", WS53UartState, peer_baud, 115200),
     DEFINE_PROP_BOOL("div-l-read-requires-enable", WS53UartState, div_l_read_requires_enable, false),
     DEFINE_PROP_UINT64("char-ns", WS53UartState, char_ns, 10000),
 };
@@ -549,6 +615,8 @@ static void ws53_uart_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(obj), &s->pad_level, "pad-tx-level", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->pad_drive, "pad-tx-drive", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->pad_frame_event, "pad-tx-frame", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->peer_level, "peer-rx-level", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->peer_drive, "peer-rx-drive", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_tx_gate, "clock", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_tx_stall, "tx-stall", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_soft_reset_n, "soft-reset-n", 1);
@@ -557,6 +625,7 @@ static void ws53_uart_init(Object *obj)
     object_property_add_uint64_ptr(obj, "transmitted", &s->transmitted, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "pad-rx-frames", &s->pad_rx_frames, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "pad-rx-aborted", &s->pad_rx_aborted, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "rx-peer-frames", &s->peer_frames, OBJ_PROP_FLAG_READ);
 }
 
 static void ws53_uart_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)

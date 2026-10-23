@@ -348,6 +348,7 @@ static void ws53_init(MachineState *machine)
     DeviceState *pinctrl = qdev_new(TYPE_WS53_PINCTRL);
     object_property_add_child(OBJECT(machine), "pinctrl", OBJECT(pinctrl));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(pinctrl), &error_fatal);
+    const unsigned uart_rx_peer_pads[] = { 36, 18, 34 };
     for (unsigned i = 0; i < 3; i++) {
         qdev_connect_gpio_out_named(uarts[i], "pad-tx-level", 0,
             qdev_get_gpio_in_named(pinctrl, "uart-tx-level", i));
@@ -359,6 +360,10 @@ static void ws53_init(MachineState *machine)
             qdev_get_gpio_in_named(uarts[i], "pad-rx-level", 0));
         qdev_connect_gpio_out_named(pinctrl, "uart-rx-enable", i,
             qdev_get_gpio_in_named(uarts[i], "pad-rx-enable", 0));
+        qdev_connect_gpio_out_named(uarts[i], "peer-rx-level", 0,
+            qdev_get_gpio_in_named(pinctrl, "external-level", uart_rx_peer_pads[i]));
+        qdev_connect_gpio_out_named(uarts[i], "peer-rx-drive", 0,
+            qdev_get_gpio_in_named(pinctrl, "external-drive", uart_rx_peer_pads[i]));
     }
     qdev_connect_gpio_out_named(pwm, "out", 0,
         qdev_get_gpio_in_named(pinctrl, "pwm0-level", 0));

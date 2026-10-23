@@ -21,6 +21,7 @@ from ws53_uart_reset_test import uart_reset_test
 from ws53_uart_l0_reset_test import uart_l0_reset_test
 from ws53_uart_pads_test import uart_pads_test
 from ws53_uart_rx_pads_test import uart_rx_pads_test
+from ws53_uart_peer_test import uart_peer_test
 from ws53_tcxo_test import tcxo_test
 from ws53_rtc_test import rtc_test
 from ws53_pwm_test import pwm_test
@@ -334,6 +335,7 @@ if __name__ == "__main__":
               "uart_l0_reset": uart_l0_reset_test(args.qemu),
               "uart_pads": uart_pads_test(args.qemu),
               "uart_rx_pads": uart_rx_pads_test(args.qemu),
+              "uart_peer": uart_peer_test(args.qemu),
         "uart_reset": uart_reset_test(args.qemu), "gpio": gpio_test(args.qemu),
               "pinctrl": pinctrl_test(args.qemu), "nmi": nmi_test(args.qemu),
               "wdt": wdt_test(args.qemu),

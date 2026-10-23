@@ -163,8 +163,18 @@ UART2/AGPIO2(mode1)。要求输入缓冲使能，且外部驱动或内部pull建
 
 开启RX模型会禁止原字符后端直接向FIFO注入字节，测试须通过
 `/machine/pinctrl` 的 `external-level` / `external-drive` 数字输入驱动实际pad。
-宿主字节到数字波形的虚拟串口对端及RAM实板同镜像RX流程尚待接入；不能把
-旧逻辑字节注入的回归当作RX引脚验证。RX默认关闭，旧场景保持兼容。
+也可额外开启 `ws53-uart.assume-rx-peer=on`，将字符后端输入交给独立8N1
+发送器，再经固定板端 pad（UART0/AGPIO4、UART1/MGPIO18、UART2/AGPIO2）
+的复用和输入使能进入RX采样器。`rx-peer-baud`默认115200，可设1200..4000000，
+独立于芯片分频器。64字节等待队列通过字符后端背压保序；目标时钟或外设复位
+不会暂停发送器，整机复位则清空虚拟对端。不能同时用qtest在同一pad注入另一个
+外部驱动；不模拟流控、电气争用或精确物理时序。RX及peer默认关闭，旧场景保持兼容。
+
+`scripts/ws53_uart_peer_test.py` 检查三个对端、输入选择、独立时钟/复位及超过
+队列容量的收发。主工程 `test-ws53-uart-host.py --mode irq-pad` 使用现有UART2
+IRQ RAM镜像，7个字节全部经peer与AGPIO2采样，检查两次IRQ42通知及取消后读取。
+同镜像三轮实板对照仅确认继承配置的UART2正常接收；UART0/1物理RX及错误路径
+仍待验收。只读 `rx-peer-frames` 统计发送完毕的帧，区别于 `pad-rx-frames`。
 
 `uv run --script scripts/ws53_uart_rx_pads_test.py --qemu <qemu-system-riscv32>`
 覆盖四组路由各256字节、数据IRQ及屏蔽恢复、帧错误读清、FIFO满/溢出、起始
