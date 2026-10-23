@@ -169,7 +169,30 @@ def rtc_test(qemu):
     assert lines.count(NOTICE) == 2
     invalid = [line for line in lines if line != NOTICE]
     assert len(invalid) == rejected and all(line.startswith('ws53-rtc: unimplemented') for line in invalid), lines
+    # Explicit HIL regression profile: EOI is posted, repeated writes cannot
+    # postpone the original acknowledgement forever. Both instances qualify.
+    delayed=profile()+('-global','ws53-rtc.counter-hz=32000',
+                       '-global','ws53-rtc.ack-delay-ns=32000')
+    with running(qemu, False, delayed) as (command, irq, reset, diagnostics):
+        command('irq_intercept_in /machine/intc')
+        for ch in range(2):
+            read,write,sample,start,step,_=access(command,ch)
+            start(31)
+            step(999999); assert read(0x18)==0
+            step(1); assert read(0x18)==1
+            write(0x10,0); assert irq.get(49+ch,False)
+            write(0x14,1); assert read(0x18)==1
+            step(16000); write(0x14,1)
+            step(15999); assert read(0x18)==1
+            step(1); assert read(0x18)==0 and not irq.get(49+ch,False)
+            start(0); step(31250); write(0x14,1)
+            reset(); assert read(0x18)==0
+            start(0); step(32000); assert read(0x18)==1
+    assert diagnostics[0].splitlines()==[
+        NOTICE.replace('32768','32000'),
+        'ws53-rtc: assumed EOI synchronization delay=32000ns']*2
     return {'channels': 2, 'irqs': [49, 50], 'profile_count_bits': 32,
+            'delayed_ack_profile': {'clock_hz':32000,'delay_ns':32000,'reset_cancels_pending':True},
             'assume_timing_required': True, 'clock_hz': 32768, 'command_readback_profiles': 2,
             'modes_tested': [0, 1, 2, 3], 'invalid_accesses_diagnosed': rejected,
             'checks': ['zero/max count', 'latched not live words', 'masked raw pending',

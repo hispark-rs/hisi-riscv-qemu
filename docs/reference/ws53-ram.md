@@ -1135,3 +1135,29 @@ No invalid waveform is claimed: invalid groups still suppress modeled output
 atomically, an earlier assumption unqualified by this single-channel test.
 Reset clears both active and sticky state. Tests exercise masking, W1C during
 fault, repair, unmask without retrigger, and existing normal output regression.
+
+### RTC A-board counter and posted EOI (2026-10-24)
+
+`ws53-rtc.counter-hz=32000` is a bounded A-board observation profile, separate
+from the default32768Hz SDK profile. At nominal TIMER1 32MHz,120ms gives about
+3850 RTC ticks on each physical channel; QEMU gives3840. The strict shared UART
+oracle accepts3800..3900, excludes the SDK profile, and retains the raw difference.
+This is not a calibrated clock measurement or identification of its source.
+
+EOI writes do not immediately deassert physical RAW_INTR: the first fixture
+hit an8-entry ISR safety cap. `ack-delay-ns=32000` introduces a posted command
+for regression: status and IRQ remain high until the scheduled completion.
+32000ns is an explicit test assumption, not an observed hardware bound. Default0
+retains the original idealized source tests. Repeated EOI does not postpone an
+already queued completion; reset cancels it. Other delay values are rejected.
+Stopped-clock EOI and an expiry coinciding with completion are not qualified.
+
+The shared `rtc-smoke` fixture suspends local IRQ49/50 in ISR before EOI;
+normal context checks raw status with bounded32us polling, clears local pending
+and re-enables only after deassertion. Both channels deliver four events across
+masked one-shot, periodic and rearmed one-shot tests; stop prevents later events.
+Three identical ELF runs (`3d41b3bee130619281c66738f44f5c3234c6075a3c2e085aa98530ab3c70fc16`)
+match the strict state/notification oracle, while numeric counter values retain
+their difference. See hisi-registers `evidence/ws53-rtc-hil.json` and integration
+`docs/plan/evidence/ws53-rtc-hil-2026-10-24/summary.json` for failures and final runs.
+No common RTC registers, clock mux, low-power service or Flash were changed.
