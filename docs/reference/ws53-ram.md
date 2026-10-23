@@ -502,3 +502,56 @@ real HAL/PAC with reference code933, out-of-reference code1023, clock stopped
 before first readiness and unknown CONTROL. It verifies bounded timeout/retry,
 retained permissions and no restart on reattachment using QOM counters. These
 are digital-contract tests, not calibrated sensor, power or electrical evidence.
+
+## I2S stereo functional profile
+
+`ws53-i2s` maps the WS53-specific SIO v151 registers at `0x52030000`,
+AUDIO_CMU_NEW_CFG0 at `0x57008600`, and IRQ67. Register layout and width codes
+come from SDK `163d9150` and hisi-registers `471ef7c` (C source-contract oracle).
+Width codes **1..5** mean 16/18/20/24/32 bits; zero is reserved. These are not
+WS63's register definitions. Enable `-global ws53-i2s.assume-profile=on` to run
+transfers; otherwise enable commands fail with an explicit diagnostic.
+
+The opted-in **unverified digital assumptions** are:
+
+- Stereo I2S, either edge and master/slave roles; four independent eight-word
+  FIFOs. Merged FIFOs, PCM, additional channels, signed extension, loopback,
+  alternate clock selectors and DMA are rejected rather than emulated as success.
+- Master uses a32MHz source. One frame takes `ceil(div * 2 * width *1e9 /32e6)`
+  ns, where divider is1..127 and FS ratio equals width. Slave has a virtual peer
+  period (`slave-period-ns`, default100000ns) and independent `slave-clock` input.
+  There is no audio waveform, physical pin routing or exact silicon timing proof.
+- A separate serializer takes one pair from TX at frame start and completes it
+  later. FIFO-empty therefore precedes wire completion. Continuous clocks with
+  empty left/right TX latch independent underflow sources. Missing samples use
+  zero and retain errors; the model does not pretend the transaction succeeded.
+- Duplex peer returns left TX XOR`0xa5a5` and right TX XOR`0x5a5a`, masked to the
+  configured width. RX-only peer sends the completed-frame counter and its inverse.
+  Each full RX side drops its new sample and latches its own overflow bit.
+- Raw INTSTATUS reports sticky errors and live thresholds (RX both depths above
+  RX threshold; TX maximum depth at/below TX threshold). INTCLR acknowledges
+  sticky bits; threshold levels reassert. INTMASK one masks, CT interrupt-enable
+  gates IRQ67. The raw-status and threshold details remain model assumptions.
+- CT_SET/CLR are write-only commands. Channel reset discards FIFOs, partial frame
+  and errors but preserves config. Stop/direction changes discard a partial frame,
+  never establish lossless drain. System reset clears config/counters as model
+  policy, not documented silicon reset values.
+- Gate, CMU bit0, CRG bit1 and external `clock`/`stall` pause frame progress and
+  preserve remaining time. `reset-stall` keeps queued data through channel reset
+  for recovery-failure tests. External clock/fault inputs survive system reset.
+
+The new `ws53-mclken0` provider is the single register backing PWM's16-bit and
+I2S's32-bit M_CLKEN0 views at `0x52000040`. Bit7 drives PWM, bit2 drives I2S.
+Other bits are inherited opaque state (`initial-value` test property); attempts
+to change them diagnose unsupported behavior. Halfword writes preserve the upper
+half. This checks RMW interoperability without inventing additional peripherals.
+
+`scripts/ws53_i2s_test.py` verifies all20 width/role/edge combinations with101
+continuous frames each, divider endpoints, data-dependent replies, short RX,
+FIFO depth, separate serializer, independent faults, IRQ masks/W1C/thresholds,
+clock pause/resume, reset failure/recovery, shared PWM clocks and39 invalid
+access/configuration diagnostics. It is part of `scripts/test-ws53.py`.
+The integration repository's `examples/ws53/i2s_control` runs the actual Rust
+HAL/PAC in RAM, with normal and stopped-clock fixtures. Its unsafe pad/ownership
+handoffs and external quiescence proof apply **only to this model**. Neither
+qtest nor these RAM fixtures count as physical I2S acceptance.

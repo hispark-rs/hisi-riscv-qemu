@@ -187,7 +187,7 @@ def pwm_test(qemu):
         command('writew 0x5200007c 0x43')
         step(1000); assert read(0x12c) == 1
     invalid = [line for line in diagnostics[0].splitlines() if line != NOTICE]
-    assert len(invalid) == rejected and all(line.startswith('ws53-pwm: unimplemented') for line in invalid), diagnostics
+    assert len(invalid) == rejected and all(line.startswith(('ws53-pwm: unimplemented', 'ws53-mclken0: unimplemented')) for line in invalid), diagnostics
 
     return {'channels': 8, 'groups': 4, 'irqs': [71, 72],
             'assume_timing_required': True, 'clock_hz': 32000000,

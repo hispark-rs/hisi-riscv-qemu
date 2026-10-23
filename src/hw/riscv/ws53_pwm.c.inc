@@ -17,7 +17,7 @@ typedef struct WS53PwmChannel {
 } WS53PwmChannel;
 struct WS53PwmState {
     SysBusDevice parent_obj;
-    MemoryRegion mmio, gate_mmio, div_mmio;
+    MemoryRegion mmio, div_mmio;
     QEMUTimer *timer;
     qemu_irq irq[2], out[8], oe[8];
     WS53PwmChannel channel[8];
@@ -222,25 +222,16 @@ static void ws53_pwm_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
 invalid:
     qemu_log_mask(LOG_GUEST_ERROR, "ws53-pwm: unimplemented write +0x%" HWADDR_PRIx " value=0x%" PRIx64 " size=%u\n", off, v, size);
 }
-static uint64_t ws53_pwm_gate_read(void *opaque, hwaddr off, unsigned size)
-{
-    WS53PwmState *s = opaque;
-    if (!off && size == 2) { return s->gate; }
-    qemu_log_mask(LOG_GUEST_ERROR, "ws53-pwm: unimplemented gate read size=%u\n", size); return 0;
-}
 static uint64_t ws53_pwm_div_read(void *opaque, hwaddr off, unsigned size)
 {
     WS53PwmState *s = opaque;
     if (!off && size == 2) { return s->div; }
     qemu_log_mask(LOG_GUEST_ERROR, "ws53-pwm: unimplemented divider read size=%u\n", size); return 0;
 }
-static void ws53_pwm_gate_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
+static void ws53_pwm_gate_input(void *opaque, int n, int level)
 {
     WS53PwmState *s = opaque;
-    if (off || size != 2 || (v & ~0x80u)) {
-        qemu_log_mask(LOG_GUEST_ERROR, "ws53-pwm: unimplemented gate write value=0x%" PRIx64 " size=%u\n", v, size); return;
-    }
-    ws53_pwm_sync(s); s->gate = v; ws53_pwm_arm(s);
+    ws53_pwm_sync(s); s->gate = level ? 0x80 : 0; ws53_pwm_arm(s);
 }
 static void ws53_pwm_div_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
 {
@@ -258,7 +249,6 @@ static void ws53_pwm_div_write(void *opaque, hwaddr off, uint64_t v, unsigned si
         .valid={.min_access_size=1,.max_access_size=8,.unaligned=true}, \
         .impl={.min_access_size=1,.max_access_size=8,.unaligned=true} }
 WS53_PWM_OPS(ws53_pwm_ops, ws53_pwm_read, ws53_pwm_write);
-WS53_PWM_OPS(ws53_pwm_gate_ops, ws53_pwm_gate_read, ws53_pwm_gate_write);
 WS53_PWM_OPS(ws53_pwm_div_ops, ws53_pwm_div_read, ws53_pwm_div_write);
 #undef WS53_PWM_OPS
 static void ws53_pwm_clock_input(void *opaque, int n, int level)
@@ -271,7 +261,7 @@ static void ws53_pwm_reset(void *opaque)
     WS53PwmState *s = opaque;
     timer_del(s->timer); memset(s->channel, 0, sizeof(s->channel));
     memset(s->select, 0, sizeof(s->select)); memset(s->clear, 0, sizeof(s->clear));
-    s->event_enable = s->group_errors = s->count_errors = s->gate = s->div = s->latched_div = 0;
+    s->event_enable = s->group_errors = s->count_errors = s->div = s->latched_div = 0;
     for (unsigned i = 0; i < 8; i++) {
         s->channel[i].last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL); ws53_pwm_output(s, i);
     }
@@ -289,15 +279,14 @@ static void ws53_pwm_init(Object *obj)
     WS53PwmState *s = WS53_PWM(obj);
     s->external_clock = true;
     memory_region_init_io(&s->mmio, obj, &ws53_pwm_ops, s, TYPE_WS53_PWM, 0x51c);
-    memory_region_init_io(&s->gate_mmio, obj, &ws53_pwm_gate_ops, s, "ws53-pwm-gate", 2);
     memory_region_init_io(&s->div_mmio, obj, &ws53_pwm_div_ops, s, "ws53-pwm-divider", 2);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
-    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->gate_mmio);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->div_mmio);
     for (unsigned i = 0; i < 2; i++) { sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq[i]); }
     qdev_init_gpio_out_named(DEVICE(obj), s->out, "out", 8);
     qdev_init_gpio_out_named(DEVICE(obj), s->oe, "output-enable", 8);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_pwm_clock_input, "clock", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_pwm_gate_input, "gate", 1);
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_pwm_tick, s);
 }
 static void ws53_pwm_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)

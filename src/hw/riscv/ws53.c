@@ -33,6 +33,8 @@
 #include "ws53_mclken1.c.inc"
 #include "ws53_spi.c.inc"
 #include "ws53_tsensor.c.inc"
+#include "ws53_i2s.c.inc"
+#include "ws53_mclken0.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -259,10 +261,23 @@ static void ws53_init(MachineState *machine)
     object_property_add_child(OBJECT(machine), "pwm", OBJECT(pwm));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(pwm), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(pwm), 0, 0x52082000);
-    sysbus_mmio_map(SYS_BUS_DEVICE(pwm), 1, 0x52000040);
-    sysbus_mmio_map(SYS_BUS_DEVICE(pwm), 2, 0x5200007c);
+    sysbus_mmio_map(SYS_BUS_DEVICE(pwm), 1, 0x5200007c);
     sysbus_connect_irq(SYS_BUS_DEVICE(pwm), 0, qdev_get_gpio_in(intc, 71));
     sysbus_connect_irq(SYS_BUS_DEVICE(pwm), 1, qdev_get_gpio_in(intc, 72));
+
+    DeviceState *i2s = qdev_new(TYPE_WS53_I2S);
+    object_property_add_child(OBJECT(machine), "i2s", OBJECT(i2s));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(i2s), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(i2s), 0, 0x52030000);
+    sysbus_mmio_map(SYS_BUS_DEVICE(i2s), 1, 0x57008600);
+    sysbus_connect_irq(SYS_BUS_DEVICE(i2s), 0, qdev_get_gpio_in(intc, 67));
+
+    DeviceState *mclken0 = qdev_new(TYPE_WS53_MCLKEN0);
+    object_property_add_child(OBJECT(machine), "mclken0", OBJECT(mclken0));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(mclken0), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(mclken0), 0, 0x52000040);
+    qdev_connect_gpio_out_named(mclken0, "gate", 0, qdev_get_gpio_in_named(pwm, "gate", 0));
+    qdev_connect_gpio_out_named(mclken0, "gate", 1, qdev_get_gpio_in_named(i2s, "gate", 0));
     /* Do not route NMI through the ordinary local interrupt controller. CPU
      * NMI semantics are pending; the device diagnoses any asserted output. */
     DeviceState *pinctrl = qdev_new(TYPE_WS53_PINCTRL);
@@ -346,6 +361,8 @@ static void ws53_register_types(void)
     type_register_static(&ws53_tcxo_type);
     type_register_static(&ws53_rtc_type);
     type_register_static(&ws53_pwm_type);
+    type_register_static(&ws53_i2s_type);
+    type_register_static(&ws53_mclken0_type);
     type_register_static(&ws53_i2c_type);
     type_register_static(&ws53_mclken1_type);
     type_register_static(&ws53_spi_type);
