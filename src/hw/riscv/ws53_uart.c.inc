@@ -197,7 +197,7 @@ static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
     case 0x08: return s->control;
     case 0x0c: return s->div_h;
     case 0x10:
-        /* Observed on A-board UART2. Other instances remain unqualified. */
+        /* Observed on all three A-board application UARTs; high latch unqualified. */
         return s->div_l_read_requires_enable && !(s->control & 1) ? 0 : s->div_l;
     case 0x14: return s->div_fra;
     case 0x18: return s->ier;
@@ -217,8 +217,9 @@ static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
     case 0x38: return s->scratch;
     case 0x44: return (s->dma_profile ?
                       ((s->tx_count == ws53_uart_capacity(s) ? 1 : 0) | (!s->tx_count ? 2 : 0)) : 2) |
-                       (s->count ? 4 : 0) |
-                       (s->count == ws53_uart_capacity(s) ? 8 : 0);
+                       ((s->fifo & 0x10) ?
+                        ((s->count == ws53_uart_capacity(s) ? 4 : 0) | (!s->count ? 8 : 0)) : 0) |
+                       (s->count ? 0x10 : 0); /* Observed RX-pending busy; TX-only unqualified. */
     case 0x48: return s->tx_count;
     case 0x4c: return s->count;
     case 0x58: return s->baud;
@@ -253,7 +254,11 @@ static void ws53_uart_write(void *opaque, hwaddr off, uint64_t value, unsigned s
         }
         return;
     }
-    case 0x08: s->control = value & 0xff; ws53_uart_rx_activity(s); return;
+    case 0x08:
+        /* A-board all-three-port observation: DIV_EN cannot be set with
+         * queued RX. Other CTL bit acceptance and TX-only busy are unqualified. */
+        if (s->count) { value = (value & ~1u) | (s->control & 1); }
+        s->control = value & 0xff; ws53_uart_rx_activity(s); return;
     case 0x0c: s->div_h = value & 0xff; ws53_uart_rx_activity(s); return;
     case 0x10: s->div_l = value & 0xff; ws53_uart_rx_activity(s); return;
     case 0x14: s->div_fra = value & 0x3f; ws53_uart_rx_activity(s); return;

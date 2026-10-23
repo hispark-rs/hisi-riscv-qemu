@@ -201,13 +201,13 @@ def uart_test(qemu):
                         return int(command(f"readl {base + off:#x}")[0], 0)
                     def write(off, value):
                         command(f"writel {base + off:#x} {value:#x}")
-                    assert read(0x44) == 2 and read(0x34) == 0xc0
+                    assert read(0x44) == 10 and read(0x34) == 0xc0
                     assert read(0x4c) == 0 and (read(0) & 15) == 1
                     write(0x28, 1)  # SDK-defined FIFO test injection
                     write(0x24, 0x50)
                     for value in range(64):
                         write(0x40, value)
-                    assert read(0x4c) == 64 and read(0x44) == 14
+                    assert read(0x4c) == 64 and read(0x44) == 22
                     assert read(0) & 15 == 1 and not irq[irq_number], "RX ignored mask"
                     write(0x18, 4)
                     assert read(0) & 15 == 4 and irq[irq_number], "pending RX not unmasked"
@@ -218,7 +218,7 @@ def uart_test(qemu):
                     assert read(0x34) & 8 == 0, "overrun did not clear on status read"
                     for value in range(64):
                         assert read(4) == value, "FIFO pop order/overflow retention"
-                    assert read(0x44) == 2 and read(0x4c) == 0
+                    assert read(0x44) == 10 and read(0x4c) == 0
                     assert read(0x34) & 0x20 == 0, "empty FIFO falsely claims RX data"
                     # Framing and parity are captured once, then clear on LSR read.
                     write(0x18, 1)

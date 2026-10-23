@@ -1243,3 +1243,23 @@ hardware versus1 in QEMU, and FIFO_STATUS0x12 versus0x06. The integration offlin
 comparator retains these four differences and exits1, even though all11 fields
 in the confirmed subset agree. RX-dependent divisor access and FIFO status bit
 semantics require further physical measurements; no HAL reset API graduates.
+
+### UART RX occupancy and divisor access correction (2026-10-24)
+
+The subsequent three-port observation supersedes the four differences above.
+With FIFO enabled, FIFO_STATUS is0x0a empty,0x12 at1/2 bytes, and0x16 at64 bytes.
+Bit2 is RX full and bit3 RX empty; the SDK non-PRO comments were reversed in
+meaning. Bit4 follows queued RX in these tests; TX-only busy remains unqualified.
+An attempted DIV_EN set does not latch while RX is queued. Draining restores
+access and reads the programmed low divisor17. The model preserves DIV_EN while
+RX is pending; it does not claim other CTL-bit or TX-only busy acceptance rules.
+
+Three same-image physical runs include36 snapshots across all ports and six
+occupancy phases, preserving all64 loopback bytes. The corrected model matches
+all snapshots and the H1/H0 reset records; the combined RAM runner additionally
+requires exact UART bytes. Firmware SHA256 is
+`f4be8ad5dbc4bfd37008f0fc5770b9388d0ccf09f21bf7dbec6a436887d02e56`.
+Source evidence is `hisi-registers/evidence/ws53-uart-access-hil.json`; integration
+`uart-access-probe` checks the measured profile, not merely log completeness.
+Reset defaults, UART2 reset, nonzero DIV_H, disabled byte mode, IRQ/DMA in-flight
+reset, clock ownership and physical pad timing still require separate evidence.
