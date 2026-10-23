@@ -1051,10 +1051,10 @@ hardware constant. At acceptance the model samples live configuration;
 early shadow changes are visible. `clear=immediate` in the older notice means
 immediate at acceptance. Default0 retains the synchronous assumption for
 existing tests. Finite initial loads assert the configuration flag in both
-profiles. Continuous initial notification and exact pulse-counter phases are
-still unqualified (silicon reported counter1 during the first high, whereas
-the current model counts completed periods). Do not use this counter model
-as a hardware completion oracle.
+profiles. Continuous initial notification and exact counter boundaries remain
+unqualified. The follow-up finite-counter observations below replace the
+former completed-period readback model for pulse blocks; the raw counter
+alone still cannot establish the elapsed number of repeated blocks.
 
 `scripts/ws53_pwm_start_test.py` checks early EN overwrite, initial flag before
 completion, exact8/16 digital pulses, deferred stop, W1C, reset of pending
@@ -1063,3 +1063,21 @@ START or acceptance with a gated clock. The shared Rust finite fixture enables
 the delayed profile plus icount shift3,align=off,sleep=on. IRQ72 physical
 delivery, other channels, exact latency and arbitrary short-block counts remain
 unverified. Long preemption can emit extras before software can observe them.
+
+### Finite PWM counter readback (2026-10-24 follow-up)
+
+Eighteen TCXO-timestamped A-board samples over8/16-pulse bursts establish a
+1-based active pulse index: at40/90/140/240/440/740us, reads1/1/2/3/5/8; after
+deferred stop at800/1600us, reads0. Simultaneous DSLogic confirms the pulse
+counts and100us periods. Internal model accounting still counts completed
+periods; finite/pulse-block PW_COUNT readback now adds1 while running.
+`ws53_pwm_start_test.py` checks each high/low half-period index and stopped0.
+
+The shared Rust `pwm0-finite-counter-probe` fixture uses TCXO-relative sample
+times and no printing until collection ends. Integration `--mode pwm-counter`
+requires the complete expected transcript,18 exact count/flag pairs, and each
+sample within its designated20us window. Physical and virtual timestamps
+need not be equal; both must satisfy those bounds. Missing/extra lines, stale
+zero-based counts, incorrect flags and time-window violations are rejected.
+This qualifies the measured finite case, not continuous mode, repeating-block
+boundaries, overflow, different offset/polarity or other physical channels.

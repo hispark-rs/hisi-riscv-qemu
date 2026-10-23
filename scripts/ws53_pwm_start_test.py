@@ -36,7 +36,7 @@ def pwm_start_test(qemu):
         for count in (8, 16):
             setup(count); commit(0, 1)
             step(999); assert not levels.get(47, False) and read(0x124) == 0
-            step(1); assert levels[47] and read(0x124) == 1
+            step(1); assert levels[47] and read(0x124) == 1 and read(0x12c) == 1
             # This flag exists before the first falling edge, not at block end.
             step(9000); assert levels[47] and read(0x124) == 1
             write(0x518, 1); assert read(0x124) == 0
@@ -45,9 +45,11 @@ def pwm_start_test(qemu):
             step(39000); assert not levels[47]  # first high ends at51us
             for pulse in range(1, count):
                 step(50000); assert levels[47]
+                assert read(0x12c) == pulse + 1
                 step(50000); assert not levels[47]
+                assert read(0x12c) == pulse + 1
                 assert read(0x124) == 0
-            step(50000); assert not levels[47] and read(0x124) == 1
+            step(50000); assert not levels[47] and read(0x124) == 1 and read(0x12c) == 0
             write(0x518, 1); step(10_000_000)
             assert not levels[47] and read(0x124) == 0
             bursts.append(dict(pulses=count, period_ns=100000, high_ns=50000))

@@ -239,7 +239,12 @@ static uint64_t ws53_pwm_read(void *opaque, hwaddr off, unsigned size)
         WS53PwmChannel *c = &s->channel[(off - 0x100) / 64];
         unsigned reg = (off & 63) / 4;
         if (reg == PW_FLAG) { return c->flag; }
-        if (reg == PW_COUNT) { return c->count; }
+        if (reg == PW_COUNT) {
+            /* Finite pulse trains expose the current1-based pulse index,
+             * including the first partial period; deferred stop reads0.
+             * Continuous-mode phase remains the earlier explicit assumption. */
+            return c->running && c->active[PW_CYCLES] ? c->count + 1 : c->count;
+        }
         return c->shadow[reg];
     }
     switch (off) {
