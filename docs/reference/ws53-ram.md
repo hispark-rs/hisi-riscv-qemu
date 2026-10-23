@@ -561,9 +561,9 @@ qtest nor these RAM fixtures count as physical I2S acceptance.
 `ws53-adc` maps the audited calibration subset at `0x5208a000` and ADC reset
 bit13 at `0x52000054` (32-bit). It requires explicit
 `-global ws53-adc.assume-profile=on`. Source facts come from SDK163d9150,
-RDL471ef7c and the b4b1330 executed C source contract. This is **not yet an ADC
-capture model**: SCAN_CONTROL/COMMAND, manual sampling and MCU_DIAG writes are
-unsupported and diagnosed. The SDK's empty IRQ80 handler supplies no event or
+RDL471ef7c and the b4b1330 executed C source contract. Automatic scan and MCU_DIAG
+capture require the additional profile below; manual sampling remains unsupported
+and diagnosed. The SDK's empty IRQ80 handler supplies no event or
 acknowledgement contract, so no ADC interrupt is invented.
 
 The model requires the source analog word values and ordered enable sequence
@@ -600,3 +600,51 @@ QOM counters and register reads verify progress and final disabled calibration
 controls. It never starts a scan, changes physical pads or programs diagnostic
 RAM. Capture/ownership/cache/drain, physical inputs and true analog behavior
 remain open and must not be reported as supported by these tests.
+
+## ADC to MCU_DIAG capture profile
+
+Add `-global ws53-adc.assume-capture=on` alongside `assume-profile=on` to test
+automatic scans into real emulated DTCM. `scripts/ws53_adc_capture_test.py` is
+included in `scripts/test-ws53.py`. This is a digital test profile, **not proof of
+silicon conversion timing, end-address semantics, coherency or bus ordering**.
+
+The model supports the source scan settings (average8, sample6, start26,
+discard32), all nonempty eight-channel masks, successful calibration prerequisites,
+and MCU_DIAG at `0x52004100`. Only ADC source6 and sync-enabled once/repeat modes
+are implemented. It requires explicit monitor/save/clock setup and rejects active
+reconfiguration. CPU trace is inherited ownership metadata (`initial-trace=0..3`),
+not an emulated trace producer; capture arming fails until that metadata is cleared.
+
+Explicit assumptions and test inputs:
+
+- Length counts32-bit words; aligned start and **exact inclusive end byte** must
+  describe a nonempty interval wholly inside `0x20010000..0x20060000`. A64-bit
+  range calculation rejects wraparound, MMIO destinations and oversized buffers.
+- Channels are sampled round-robin. Each channel has12 external code bits on
+  the `input` GPIO bank (`channel*12+bit`), with initial codes100,200,...800.
+  Result words contain code in bits2..13 and channel in bits14..16. These are raw
+  code inputs, not a voltage/averaging/analog calibration model.
+- A conversion (`sample-period-ns`, default10000) creates a separate pending
+  RAM write (`write-latency-ns`, default5000). Both properties accept1..1e9ns.
+  Conversion waits for the previous write; this is not a throughput guarantee.
+- ADC stop, diagnostic disable and ADC soft reset cancel future conversion but
+  **retain an already posted RAM beat**. ADC gates/source clock cannot retract
+  it. Diagnostic clock loss or `bus-stall` holds it pending. Machine reset
+  cancels both stages as model policy, not an asserted physical reset guarantee.
+- Normal DONE follows the final committed write. Repeat mode wraps and keeps
+  DONE sticky while new writes continue. `early-done` deliberately exposes DONE
+  and final address **before** RAM commit. This adversarial scenario prevents a
+  driver from treating these reads as sufficient buffer-release evidence.
+- `sample-stall`, `clock` and `diag-clock` pause conversion with exact remaining
+  time; `diag-clock` and `bus-stall` pause the writer. `bus-error` rejects its
+  write, withholds DONE and emits a diagnostic; no undocumented architectural
+  error flag or IRQ is invented. External codes/clock/faults survive reset.
+
+QOM counters `capture-in-flight`, `capture-words`, `capture-cycles` and
+`capture-errors` are test instrumentation, **not guest registers or a physical
+drain API**. Tests inspect real RAM and guard words for all255 channel masks,
+both DTCM ends and the full320KiB aperture (including high length bits), exact
+pause/resume, cancellation, late writes, repeat mode, failed bus writes/recovery,
+34 invalid accesses/configurations and six invalid property sets. No test here
+establishes application/control-core ownership, cache safety, physical pad
+routing, or a safe HAL capture buffer release operation.

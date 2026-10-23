@@ -1,6 +1,6 @@
 /* WS53 ADC v155 analog calibration. Register facts: RDL471ef7c / SDK163d9150;
  * explicit digital assumptions: settling5us, calibration100/128/160us, clear
- * commands act on falling pulse edge. No capture/MMIO stubs or physical proof.
+ * commands act on falling pulse edge. Capture uses a separate explicit profile.
  * SPDX-License-Identifier: GPL-2.0-or-later */
 #define TYPE_WS53_ADC "ws53-adc"
 OBJECT_DECLARE_SIMPLE_TYPE(WS53AdcState, WS53_ADC)
@@ -16,9 +16,24 @@ struct WS53AdcState {
     int stage; /* -1 idle, 0 automatic offset, 1 manual offset, 2 capacitor */
     int64_t remaining, deadline, analog_started;
     uint64_t starts, completions, failures, soft_resets;
+    MemoryRegion diag_mmio;
+    QEMUTimer *sample_timer, *write_timer;
+    uint32_t scan_control, diag_monitor, diag_save, diag_trace, diag_monitor_clock;
+    uint32_t diag_select, diag_mode, diag_length, diag_start, diag_end;
+    uint32_t diag_done_address, diag_done, diag_count, posted_word, posted_address;
+    uint16_t sample_input[8];
+    uint8_t next_channel, initial_trace;
+    bool assume_capture, diag_clock, sample_stall, bus_stall, bus_error, early_done;
+    bool scan_running, capture_fault, capture_finished, capture_repeat, posted_last;
+    int64_t sample_remaining, sample_deadline, write_remaining, write_deadline;
+    uint64_t sample_period_ns, write_latency_ns;
+    uint64_t capture_in_flight, capture_words, capture_cycles, capture_errors;
 };
+static void ws53_adc_capture_pause(WS53AdcState *s);
+static void ws53_adc_capture_resume(WS53AdcState *s);
 static void ws53_adc_pause(WS53AdcState *s)
 {
+    ws53_adc_capture_pause(s);
     if (timer_pending(s->timer)) {
         s->remaining = MAX(s->deadline - qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), 1);
         timer_del(s->timer);
@@ -28,8 +43,10 @@ static bool ws53_adc_clocked(WS53AdcState *s)
 {
     return s->gate[0] && s->gate[1] && s->clock_on && (s->reset_value & 0x2000);
 }
+#include "ws53_adc_capture.c.inc"
 static void ws53_adc_resume(WS53AdcState *s)
 {
+    ws53_adc_capture_resume(s);
     if (s->stage >= 0 && ws53_adc_clocked(s) && !s->stall[s->stage] && !timer_pending(s->timer)) {
         s->deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->remaining;
         timer_mod(s->timer, s->deadline);
@@ -69,6 +86,7 @@ static unsigned ws53_adc_manual_value(WS53AdcState *s)
 }
 static void ws53_adc_clear_state(WS53AdcState *s)
 {
+    ws53_adc_capture_stop(s); s->scan_control = 0;
     ws53_adc_cancel(s);
     s->analog = s->offset_cfg = s->offset_en = s->data_en = s->cap_cfg = s->cap_en = 0;
     s->offset_status = s->cap_status = s->offset_result = 0;
@@ -80,6 +98,8 @@ static uint64_t ws53_adc_read(void *opaque, hwaddr off, unsigned size)
     WS53AdcState *s = opaque;
     if (size != 4 || (off & 3)) { goto invalid; }
     switch (off) {
+    case 0: return s->scan_control;
+    case 0x28: return 0; /* Only the explicitly modeled auto-scan profile. */
     case 0x24: return s->analog;
     case 0x2c: return s->offset_cfg;
     case 0x30: return s->offset_en;
@@ -98,6 +118,10 @@ static void ws53_adc_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
 {
     WS53AdcState *s = opaque;
     if (size != 4 || (off & 3) || !(s->reset_value & 0x2000)) { goto invalid; }
+    if (off == 0 || off == 0x1c || off == 0x28) {
+        if (!ws53_adc_scan_write(s, off, v)) { goto invalid; } return;
+    }
+    if (s->scan_running) { goto invalid; }
     /* Command-only pulses: no fabricated readable storage or W1C behavior. */
     if (off == 0x38 || off == 0x3c || off == 0x94 || off == 0x98 || off == 0x9c) {
         unsigned i = off == 0x38 ? 0 : off == 0x3c ? 1 : off == 0x94 ? 2 : off == 0x98 ? 3 : 4;
@@ -216,22 +240,33 @@ static void ws53_adc_code(void *opaque, int n, int level)
 }
 static void ws53_adc_reset(void *opaque)
 {
-    WS53AdcState *s = opaque; ws53_adc_clear_state(s); s->reset_value = 0;
+    WS53AdcState *s = opaque; ws53_adc_clear_state(s); ws53_adc_capture_reset(s); s->reset_value = 0;
     s->starts = s->completions = s->failures = s->soft_resets = 0;
 }
 static void ws53_adc_realize(DeviceState *dev, Error **errp)
 {
     WS53AdcState *s = WS53_ADC(dev);
     if (s->initial_offset > 63) { error_setg(errp, "ws53-adc: offset-code must fit six bits"); return; }
+    if (s->initial_trace > 3 || !s->sample_period_ns || s->sample_period_ns > 1000000000 ||
+        !s->write_latency_ns || s->write_latency_ns > 1000000000 || (s->assume_capture && !s->assume_profile)) {
+        error_setg(errp, "ws53-adc: invalid capture timing/trace/profile properties"); return;
+    }
     s->input_offset = s->initial_offset;
     if (s->assume_profile) {
         qemu_log_mask(LOG_GUEST_ERROR, "ws53-adc: assumed calibration settle5us stages100/128/160us falling-edge-clear\n");
+    }
+    if (s->assume_capture) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-adc-capture: assumed DTCM exact-inclusive-end round-robin posted-write profile\n");
     }
     qemu_register_reset(ws53_adc_reset, s);
 }
 static const Property ws53_adc_properties[] = {
     DEFINE_PROP_BOOL("assume-profile", WS53AdcState, assume_profile, false),
     DEFINE_PROP_UINT8("offset-code", WS53AdcState, initial_offset, 10),
+    DEFINE_PROP_BOOL("assume-capture", WS53AdcState, assume_capture, false),
+    DEFINE_PROP_UINT8("initial-trace", WS53AdcState, initial_trace, 0),
+    DEFINE_PROP_UINT64("sample-period-ns", WS53AdcState, sample_period_ns, 10000),
+    DEFINE_PROP_UINT64("write-latency-ns", WS53AdcState, write_latency_ns, 5000),
 };
 static void ws53_adc_init(Object *obj)
 {
@@ -240,6 +275,7 @@ static void ws53_adc_init(Object *obj)
     memory_region_init_io(&s->reset_mmio, obj, &ws53_adc_reset_ops, s, "ws53-adc-reset", 4);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->reset_mmio);
+    ws53_adc_capture_init(obj);
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_adc_tick, s);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_adc_gate, "gate", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_adc_clock, "clock", 1);

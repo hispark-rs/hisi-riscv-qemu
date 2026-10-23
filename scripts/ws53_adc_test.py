@@ -3,7 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""ADC v155 calibration timing/errors only; capture and physical analog remain pending."""
+"""ADC v155 calibration timing/errors; capture has a separate profile and test."""
 import argparse
 import json
 from ws53_gpio_test import running
@@ -135,7 +135,7 @@ def adc_test(qemu):
                     'writel 0x5208a050 1','writel 0x5208a0a0 1','writel 0x5208a038 2',
                     'writel 0x5208a030 2','writel 0x5208a08c 2','writel 0x5208a024 0',
                     'writel 0x5208a02c 2','writel 0x5208a034 2','writel 0x5208a088 1',
-                    'writel 0x5208a0f4 0','writel 0x5208a01c 1','readl 0x5208a000',
+                    'writel 0x5208a0f4 0','writel 0x5208a01c 1','readl 0x5208a004',
                     'readw 0x52000054','writel 0x52000054 0x2001', 'readl 0x52000548',
                     'writew 0x52000548 0x1001', 'writel 0x52000044 0x15']
         for command in commands: cmd(command)
@@ -152,7 +152,7 @@ def adc_test(qemu):
     assert all('unimplemented' in line for line in lines[1:]), diagnostics
     return {'offset_inputs':64,'stages':3,'calibrations':192,'gate_pause_ns_exact':True,
             'shared_spi_clock_preserved':True,'faults':['three_stages','clock','stale','cap_error'],
-            'invalid_diagnostics':len(commands),'capture_implemented':False,'hardware_verified':False}
+            'invalid_diagnostics':len(commands),'capture_test':'ws53_adc_capture_test.py','hardware_verified':False}
 
 
 if __name__ == '__main__':
