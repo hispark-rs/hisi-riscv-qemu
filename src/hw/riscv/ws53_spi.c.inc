@@ -257,6 +257,11 @@ static void ws53_spi_mclken1(void *opaque, int n, int level)
     WS53SpiState *s = opaque; ws53_spi_pause(&s->channel[0]);
     s->spi_gate = level; ws53_spi_resume(&s->channel[0]);
 }
+static void ws53_spi_global_gate(void *opaque, int n, int level)
+{
+    WS53SpiState *s = opaque; ws53_spi_pause(&s->channel[1]);
+    s->gate[2].value = level ? 0x80 : 0; ws53_spi_resume(&s->channel[1]);
+}
 #define WS53_SPI_INPUT(name) \
     static void ws53_spi_##name(void *opaque, int n, int level) { \
         WS53SpiChannel *c = &WS53_SPI(opaque)->channel[n]; \
@@ -269,7 +274,7 @@ WS53_SPI_INPUT(disable_stall)
 static void ws53_spi_reset(void *opaque)
 {
     WS53SpiState *s = opaque;
-    for (unsigned i = 0; i < 5; i++) { s->gate[i].value = 0; }
+    for (unsigned i = 0; i < 5; i++) { if (i != 2) { s->gate[i].value = 0; } }
     for (unsigned i = 0; i < 2; i++) {
         WS53SpiChannel *c = &s->channel[i]; timer_del(c->timer);
         memset(c->regs, 0, sizeof(c->regs)); c->latched = 0;
@@ -301,11 +306,13 @@ static void ws53_spi_init(Object *obj)
         object_property_add_uint64_ptr(obj, name, &c->frames, OBJ_PROP_FLAG_READ);
     }
     for (unsigned i = 0; i < 5; i++) {
+        if (i == 2) { continue; } /* Shared GLOBAL_CLKEN is an external provider. */
         WS53SpiGate *g = &s->gate[i]; g->owner = s; g->index = i;
         memory_region_init_io(&g->mmio, obj, &ws53_spi_gate_ops, g, "ws53-spi-gate", 2);
         sysbus_init_mmio(SYS_BUS_DEVICE(obj), &g->mmio);
     }
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_mclken1, "gate", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_global_gate, "global-gate", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_clock, "clock", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_stretch, "stretch", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_collision, "collision", 2);

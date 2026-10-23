@@ -64,6 +64,8 @@ cp "$HERE/src/hw/riscv/ws53_rtc.c.inc"                    "$QEMU_DIR/hw/riscv/ws
 cp "$HERE/src/hw/riscv/ws53_pwm.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_pwm.c.inc"
 cp "$HERE/src/hw/riscv/ws53_i2s.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_i2s.c.inc"
 cp "$HERE/src/hw/riscv/ws53_mclken0.c.inc"                "$QEMU_DIR/hw/riscv/ws53_mclken0.c.inc"
+cp "$HERE/src/hw/riscv/ws53_adc.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_adc.c.inc"
+cp "$HERE/src/hw/riscv/ws53_global_clken.c.inc"           "$QEMU_DIR/hw/riscv/ws53_global_clken.c.inc"
 cp "$HERE/src/hw/riscv/ws53_i2c.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_i2c.c.inc"
 cp "$HERE/src/hw/riscv/ws53_mclken1.c.inc"                "$QEMU_DIR/hw/riscv/ws53_mclken1.c.inc"
 cp "$HERE/src/hw/riscv/ws53_spi.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_spi.c.inc"

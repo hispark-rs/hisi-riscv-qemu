@@ -555,3 +555,48 @@ The integration repository's `examples/ws53/i2s_control` runs the actual Rust
 HAL/PAC in RAM, with normal and stopped-clock fixtures. Its unsafe pad/ownership
 handoffs and external quiescence proof apply **only to this model**. Neither
 qtest nor these RAM fixtures count as physical I2S acceptance.
+
+## ADC v155 analog calibration profile
+
+`ws53-adc` maps the audited calibration subset at `0x5208a000` and ADC reset
+bit13 at `0x52000054` (32-bit). It requires explicit
+`-global ws53-adc.assume-profile=on`. Source facts come from SDK163d9150,
+RDL471ef7c and the b4b1330 executed C source contract. This is **not yet an ADC
+capture model**: SCAN_CONTROL/COMMAND, manual sampling and MCU_DIAG writes are
+unsupported and diagnosed. The SDK's empty IRQ80 handler supplies no event or
+acknowledgement contract, so no ADC interrupt is invented.
+
+The model requires the source analog word values and ordered enable sequence
+`0x260 -> 0x103f8 -> 0x1ffff`. Its explicit **unverified digital assumptions** are
+5us settling before the second step, calibration completion after100/128/160us,
+and clear/refresh commands taking effect on a1-to-0 pulse edge. Configuration
+and stage prerequisites matter: automatic offset must finish before corrected
+manual offset, then manual offset must finish before capacitor calibration.
+A readable FINISHED value is not supplied merely because ENABLE was written.
+
+An input `offset-code` property (six bits; default10) and six `code` GPIO inputs
+control the automatic result. The source piecewise manual correction is checked
+before its stage starts; CAP_STATUS can complete with both FINISHED and ERROR.
+`clock`, two upstream gates and per-stage `stall` inputs pause remaining time;
+`stale` prevents completion clear, and `cap-error` injects capacitor failure.
+Disabling a stage or asserting reset cancels pending work. Register-enable
+readback, timing, reset effects and no post-disable completion are model
+assumptions, not physical shutdown or calibration-accuracy evidence.
+
+Shared clock ownership is explicit: `ws53-mclken1` now also routes ADC bit2,
+while the new `ws53-global-clken` backs QSPI bit7 and ADC bit12 at0x52000548.
+Both use16-bit access; RMW preserves independent consumers. Other GLOBAL_CLKEN
+bits are opaque inherited state (`initial-value` property) and cannot be changed
+to pretend that additional peripheral gates work. These providers do not assert
+control-core ownership or model real analog power rails.
+
+`scripts/ws53_adc_test.py` covers64 input codes ×3 stages, exact completion
+boundaries,5us settling,1-to-0 clear behavior, every stage stall/cancel/retry,
+independent clocks, CAP_ERROR, stale status, reset, concurrent SPI0/QSPI1 progress,
+and31 invalid accesses/configurations. It is included in the full WS53 suite.
+The integration repo's actual Rust/PAC `adc_calibration` RAM fixture runs eight
+boundary codes ×20 complete calibration sequences and five fault scenarios;
+QOM counters and register reads verify progress and final disabled calibration
+controls. It never starts a scan, changes physical pads or programs diagnostic
+RAM. Capture/ownership/cache/drain, physical inputs and true analog behavior
+remain open and must not be reported as supported by these tests.

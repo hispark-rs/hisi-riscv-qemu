@@ -35,6 +35,8 @@
 #include "ws53_tsensor.c.inc"
 #include "ws53_i2s.c.inc"
 #include "ws53_mclken0.c.inc"
+#include "ws53_adc.c.inc"
+#include "ws53_global_clken.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -201,7 +203,7 @@ static void ws53_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(spi), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(spi), 0, 0x52087000);
     sysbus_mmio_map(SYS_BUS_DEVICE(spi), 1, 0x5208d000);
-    const hwaddr spi_gates[] = {0x5200055c, 0x52000950, 0x52000548, 0x52000574, 0x52001240};
+    const hwaddr spi_gates[] = {0x5200055c, 0x52000950, 0x52000574, 0x52001240};
     for (unsigned i = 0; i < ARRAY_SIZE(spi_gates); i++) {
         sysbus_mmio_map(SYS_BUS_DEVICE(spi), 2 + i, spi_gates[i]);
     }
@@ -215,6 +217,18 @@ static void ws53_init(MachineState *machine)
         qdev_connect_gpio_out_named(mclken1, "gate", i, qdev_get_gpio_in_named(i2c, "gate", i));
     }
     qdev_connect_gpio_out_named(mclken1, "gate", 2, qdev_get_gpio_in_named(spi, "gate", 0));
+    DeviceState *adc = qdev_new(TYPE_WS53_ADC);
+    object_property_add_child(OBJECT(machine), "adc", OBJECT(adc));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(adc), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(adc), 0, 0x5208a000);
+    sysbus_mmio_map(SYS_BUS_DEVICE(adc), 1, 0x52000054);
+    qdev_connect_gpio_out_named(mclken1, "gate", 3, qdev_get_gpio_in_named(adc, "gate", 0));
+    DeviceState *global_clken = qdev_new(TYPE_WS53_GLOBAL_CLKEN);
+    object_property_add_child(OBJECT(machine), "global-clken", OBJECT(global_clken));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(global_clken), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(global_clken), 0, 0x52000548);
+    qdev_connect_gpio_out_named(global_clken, "gate", 0, qdev_get_gpio_in_named(spi, "global-gate", 0));
+    qdev_connect_gpio_out_named(global_clken, "gate", 1, qdev_get_gpio_in_named(adc, "gate", 1));
     for (unsigned i = 0; i < 2; i++) {
         DeviceState *rtc = qdev_new(TYPE_WS53_RTC);
         g_autofree char *name = g_strdup_printf("rtc%u", i);
@@ -363,6 +377,8 @@ static void ws53_register_types(void)
     type_register_static(&ws53_pwm_type);
     type_register_static(&ws53_i2s_type);
     type_register_static(&ws53_mclken0_type);
+    type_register_static(&ws53_adc_type);
+    type_register_static(&ws53_global_clken_type);
     type_register_static(&ws53_i2c_type);
     type_register_static(&ws53_mclken1_type);
     type_register_static(&ws53_spi_type);

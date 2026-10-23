@@ -23,6 +23,7 @@ from ws53_i2c_test import i2c_test
 from ws53_spi_test import spi_test
 from ws53_tsensor_test import tsensor_test
 from ws53_i2s_test import i2s_test
+from ws53_adc_test import adc_test
 
 
 def connect(path):
@@ -322,6 +323,7 @@ if __name__ == "__main__":
               "spi": spi_test(args.qemu),
               "tsensor": tsensor_test(args.qemu),
               "i2s": i2s_test(args.qemu),
+              "adc_calibration": adc_test(args.qemu),
               "hardware_verified": False}
     if args.elf:
         result["ram"] = ram_test(args.qemu, args.elf)
