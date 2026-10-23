@@ -894,4 +894,50 @@ It is part of `scripts/test-ws53.py`; existing I2S PIO and other DMA tests remai
 The model emits a dedicated assumption notice. These tests move actual words
 through memory, FIFOs, a serializer and the data-dependent virtual peer; they
 do not certify physical audio timing, packing, caches or control-core ownership.
-The Rust I2S DMA driver and its actual RAM fixture are still pending.
+The integration repository now has an experimental Rust I2S DMA driver and
+669 actual RAM scenarios; those remain model validation, not silicon acceptance.
+
+## Shared-security TRNG test profile (not entropy)
+
+The source map is SDK `163d9150` / hisi-registers `514615b`: FIFO_DATA at
+`0x52024100`, FIFO_READY at `0x52024104` and halfword ring control at
+`0x52001600`. There is no documented IRQ. The vendor application supplies
+control-core random buffers, so a Rust token is not a complete service handoff.
+
+`ws53-trng.assume-profile=on` explicitly enables a deterministic test generator.
+Its nonzero `test-seed` defaults to 1. It uses xorshift32, not host randomness,
+hardware entropy or a cryptographically secure source. It must never supply
+production keys. A diagnostic records the assumption whenever enabled.
+Without the option, enabling the ring is diagnosed and produces no data.
+
+Profile assumptions:
+
+- Eight-word FIFO, two words generated together after 200us startup, then every
+  10us. The startup wait comes from SDK software; physical readiness timing,
+  depth and pair admission are not proven. A full FIFO pauses production without
+  advancing the sequence or overwriting words; one free slot is insufficient.
+- READY and DONE mean two queued words. Status reads do not consume them.
+  Each aligned 32-bit DATA read pops exactly one word, so the second read of an
+  admitted pair remains legal when only one word is left. Underflow is diagnosed.
+- Halfword ring writes preserve all 16 written bits. Only an enable transition
+  starts/stops production; disabling discards queued data and cancels the timer.
+  Re-enabling waits again and continues the deterministic sequence. Model reset
+  clears the ring/queue/counters and restores the initial seed. These are model
+  reset choices, not measured silicon reset values.
+- External `clock` pauses time remaining and hides readiness while off; queued
+  words persist. Source stall pauses production but leaves queued data readable.
+- GPIO `fault` inputs 0–6 are source stall, missing READY, missing DONE, zero
+  pairs, all-ones pairs, equal candidate/comparison and alternating ready/not-ready
+  status reads. Pair faults apply during production (zero > ones > equal if
+  combined); flags affect observation, not queue consumption. External clock
+  and fault levels persist across model reset.
+- Wrong widths, writes to FIFO/status, optional FRO registers, DATA_ST and unknown
+  MMIO produce diagnostics. No catch-all success, security initialization, IRQ
+  or control-core firmware service is simulated.
+
+`scripts/ws53_trng_test.py` checks 512 deterministic words across four seeds,
+seed replay, capacity/partial pairs, timing boundaries, pause/resume, ring
+disable/re-enable, faults/reset and 19 rejected access diagnostics. It is part
+of the complete WS53 model suite. The integration RAM fixture checks actual
+Rust/PAC filtering, partial byte fills, timeout, service release and recovery;
+its synthetic handoff is not proof of physical ownership or entropy quality.
