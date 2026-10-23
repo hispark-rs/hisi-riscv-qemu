@@ -16,7 +16,7 @@ typedef struct WS53I2cChannel {
     uint16_t tx[8], rx[8];
     unsigned tx_head, tx_len, rx_head, rx_len;
     bool enabled, active, direction, first_write, pending_read_ack;
-    bool clock, stretch, nack_address, nack_data, arbitration;
+    bool gate, clock, stretch, nack_address, nack_data, arbitration;
     bool scheduled, enable_event;
     int64_t remaining, deadline;
     uint8_t memory[256], pointer;
@@ -24,9 +24,7 @@ typedef struct WS53I2cChannel {
 } WS53I2cChannel;
 struct WS53I2cState {
     SysBusDevice parent_obj;
-    MemoryRegion gate_mmio;
     WS53I2cChannel channel[2];
-    uint16_t gate;
     bool assume_profile, warned;
 };
 static uint32_t ws53_i2c_raw(WS53I2cChannel *c)
@@ -41,7 +39,7 @@ static void ws53_i2c_irq(WS53I2cChannel *c)
 static bool ws53_i2c_clocked(WS53I2cChannel *c)
 {
     return c->owner->assume_profile && c->clock &&
-        (c->owner->gate & (0x40u << c->index));
+        c->gate;
 }
 static void ws53_i2c_pause(WS53I2cChannel *c)
 {
@@ -233,36 +231,23 @@ static void ws53_i2c_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
 invalid:
     qemu_log_mask(LOG_GUEST_ERROR, "ws53-i2c%u: unimplemented write +0x%" HWADDR_PRIx " value=0x%" PRIx64 " size=%u\n", c->index, off, v, size);
 }
-static uint64_t ws53_i2c_gate_read(void *opaque, hwaddr off, unsigned size)
-{
-    WS53I2cState *s = opaque;
-    if (!off && size == 2) { return s->gate; }
-    qemu_log_mask(LOG_GUEST_ERROR, "ws53-i2c: unimplemented gate read size=%u\n", size); return 0;
-}
-static void ws53_i2c_gate_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
-{
-    WS53I2cState *s = opaque;
-    /* Preserve inherited TIMER/UART bits; reject changes to unmodeled clocks. */
-    if (off || size != 2 || ((v ^ s->gate) & ~0xc0u)) {
-        qemu_log_mask(LOG_GUEST_ERROR, "ws53-i2c: unimplemented gate write value=0x%" PRIx64 " size=%u\n", v, size); return;
-    }
-    for (unsigned i = 0; i < 2; i++) { ws53_i2c_pause(&s->channel[i]); }
-    s->gate = v;
-    for (unsigned i = 0; i < 2; i++) { ws53_i2c_resume(&s->channel[i]); }
-}
 #define WS53_I2C_OPS(name, reader, writer) \
     static const MemoryRegionOps name = { .read=reader, .write=writer, \
         .endianness=DEVICE_LITTLE_ENDIAN, \
         .valid={.min_access_size=1,.max_access_size=8,.unaligned=true}, \
         .impl={.min_access_size=1,.max_access_size=8,.unaligned=true} }
 WS53_I2C_OPS(ws53_i2c_ops, ws53_i2c_read, ws53_i2c_write);
-WS53_I2C_OPS(ws53_i2c_gate_ops, ws53_i2c_gate_read, ws53_i2c_gate_write);
 #undef WS53_I2C_OPS
 /* Fault inputs are external to the controller and survive system reset. */
 static void ws53_i2c_clock(void *opaque, int n, int level)
 {
     WS53I2cState *s = opaque; WS53I2cChannel *c = &s->channel[n];
     ws53_i2c_pause(c); c->clock = level; ws53_i2c_resume(c);
+}
+static void ws53_i2c_gate(void *opaque, int n, int level)
+{
+    WS53I2cState *s = opaque; WS53I2cChannel *c = &s->channel[n];
+    ws53_i2c_pause(c); c->gate = level; ws53_i2c_resume(c);
 }
 static void ws53_i2c_stretch(void *opaque, int n, int level)
 {
@@ -284,7 +269,6 @@ static void ws53_i2c_arbitration(void *opaque, int n, int level)
 static void ws53_i2c_reset(void *opaque)
 {
     WS53I2cState *s = opaque;
-    s->gate = 0x11; /* inherited boot-profile timer/UART; not a silicon reset */
     for (unsigned i = 0; i < 2; i++) {
         WS53I2cChannel *c = &s->channel[i];
         timer_del(c->timer); memset(c->regs, 0, sizeof(c->regs));
@@ -324,8 +308,7 @@ static void ws53_i2c_init(Object *obj)
         object_property_add_uint64_ptr(obj, acks, &c->read_acks, OBJ_PROP_FLAG_READ);
         object_property_add_uint64_ptr(obj, nacks, &c->read_nacks, OBJ_PROP_FLAG_READ);
     }
-    memory_region_init_io(&s->gate_mmio, obj, &ws53_i2c_gate_ops, s, "ws53-i2c-gate", 2);
-    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->gate_mmio);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_gate, "gate", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_clock, "clock", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_stretch, "stretch", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_nack_address, "nack-address", 2);

@@ -30,6 +30,8 @@
 #include "ws53_rtc.c.inc"
 #include "ws53_pwm.c.inc"
 #include "ws53_i2c.c.inc"
+#include "ws53_mclken1.c.inc"
+#include "ws53_spi.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -185,9 +187,27 @@ static void ws53_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(i2c), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(i2c), 0, 0x52083000);
     sysbus_mmio_map(SYS_BUS_DEVICE(i2c), 1, 0x52084000);
-    sysbus_mmio_map(SYS_BUS_DEVICE(i2c), 2, 0x52000044);
     sysbus_connect_irq(SYS_BUS_DEVICE(i2c), 0, qdev_get_gpio_in(intc, 62));
     sysbus_connect_irq(SYS_BUS_DEVICE(i2c), 1, qdev_get_gpio_in(intc, 63));
+    DeviceState *spi = qdev_new(TYPE_WS53_SPI);
+    object_property_add_child(OBJECT(machine), "spi", OBJECT(spi));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(spi), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(spi), 0, 0x52087000);
+    sysbus_mmio_map(SYS_BUS_DEVICE(spi), 1, 0x5208d000);
+    const hwaddr spi_gates[] = {0x5200055c, 0x52000950, 0x52000548, 0x52000574, 0x52001240};
+    for (unsigned i = 0; i < ARRAY_SIZE(spi_gates); i++) {
+        sysbus_mmio_map(SYS_BUS_DEVICE(spi), 2 + i, spi_gates[i]);
+    }
+    sysbus_connect_irq(SYS_BUS_DEVICE(spi), 0, qdev_get_gpio_in(intc, 65));
+    sysbus_connect_irq(SYS_BUS_DEVICE(spi), 1, qdev_get_gpio_in(intc, 43));
+    DeviceState *mclken1 = qdev_new(TYPE_WS53_MCLKEN1);
+    object_property_add_child(OBJECT(machine), "mclken1", OBJECT(mclken1));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(mclken1), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(mclken1), 0, 0x52000044);
+    for (unsigned i = 0; i < 2; i++) {
+        qdev_connect_gpio_out_named(mclken1, "gate", i, qdev_get_gpio_in_named(i2c, "gate", i));
+    }
+    qdev_connect_gpio_out_named(mclken1, "gate", 2, qdev_get_gpio_in_named(spi, "gate", 0));
     for (unsigned i = 0; i < 2; i++) {
         DeviceState *rtc = qdev_new(TYPE_WS53_RTC);
         g_autofree char *name = g_strdup_printf("rtc%u", i);
@@ -322,6 +342,8 @@ static void ws53_register_types(void)
     type_register_static(&ws53_rtc_type);
     type_register_static(&ws53_pwm_type);
     type_register_static(&ws53_i2c_type);
+    type_register_static(&ws53_mclken1_type);
+    type_register_static(&ws53_spi_type);
     type_register_static(&ws53_type);
 }
 type_init(ws53_register_types)

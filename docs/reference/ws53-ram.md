@@ -364,7 +364,8 @@ control-core cooperation, DMA and silicon stop latency remain unverified.
 ## I2C master functional profile
 
 `ws53-i2c` implements independent non-PRO v151 controllers at `0x52083000`
-and `0x52084000`, IRQ62/63, and M_CLKEN1 halfword `0x52000044` bits6/7.
+and `0x52084000`, IRQ62/63, and M_CLKEN1 halfword `0x52000044` bits6/7
+from the shared `ws53-mclken1` provider (SPI0 uses bit11).
 Register layout and accesses are from SDK `163d9150` / RDL `01dcce5`.
 Unmodeled clock bits cannot be changed; inherited TIMER/UART bits remain set.
 This is a boot handoff profile, not asserted silicon reset values.
@@ -406,3 +407,56 @@ recovery, resource release/reacquisition and a clock-stall/other-instance case.
 Synthetic pad permissions in that fixture must never be used on a physical board.
 I2C IRQ-driven HAL, DMA/async and physical electrical/timing qualification remain
 outstanding; model passes are not stable-API graduation evidence.
+
+## SPI0/QSPI1 single-line functional profile
+
+`ws53-spi` uses separately audited v151_100 layouts: SPI0 at `0x52087000`
+(IRQ65), QSPI1 at `0x5208d000` (IRQ43). Register facts come from SDK
+`163d9150` / RDL `04ced9c`. ENABLE/CONTROL/FIFO/status/IRQ bit positions differ;
+all 36 FIFO address aliases access the same queue. There is no catch-all MMIO.
+Version/identification values are unknown and reads report a diagnostic.
+
+Transfers require `-global ws53-spi.assume-profile=on`. The diagnostic states
+assumed 32MHz, eight-entry TX/RX FIFOs, 1us enable/disable crossing and a virtual
+full-duplex XOR peer. Each transmitted word determines a received word via
+`(MOSI ^ 0xa5a5a5a5) & word_mask`; it is not a preselected success response.
+Supported frames are 8/32 bits, MSB-first single-line Motorola master, modes0–3.
+The virtual peer does not produce edges, so CPOL/CPHA/sample delays are stored
+but do not constitute waveform validation. Frame time uses width and even BAUD
+divider; pause/resume preserves the remaining time. FIFO8 and disable flushing
+are explicit assumptions, not inferred from the 36 windows or silicon tests.
+
+TX/RX thresholds drive level IRQs; overflow, underflow and collision are latched
+until the respective read-clear or clear-all access. Writes to read-clear registers
+have no effect, as described by the source. Clearing a latch cannot suppress a
+still-active FIFO level. IRQ mask/raw/masked views, BUSY and FIFO levels change
+with actual queued transfers. Software reset cancels timers and clears queues;
+it does not emulate the vendor control-core startup.
+
+The sole `ws53-mclken1` provider owns `0x52000044`, feeding I2C0/1 gates bits6/7
+and SPI0 gate bit11. Its inherited TIMER/UART profile bits remain unchanged.
+SPI0 additionally needs SPI_CLOCK and master selection; QSPI1 needs GLOBAL_CLKEN,
+XIP_QSPI_CLOCK control=1 and all three XIP_CLOCK_ENABLE path bits. Non-profile
+field changes and master/slave changes while active are diagnosed. XIP execution,
+clock-source switching, shared-user coordination and sleep acknowledgements are
+not modeled. There are no overlapping per-controller mappings for M_CLKEN1.
+
+Named inputs `/machine/spi` `clock`, `stretch`, `collision`, `disable-stall`
+(indices0/1) inject independent faults and survive reset. `stretch` pauses words
+but permits disable; stopped `clock` also stalls disable. Enable register readback
+alone is not an independent clock acknowledgement: a queued word can remain BUSY
+when the requested enable bit has already cleared. Read-only QOM `frames0/1`
+counts completed frame events, including failed collision frames.
+
+`scripts/ws53_spi_test.py`, included in the standard suite, checks both layouts,
+8/32-bit frames in four modes, 100-word transfers, every FIFO alias, IRQ65/43,
+FIFO overflow/underflow, read-clear writes, every required gate, external faults,
+reset, shared-I2C gate independence and 41 invalid MMIO/configuration diagnostics.
+The parent's `spi_control` RAM fixture exercises actual HAL/PAC transactions,
+word widths/modes, unequal/in-place transfers, ownership return/reacquisition,
+and stopped-clock poisoning with resource retention and the other bus working.
+
+This is partial single-line support. Dual/quad protocols, native-CS continuity,
+DMA, slave/Microwire/DDR, IRQ-driven HAL/async, physical routes and waveform timing
+remain unimplemented or unverified. Unsupported features produce guest errors.
+The synthetic fixture pads are not board wiring; never run it on a physical board.
