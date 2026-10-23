@@ -28,6 +28,7 @@ from ws53_adc_capture_test import capture_test
 from ws53_mdma_test import mdma_test
 from ws53_mdma_uart_test import uart_dma_test
 from ws53_mdma_spi_test import spi_dma_test
+from ws53_mdma_i2c_test import i2c_dma_test
 
 
 def connect(path):
@@ -332,6 +333,7 @@ if __name__ == "__main__":
               "mdma": mdma_test(args.qemu),
               "mdma_uart": uart_dma_test(args.qemu),
               "mdma_spi": spi_dma_test(args.qemu),
+              "mdma_i2c": i2c_dma_test(args.qemu),
               "hardware_verified": False}
     if args.elf:
         result["ram"] = ram_test(args.qemu, args.elf)

@@ -794,3 +794,60 @@ late TX/RX writes after cancel, read/write faults, IRQ58 isolation, reset and26
 rejected accesses/configurations. It is included in `scripts/test-ws53.py`.
 This step adds the model and source contracts; a Rust SPI DMA transfer interface,
 physical waveform/cache/drain/CS verification and control-core handoff remain open.
+
+## I2C MDMA requests and short tails (explicit profile)
+
+Enable `ws53-mdma.assume-profile=on`, `ws53-mdma.assume-i2c=on` and
+`ws53-i2c.assume-profile=on`. These are functional test assumptions, not measured
+silicon or installed-firmware capabilities. Pinned original-source evidence is
+`hisi-registers` commit `a233614`: the selected SDK application disables I2C DMA.
+Actual C DATA lookup, request selectors, enable/threshold setters and master
+prepare/restore agree with the existing RDL/PAC; no register description changed.
+
+I2C0 uses DATA0x5208301c and requests0/1; I2C1 uses DATA0x5208401c and2/3.
+RX accepts bytes, TX accepts bytes or halfword commands (READ0x100, STOP0x200,
+RESTART0x400). CPU MMIO remains32-bit. DMA buffers must stay in DTCM; the
+peripheral endpoint is fixed, RX memory increments, TX memory increments or is
+fixed for repeated halfword commands. Same widths on both DMA sides, master0,
+flow1/2 and source-derived TX protection1/RX protection2 are required. The latter
+are encodings, **not** proof of cache/coherency or physical HPROT behavior.
+
+The opt-in profile supports equal source/destination burst encodings0/1 (one/four
+beats); other burst sizes, width conversion and LLI are rejected. Memory, UART
+and SPI profiles still reject bursts. FIFO8 and request comparisons are explicit:
+TX enabled and entries <= TX threshold; RX enabled and entries > RX threshold.
+Thresholds0..7 are accepted; source preparation uses4/3. A new four-beat request
+accepts up to `min(4, remaining_count)` credits. The accepted group continues below
+the watermark, but each beat still needs FIFO data/space, an enabled controller,
+clock, request enable and no abort. FIFO changes can wake an accepted group even
+without crossing the watermark. No physical DMA ACK protocol, arbitration or
+last-request pin is claimed by this credit model.
+
+There is deliberately no inferred last/single request to drain a short RX tail.
+With RX threshold3, lengths1..3 or a remainder below4 remain pending; software can
+lower the threshold to0 and finish. A four-beat transfer with threshold0 also
+waits for individual arriving bytes instead of reading zero from an empty FIFO.
+Tests cover both fixed-source0x100 commands followed by a CPU final STOP command
+(the SDK sequence), and incrementing halfword command arrays containing STOP.
+DMA terminal completion is separate from I2C STOP, ACK/NACK and bus-idle state.
+
+Clock loss or request disable prevents new beats, including inside an accepted
+burst. Halt/disable cancels remaining credits but cannot retract a posted write.
+A byte already consumed from RX may reach RAM after cancellation or I2C clock
+loss. A posted TX can still enter the FIFO with requests disabled if the
+controller/clock/FIFO can accept it; clock loss, disable, abort, a full FIFO or an
+invalid command instead produces a DMA bus error. Peripheral NACK/arbitration
+latches the I2C abort and withdraws new requests, without fabricating DMA TC.
+The driver must examine **both** controllers' errors and retain resources until
+independently proven quiescent. Reset discards pending model work and credits;
+this is not a measured hardware reset/drain guarantee.
+
+`scripts/ws53_mdma_i2c_test.py`, included in the fullWS53 suite, checks32
+port/channel/burst read combinations,18 fixed-command reads (1..257 bytes),four
+byte-write/readback sequences, two ports concurrently, and28 rejected settings.
+Additional scenarios cover guards/address progress, FIFO pressure, threshold
+changes, exact pause/resume within a below-watermark burst, empty-FIFO wakeup,
+STOP/ACK/NACK, IRQ58/62/63 isolation, NACK/arbitration, injected read/write errors,
+posted TX/RX cancellation, late FIFO-full writes, invalid commands and reset.
+An I2C DMA Rust HAL and actual Rust/PAC transfer scenarios remain to be added;
+passing this model does not complete I2C DMA hardware acceptance.

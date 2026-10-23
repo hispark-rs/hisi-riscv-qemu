@@ -1,6 +1,7 @@
 /* WS53 non-PRO I2C v151, fbb_ws53 163d9150 / hisi-registers 01dcce5.
  * Explicit functional profile, not measured silicon timing/reset behavior.
  * Built-in volatile 256-byte register peers at 7-bit 0x50 / 10-bit 0x250.
+ * DMA source evidence: hisi-registers a233614; lanes/handshake opt-in only.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #define TYPE_WS53_I2C "ws53-i2c"
@@ -11,7 +12,7 @@ typedef struct WS53I2cChannel {
     unsigned index;
     MemoryRegion mmio;
     QEMUTimer *timer;
-    qemu_irq irq;
+    qemu_irq irq, dma_request[2];
     uint32_t regs[0xc8 / 4], latched, abort_source, abort_detail, flushed;
     uint16_t tx[8], rx[8];
     unsigned tx_head, tx_len, rx_head, rx_len;
@@ -25,21 +26,32 @@ typedef struct WS53I2cChannel {
 struct WS53I2cState {
     SysBusDevice parent_obj;
     WS53I2cChannel channel[2];
-    bool assume_profile, warned;
+    bool assume_profile, assume_dma, warned;
 };
 static uint32_t ws53_i2c_raw(WS53I2cChannel *c)
 {
     return c->latched | (c->rx_len > c->regs[0x50 / 4] ? 4 : 0) |
         (c->enabled && c->tx_len <= c->regs[0x54 / 4] ? 16 : 0);
 }
-static void ws53_i2c_irq(WS53I2cChannel *c)
-{
-    qemu_set_irq(c->irq, ws53_i2c_raw(c) & c->regs[0xb0 / 4]);
-}
 static bool ws53_i2c_clocked(WS53I2cChannel *c)
 {
     return c->owner->assume_profile && c->clock &&
         c->gate;
+}
+static bool ws53_i2c_dma_available(WS53I2cChannel *c, bool receive)
+{
+    return c->owner->assume_dma && ws53_i2c_clocked(c) && c->enabled &&
+        (c->regs[1] & 1) && !(c->latched & 64) &&
+        (c->regs[0xa0 / 4] & (receive ? 1 : 2)) &&
+        (receive ? c->rx_len > 0 : c->tx_len < 8);
+}
+static void ws53_i2c_irq(WS53I2cChannel *c)
+{
+    qemu_set_irq(c->irq, ws53_i2c_raw(c) & c->regs[0xb0 / 4]);
+    qemu_set_irq(c->dma_request[0], ws53_i2c_dma_available(c, false) &&
+                 c->tx_len <= c->regs[0xa4 / 4]);
+    qemu_set_irq(c->dma_request[1], ws53_i2c_dma_available(c, true) &&
+                 c->rx_len > c->regs[0xa8 / 4]);
 }
 static void ws53_i2c_pause(WS53I2cChannel *c)
 {
@@ -149,6 +161,9 @@ static uint64_t ws53_i2c_read(void *opaque, hwaddr off, unsigned size)
     case 0: case 4: case 0x10: case 0x30: case 0x34: case 0x3c: case 0x40:
     case 0x44: case 0x48: case 0x50: case 0x54: case 0x6c: case 0x70:
     case 0xa0: case 0xac: case 0xb0: return c->regs[off / 4];
+    case 0xa4: case 0xa8:
+        if (!c->owner->assume_dma) { goto invalid; }
+        return c->regs[off / 4];
     case 0x1c: {
         if (!c->rx_len) { c->latched |= 1; ws53_i2c_irq(c); return 0; }
         uint16_t v = c->rx[c->rx_head];
@@ -196,7 +211,7 @@ static void ws53_i2c_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
                 "ws53-i2c: unimplemented transfer without assume-profile\n");
             c->owner->warned = true;
         }
-        ws53_i2c_schedule(c, true, 1000); return;
+        ws53_i2c_schedule(c, true, 1000); ws53_i2c_irq(c); return;
     case 0x1c:
         if (v > 0x7ff) { goto invalid; }
         if (!c->enabled) { ws53_i2c_abort(c, 0, 1 << 11); return; }
@@ -211,7 +226,12 @@ static void ws53_i2c_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
     case 0xb0:
         if (v & ~0x165fu) { goto invalid; }
         c->regs[off / 4] = v; ws53_i2c_irq(c); return;
-    case 0xa0: if (v) { goto invalid; } c->regs[off / 4] = 0; return;
+    case 0xa0:
+        if (v & ~(c->owner->assume_dma ? 3u : 0u)) { goto invalid; }
+        break;
+    case 0xa4: case 0xa8:
+        if (!c->owner->assume_dma || v > 7) { goto invalid; }
+        break;
     case 0:
         if (c->enabled || (v & ~0x277u) || !(v & 1) || !(v & 64) || !(v & 6)) { goto invalid; }
         break;
@@ -231,6 +251,22 @@ static void ws53_i2c_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
 invalid:
     qemu_log_mask(LOG_GUEST_ERROR, "ws53-i2c%u: unimplemented write +0x%" HWADDR_PRIx " value=0x%" PRIx64 " size=%u\n", c->index, off, v, size);
 }
+/* DMA byte lanes are an explicit profile, separate from 32-bit CPU MMIO.
+ * An already-read TX beat may arrive after requests are disabled. It is
+ * accepted only while the controller/clock/FIFO can still accept the write. */
+static bool ws53_i2c_dma_write(WS53I2cChannel *c, const uint8_t *data, unsigned width)
+{
+    if (!c || !ws53_i2c_clocked(c) || !c->enabled || !(c->regs[1] & 1) ||
+        (c->latched & 64) || c->tx_len == 8 || (width != 1 && width != 2)) { return false; }
+    unsigned v = data[0] | (width == 2 ? data[1] << 8 : 0);
+    if (v > 0x7ff) { return false; }
+    ws53_i2c_write(c, 0x1c, v, 4); return true;
+}
+static bool ws53_i2c_dma_read(WS53I2cChannel *c, uint8_t *data, unsigned width)
+{
+    if (!c || width != 1 || !ws53_i2c_dma_available(c, true)) { return false; }
+    data[0] = ws53_i2c_read(c, 0x1c, 4); return true;
+}
 #define WS53_I2C_OPS(name, reader, writer) \
     static const MemoryRegionOps name = { .read=reader, .write=writer, \
         .endianness=DEVICE_LITTLE_ENDIAN, \
@@ -242,12 +278,12 @@ WS53_I2C_OPS(ws53_i2c_ops, ws53_i2c_read, ws53_i2c_write);
 static void ws53_i2c_clock(void *opaque, int n, int level)
 {
     WS53I2cState *s = opaque; WS53I2cChannel *c = &s->channel[n];
-    ws53_i2c_pause(c); c->clock = level; ws53_i2c_resume(c);
+    ws53_i2c_pause(c); c->clock = level; ws53_i2c_resume(c); ws53_i2c_irq(c);
 }
 static void ws53_i2c_gate(void *opaque, int n, int level)
 {
     WS53I2cState *s = opaque; WS53I2cChannel *c = &s->channel[n];
-    ws53_i2c_pause(c); c->gate = level; ws53_i2c_resume(c);
+    ws53_i2c_pause(c); c->gate = level; ws53_i2c_resume(c); ws53_i2c_irq(c);
 }
 static void ws53_i2c_stretch(void *opaque, int n, int level)
 {
@@ -296,6 +332,7 @@ static void ws53_i2c_init(Object *obj)
         memory_region_init_io(&c->mmio, obj, &ws53_i2c_ops, c, TYPE_WS53_I2C, 0x1000);
         sysbus_init_mmio(SYS_BUS_DEVICE(obj), &c->mmio);
         sysbus_init_irq(SYS_BUS_DEVICE(obj), &c->irq);
+        qdev_init_gpio_out_named(DEVICE(obj), c->dma_request, i ? "dma1" : "dma0", 2);
         c->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_i2c_tick, c);
         g_autofree char *starts = g_strdup_printf("starts%u", i);
         g_autofree char *restarts = g_strdup_printf("restarts%u", i);
