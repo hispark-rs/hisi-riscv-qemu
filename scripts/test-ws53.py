@@ -18,6 +18,7 @@ from ws53_nmi_test import nmi_test
 from ws53_wdt_test import wdt_test
 from ws53_uart_config_test import uart_config_test
 from ws53_uart_reset_test import uart_reset_test
+from ws53_uart_l0_reset_test import uart_l0_reset_test
 from ws53_tcxo_test import tcxo_test
 from ws53_rtc_test import rtc_test
 from ws53_pwm_test import pwm_test
@@ -328,7 +329,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     result = {"model": model_test(args.qemu), "unsupported": unsupported_test(args.qemu),
               "uart": uart_test(args.qemu), "uart_config": uart_config_test(args.qemu),
-              "uart_reset": uart_reset_test(args.qemu), "gpio": gpio_test(args.qemu),
+              "uart_l0_reset": uart_l0_reset_test(args.qemu),
+        "uart_reset": uart_reset_test(args.qemu), "gpio": gpio_test(args.qemu),
               "pinctrl": pinctrl_test(args.qemu), "nmi": nmi_test(args.qemu),
               "wdt": wdt_test(args.qemu),
               "tcxo": tcxo_test(args.qemu),

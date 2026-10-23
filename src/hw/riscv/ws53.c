@@ -280,6 +280,11 @@ static void ws53_init(MachineState *machine)
     object_property_add_child(OBJECT(machine), "uart-reset", OBJECT(uart_reset));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(uart_reset), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(uart_reset), 0, 0x52000168);
+    DeviceState *uart_l0_reset = qdev_new(TYPE_WS53_UART_RESET);
+    object_property_add_child(OBJECT(machine), "uart-l0-reset", OBJECT(uart_l0_reset));
+    qdev_prop_set_bit(uart_l0_reset, "l0-bank", true);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(uart_l0_reset), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(uart_l0_reset), 0, 0x570000b0);
     for (unsigned i = 0; i < 3; i++) {
         DeviceState *uart = qdev_new(TYPE_WS53_UART);
         g_autofree char *name = g_strdup_printf("uart%u", i);
@@ -293,6 +298,9 @@ static void ws53_init(MachineState *machine)
         sysbus_connect_irq(SYS_BUS_DEVICE(uart), 0, qdev_get_gpio_in(intc, irqs[i]));
         if (i < 2) {
             qdev_connect_gpio_out_named(uart_reset, "reset-n", i,
+                                       qdev_get_gpio_in_named(uart, "soft-reset-n", 0));
+        } else {
+            qdev_connect_gpio_out_named(uart_l0_reset, "reset-n", 0,
                                        qdev_get_gpio_in_named(uart, "soft-reset-n", 0));
         }
         if (i < 2) { ws53_mdma_connect_uart(WS53_MDMA(mdma), uart, i == 0 ? 10 : 8, bases[i] + 4); }

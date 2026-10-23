@@ -1263,3 +1263,24 @@ Source evidence is `hisi-registers/evidence/ws53-uart-access-hil.json`; integrat
 `uart-access-probe` checks the measured profile, not merely log completeness.
 Reset defaults, UART2 reset, nonzero DIV_H, disabled byte mode, IRQ/DMA in-flight
 reset, clock ownership and physical pad timing still require separate evidence.
+
+### Independent L0 reset and HAL recovery (2026-10-24)
+
+`-global ws53-uart-reset.assume-l0-profile=on` separately enables the halfword
+bit7 at0x570000b0, wired only to UART2. It does not enable H1/H0's profile at
+0x52000168; default L0 access is diagnosed. Invalid widths and neighbor bits
+are rejected atomically. Machine reset restores the inherited console profile.
+
+Three raw A-board runs (`42b8eab914b2b76b526a2991c72051a355029e096f1600bf8edf9a92742d9754`)
+observe the same queued-clean-RX register reset as H1/H0 and preserve UART0/1
+scratch/frame/modem values. Three HAL runs
+(`0e122d3c4b08354fbf6cc6dd7e4475caf8540a04a316940328681c2cc0a7cd66`)
+add enabled-IRQ/TX-busy refusal, successful reset/reconfiguration, internal
+loopback and return to the inherited Pins console. Raw UART logs match the
+same ELF in QEMU, with whole-board vendor-firmware recovery after every run.
+See hisi-registers `evidence/ws53-uart-l0-reset-hil.json`.
+
+`ws53_uart_l0_reset_test.py` checks isolated reset, IRQ deassertion, data-path
+recovery, invalid accesses, default-disabled rejection and machine recovery.
+IRQ/DMA in-flight cancellation, held-reset MMIO and integer divisor reset
+defaults remain model assumptions rather than newly qualified hardware facts.

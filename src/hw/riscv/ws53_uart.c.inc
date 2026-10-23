@@ -363,7 +363,8 @@ static void ws53_uart_soft_reset_n(void *opaque, int n, int level)
     WS53UartState *s = opaque;
     bool asserted = !level;
     if (asserted && !s->soft_reset_asserted) {
-        /* H1/H0 profile from ws53-uart-reset-hil.json, not machine boot state.
+        /* H1/H0/L0 profiles from ws53-uart-reset-hil.json and
+         * ws53-uart-l0-reset-hil.json, not machine boot state.
          * Divisor-zero and cancellation of in-flight TX/errors are explicit
          * model assumptions; the board fixture tested queued clean RX only. */
         timer_del(s->timeout);
