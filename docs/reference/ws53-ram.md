@@ -745,6 +745,16 @@ fails in this model as it did on hardware. This is register configuration and
 loopback evidence, not physical baud/frame timing, clock-tree provisioning or
 UART0/1 HIL qualification. Default byte delivery remains immediate.
 
+The current shared fixture additionally opts into the existing FIFO64/timed
+serializer profile (`assume-dma-profile=on`, `char-ns=100000`) to test HAL flush.
+It accepts exactly the three instance assumption diagnostics and records icount
+timing; 100us is a test parameter, not a calibrated physical character period.
+Each of three UART2 hardware runs confirms48 first flushes still busy, observes
+FIFO empty while the shifter remains busy, and retains144 loopback bytes after
+status polling. Three-port Rust error-injection tests separately verify that
+flush captures read-clear RX errors without discarding later good data. Error
+coalescing/overrun tests are model evidence, not physical error qualification.
+
 ## UART0/1 request-paced MDMA profile
 
 Enable both `-global ws53-mdma.assume-profile=on` and
