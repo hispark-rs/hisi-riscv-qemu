@@ -97,6 +97,8 @@ def pwm_test(qemu):
             configure(ch, cycles=3)
         for group in range(4):
             commit(group, 3 << (group*2))
+        assert all(read(0x124+ch*64) for ch in range(8))
+        write(0x518, 255)  # Initial configuration load is not block completion.
         write(0x100, 0); commit(0, 3, False)
         step(2999); assert not any(read(0x124+ch*64) for ch in range(8))
         step(1); assert all(read(0x124+ch*64) for ch in range(8))
@@ -154,6 +156,8 @@ def pwm_test(qemu):
         write(0x100, 0); commit(0, 1)
         configure(1, period=65535, duty=0, offset=0, cycles=65535)
         commit(1, 2)
+        assert read(0x164) == 1
+        write(0x518, 2)
         end_ns = (65535*65535*1_000_000_000 + 31_999_999)//32_000_000
         step(end_ns-1); assert read(0x164) == 0
         step(1); assert read(0x164) == 1

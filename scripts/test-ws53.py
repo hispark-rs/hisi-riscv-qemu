@@ -19,6 +19,7 @@ from ws53_wdt_test import wdt_test
 from ws53_tcxo_test import tcxo_test
 from ws53_rtc_test import rtc_test
 from ws53_pwm_test import pwm_test
+from ws53_pwm_start_test import pwm_start_test
 from ws53_pwm_pad_test import pwm_pad_test, pwm_divider_test
 from ws53_i2c_test import i2c_test
 from ws53_spi_test import spi_test
@@ -329,6 +330,7 @@ if __name__ == "__main__":
               "tcxo": tcxo_test(args.qemu),
               "rtc": rtc_test(args.qemu),
               "pwm": pwm_test(args.qemu),
+              "pwm_start": pwm_start_test(args.qemu),
               "pwm0_pad_hil_clock": pwm_pad_test(args.qemu,2000000),
               "pwm_dividers": pwm_divider_test(args.qemu),
               "pwm0_pad_sdk_clock": pwm_pad_test(args.qemu,32000000),

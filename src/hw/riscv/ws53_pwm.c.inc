@@ -20,7 +20,10 @@ typedef struct WS53PwmChannel {
 struct WS53PwmState {
     SysBusDevice parent_obj;
     MemoryRegion mmio, div_mmio;
-    QEMUTimer *timer;
+    QEMUTimer *timer, *commit_timer;
+    int64_t commit_due[4];
+    uint8_t commit_pending;
+    uint32_t start_latch_ns;
     qemu_irq irq[2], out[8], oe[8];
     WS53PwmChannel channel[8];
     uint8_t select[4], clear[4], event_enable;
@@ -70,6 +73,11 @@ static bool ws53_pwm_profile(WS53PwmState *s)
         qemu_log_mask(LOG_GUEST_ERROR,
             "ws53-pwm: assumed timing clock=%" PRIu64 " width=16 clear=immediate deferred=block-end\n",
             s->counter_hz);
+        if (s->start_latch_ns) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                "ws53-pwm: assumed START acceptance delay=%uns; live configuration sampled at acceptance\n",
+                s->start_latch_ns);
+        }
         s->diagnosed = true;
     }
     return true;
@@ -169,6 +177,11 @@ static void ws53_pwm_commit(WS53PwmState *s, unsigned group)
         WS53PwmChannel *c = &s->channel[i];
         if (s->clear[group] || !c->running) {
             ws53_pwm_load(c, c->shadow, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+            /* Measured finite-mode initial load, before block completion.
+             * Continuous-mode initial notification remains unqualified. */
+            if (ws53_pwm_clocked(s) && c->running && c->active[PW_CYCLES]) {
+                c->flag = true;
+            }
             c->queued = false;
         } else {
             memcpy(c->next, c->shadow, sizeof(c->next)); c->queued = true;
@@ -176,6 +189,43 @@ static void ws53_pwm_commit(WS53PwmState *s, unsigned group)
         ws53_pwm_output(s, i);
     }
     ws53_pwm_arm(s); ws53_pwm_irq(s);
+}
+static void ws53_pwm_commit_arm(WS53PwmState *s)
+{
+    int64_t next = INT64_MAX;
+    timer_del(s->commit_timer);
+    for (unsigned g = 0; g < 4; g++) {
+        if (s->commit_pending & (1u << g)) { next = MIN(next, s->commit_due[g]); }
+    }
+    if (next != INT64_MAX) { timer_mod(s->commit_timer, next); }
+}
+static void ws53_pwm_accept(void *opaque)
+{
+    WS53PwmState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    for (unsigned g = 0; g < 4; g++) {
+        if ((s->commit_pending & (1u << g)) && s->commit_due[g] <= now) {
+            s->commit_pending &= ~(1u << g);
+            if (!ws53_pwm_clocked(s)) {
+                qemu_log_mask(LOG_GUEST_ERROR, "ws53-pwm: unimplemented START acceptance while clock gated\n");
+                continue;
+            }
+            ws53_pwm_commit(s, g);
+        }
+    }
+    ws53_pwm_commit_arm(s);
+}
+static void ws53_pwm_request_commit(WS53PwmState *s, unsigned group)
+{
+    if (!s->start_latch_ns) { ws53_pwm_commit(s, group); return; }
+    if (!ws53_pwm_profile(s)) { return; }
+    if (s->commit_pending & (1u << group)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-pwm: unimplemented overlapping START group%u\n", group);
+        return;
+    }
+    s->commit_pending |= 1u << group;
+    s->commit_due[group] = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->start_latch_ns;
+    ws53_pwm_commit_arm(s);
 }
 static uint64_t ws53_pwm_read(void *opaque, hwaddr off, unsigned size)
 {
@@ -212,7 +262,7 @@ static void ws53_pwm_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
         switch (off & 15) {
         case 0: if (v > 255) { goto invalid; } s->select[g] = v; return;
         case 4: if (v > 1) { goto invalid; } s->clear[g] = v; return;
-        case 8: if (v != 1) { goto invalid; } ws53_pwm_commit(s, g); return;
+        case 8: if (v != 1) { goto invalid; } ws53_pwm_request_commit(s, g); return;
         }
     }
     if (off >= 0x100 && off < 0x300 && (off & 63) < 48) {
@@ -275,7 +325,8 @@ static void ws53_pwm_clock_input(void *opaque, int n, int level)
 static void ws53_pwm_reset(void *opaque)
 {
     WS53PwmState *s = opaque;
-    timer_del(s->timer); memset(s->channel, 0, sizeof(s->channel));
+    timer_del(s->timer); timer_del(s->commit_timer); s->commit_pending = 0;
+    memset(s->channel, 0, sizeof(s->channel));
     memset(s->select, 0, sizeof(s->select)); memset(s->clear, 0, sizeof(s->clear));
     s->event_enable = s->group_errors = s->count_errors = s->div = s->latched_div = 0;
     for (unsigned i = 0; i < 8; i++) {
@@ -290,9 +341,14 @@ static void ws53_pwm_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "ws53-pwm: counter-hz must select the 2MHz HIL or 32MHz SDK profile");
         return;
     }
+    if (s->start_latch_ns != 0 && s->start_latch_ns != 1000) {
+        error_setg(errp, "ws53-pwm: start-latch-ns must be 0 or the explicit 1000ns test profile");
+        return;
+    }
     qemu_register_reset(ws53_pwm_reset, s);
 }
 static const Property ws53_pwm_properties[] = {
+    DEFINE_PROP_UINT32("start-latch-ns", WS53PwmState, start_latch_ns, 0),
     DEFINE_PROP_BOOL("assume-timing", WS53PwmState, assume_timing, false),
     DEFINE_PROP_UINT64("counter-hz", WS53PwmState, counter_hz, 32000000),
 };
@@ -310,6 +366,7 @@ static void ws53_pwm_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), ws53_pwm_clock_input, "clock", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_pwm_gate_input, "gate", 1);
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_pwm_tick, s);
+    s->commit_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_pwm_accept, s);
 }
 static void ws53_pwm_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {

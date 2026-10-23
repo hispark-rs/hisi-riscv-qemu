@@ -336,10 +336,10 @@ a rising LOAD command and enable/gate/input clock; pauses preserve fractional
 ticks. No undocumented upstream divider relationship is inferred.
 
 Each channel has shadow/active/deferred configuration, phase and block counters,
-output polarity/enable, sticky completion and independently staged stop. The
+output polarity/enable, sticky configuration-load notifications and independently staged stop. The
 model emits named `out` and `output-enable` channel signals, without mapping
 them to guessed physical pads. Group/count configuration errors feed IRQ71;
-step-end flags feed IRQ72. Masked events remain latched until selected W1C
+Configuration-load flags feed IRQ72, including initial finite START. Masked events remain latched until selected W1C
 acknowledgement. Invalid group commits are atomic in this profile. Reset clears
 owned state and timers but retains the external `/machine/pwm clock` fault.
 
@@ -351,9 +351,9 @@ also exposes the late-stop hazard: with a short block the SDK's 1us two-commit
 sequence has already emitted extra blocks before the second command.
 
 The parent's QEMU-only `pwm_control` Rust fixture verifies actual generated PAC
-access, all eight completion flags via ISR72, duty traits, route retention and
+access, all eight load notifications via ISR72, duty traits, route retention and
 Drop. The HAL now conservatively returns `FiniteDeadlineMissed` and stops the
-whole group if a finite completion flag appears during staging. Both PWM IRQs
+whole group if another load notification appears during staging after the initial load flag was acknowledged. Both PWM IRQs
 are suspended for that transaction; unrelated interrupts remain enabled.
 The check may reject a block that ended just after the stop command, cannot
 undo pulses, and does not prove silicon status-propagation timing. A second
@@ -1034,3 +1034,32 @@ Div16, stops and releases its pad. Three repeated same-ELF A-board runs match
 QEMU and the independently sampled DSLogic waveforms. This qualifies the local
 ratio in that RAM takeover, not IRQ/finite behavior, live glitch-free transitions,
 all hardware channels or production cross-core clock ownership.
+
+### PWM asynchronous START and initial load notification (2026-10-24)
+
+A-board channel0/group0 at effective2MHz exposed two bugs hidden by the earlier
+synchronous model: immediate EN-clear lost the initial enabled configuration;
+after adding a10us guard, interpreting the initial load flag as block completion
+truncated the first high to19us. The corrected HAL guards START, acknowledges
+the initial load notification, then stages EN=0 with the SDK1us interval and
+deferred START. Three identical-ELF board captures produced exact8/16 pulses,
+100us periods,50% duty and quiet tails, with matching strict QEMU UART output.
+
+`-global ws53-pwm.start-latch-ns=1000` opts into asynchronous acceptance.
+This1us latency is an explicit regression-test assumption, not a measured
+hardware constant. At acceptance the model samples live configuration;
+early shadow changes are visible. `clear=immediate` in the older notice means
+immediate at acceptance. Default0 retains the synchronous assumption for
+existing tests. Finite initial loads assert the configuration flag in both
+profiles. Continuous initial notification and exact pulse-counter phases are
+still unqualified (silicon reported counter1 during the first high, whereas
+the current model counts completed periods). Do not use this counter model
+as a hardware completion oracle.
+
+`scripts/ws53_pwm_start_test.py` checks early EN overwrite, initial flag before
+completion, exact8/16 digital pulses, deferred stop, W1C, reset of pending
+START, invalid latency properties, and explicit diagnostics for overlapping
+START or acceptance with a gated clock. The shared Rust finite fixture enables
+the delayed profile plus icount shift3,align=off,sleep=on. IRQ72 physical
+delivery, other channels, exact latency and arbitrary short-block counts remain
+unverified. Long preemption can emit extras before software can observe them.
