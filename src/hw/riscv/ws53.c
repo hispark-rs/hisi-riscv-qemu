@@ -37,6 +37,7 @@
 #include "ws53_mclken0.c.inc"
 #include "ws53_adc.c.inc"
 #include "ws53_global_clken.c.inc"
+#include "ws53_mdma.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -223,6 +224,11 @@ static void ws53_init(MachineState *machine)
     sysbus_mmio_map(SYS_BUS_DEVICE(adc), 0, 0x5208a000);
     sysbus_mmio_map(SYS_BUS_DEVICE(adc), 1, 0x52000054);
     sysbus_mmio_map(SYS_BUS_DEVICE(adc), 2, 0x52004100);
+    DeviceState *mdma = qdev_new(TYPE_WS53_MDMA);
+    object_property_add_child(OBJECT(machine), "mdma", OBJECT(mdma));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(mdma), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(mdma), 0, 0x52070000);
+    sysbus_connect_irq(SYS_BUS_DEVICE(mdma), 0, qdev_get_gpio_in(intc, 58));
     qdev_connect_gpio_out_named(mclken1, "gate", 3, qdev_get_gpio_in_named(adc, "gate", 0));
     DeviceState *global_clken = qdev_new(TYPE_WS53_GLOBAL_CLKEN);
     object_property_add_child(OBJECT(machine), "global-clken", OBJECT(global_clken));
@@ -379,6 +385,7 @@ static void ws53_register_types(void)
     type_register_static(&ws53_i2s_type);
     type_register_static(&ws53_mclken0_type);
     type_register_static(&ws53_adc_type);
+    type_register_static(&ws53_mdma_type);
     type_register_static(&ws53_global_clken_type);
     type_register_static(&ws53_i2c_type);
     type_register_static(&ws53_mclken1_type);

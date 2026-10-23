@@ -648,3 +648,55 @@ pause/resume, cancellation, late writes, repeat mode, failed bus writes/recovery
 34 invalid accesses/configurations and six invalid property sets. No test here
 establishes application/control-core ownership, cache safety, physical pad
 routing, or a safe HAL capture buffer release operation.
+
+## ROM v151 MDMA memory-transfer profile
+
+`ws53-mdma` maps the actual WS53 eight-channel layout at `0x52070000`, local
+IRQ58, with0x20 channel stride and LLI/DEST/CFG/SOURCE/CONTROL offsets0/4/8/16/20.
+It does not reuse the WS63 device layout. SDK163d9150 and source-contract commit
+`f13eaaf` verify register fields/helpers, not physical transfer/drain semantics.
+SDMA remains absent: its macro does not establish a selected application driver.
+
+Transfer execution requires `-global ws53-mdma.assume-profile=on`. The profile
+implements DTCM-to-DTCM8/16/32-bit elements with equal source/destination widths,
+counts1..4095, independent fixed/incrementing addresses, one-beat bursts and
+master0/protection0. Both ranges must fit `0x20010000..0x20060000` and align to
+width. Actual address-space reads and writes move data; failure latches an error
+instead of setting success. Wrong widths, alignment/ranges, bursts, masters,
+flow-control, request routing, nonzero LLI and unknown registers are diagnosed.
+It is not yet a complete DMA model: peripheral pacing, LLI/circular chains,
+arbitration priorities, packing/conversion widths and NMI fault routing remain
+unimplemented. Software request/SYNC registers are also rejected explicitly.
+
+Unverified digital assumptions, visible at the profile boundary:
+
+- Each element has a separate source-read and destination-write event, each
+  `phase-ns` (default500, accepted1..1e9). Eight channels progress independently;
+  this makes no claim about physical bandwidth or arbitration.
+- ACTIVE reflects an already read element waiting to be written. Element count
+  decrements and incrementing addresses advance only after successful write.
+  Terminal completion clears channel enable, and latches raw TC if CONTROL bit31
+  is enabled. Channel mask bits12/13 use1=unmask; raw bits persist until W1 clear.
+  Shared IRQ58 reflects any unmasked TC/error, independently of controller enable.
+- Halt/channel-disable/controller-disable prevent the next source read, but do
+  **not** retract an already read/posted destination beat. Reconfiguration or
+  rearming cannot redirect that outstanding write. Halt/controller reenable
+  resumes retained progress. A disable can restart remaining count only after
+  its posted beat has completed. No HAL buffer-release proof is inferred.
+- External `clock` and per-channel `stall` freeze both phases with exact remaining
+  time. Per-channel `bus-stall` freezes only a pending write. `read-error` and
+  `write-error` inject transaction failures; failed data/count/address are retained,
+  channel enable clears and raw error latches. Other channels continue.
+- Machine reset cancels events and clears registers/counters as model policy;
+  external faults persist. This is not evidence of physical reset/drain behavior.
+  Clock-tree mapping is not fabricated: the explicit profile inherits a running
+  bus clock and provides the named external clock input for tests.
+
+QOM `reads`, `writes`, `errors`, `transfers` and `pending-writes` are test-only
+counters. `scripts/ws53_mdma_test.py` covers96 channel/width/increment combinations,
+8 concurrent channels, full4095-element boundaries, exact pause/resume, real RAM,
+IRQ masking/W1 clearing, both transaction failures, cancellation/posted writes,
+reset/recovery,37 invalid MMIO/configuration diagnostics and explicit opt-in.
+It is part of `scripts/test-ws53.py`. This is model validation only; the MDMA HAL,
+actual Rust DMA RAM example, safe cache/drain contract and physical tests remain
+separate work.
