@@ -19,7 +19,8 @@ counter snapshot, mask/unmask, per-channel W1C, stop and reset. SDK profile
 `CONFIG_TIMER_0_WIDTH_64=0` and `CONFIG_TIMER_1_WIDTH_64=0`. High-half/permission/
 clock-management/low-power behavior is not yet modeled. UART uses a WS53-specific
 word-access model instead of the legacy family's different receive flags.
-Full UART TX FIFO/timing/flow-control/DMA validation is outstanding. None of these results prove
+An opt-in UART0/1 DMA profile adds a FIFO and serializer with assumed timing;
+physical TX timing, flow-control and DMA validation remain outstanding. None of these results prove
 silicon timing, electrical properties or control-core coexistence.
 
 The SDK common-register C structure and its comments disagree by 0x10. Neither
@@ -664,7 +665,7 @@ master0/protection0. Both ranges must fit `0x20010000..0x20060000` and align to
 width. Actual address-space reads and writes move data; failure latches an error
 instead of setting success. Wrong widths, alignment/ranges, bursts, masters,
 flow-control, request routing, nonzero LLI and unknown registers are diagnosed.
-It is not yet a complete DMA model: peripheral pacing, LLI/circular chains,
+It is not yet a complete DMA model: non-UART peripheral pacing, LLI/circular chains,
 arbitration priorities, packing/conversion widths and NMI fault routing remain
 unimplemented. Software request/SYNC registers are also rejected explicitly.
 
@@ -697,6 +698,58 @@ counters. `scripts/ws53_mdma_test.py` covers96 channel/width/increment combinati
 8 concurrent channels, full4095-element boundaries, exact pause/resume, real RAM,
 IRQ masking/W1 clearing, both transaction failures, cancellation/posted writes,
 reset/recovery,37 invalid MMIO/configuration diagnostics and explicit opt-in.
-It is part of `scripts/test-ws53.py`. This is model validation only; the MDMA HAL,
-actual Rust DMA RAM example, safe cache/drain contract and physical tests remain
-separate work.
+It is part of `scripts/test-ws53.py`. The integration repository now has a polling
+memory-copy HAL and actual Rust RAM fixtures; their completion observation never
+proves physical cache/drain safety, and hardware tests remain separate work.
+
+## UART0/1 request-paced MDMA profile
+
+Enable both `-global ws53-mdma.assume-profile=on` and
+`-global ws53-mdma.assume-uart=on`. The second option configures UART0/1 with
+an explicit FIFO64/timed-serializer/byte-handshake assumption; UART2 retains the
+legacy console model and has no DMA endpoint. Request10/11 selects UART0 TX/RX
+DATA at0x52081004; request8/9 selects UART1 at0x52080004. These routes and DATA
+offsets come from SDK163d9150, independently checked by hisi-registers `e8e8ce0`.
+Flow1/2 is DMA-controlled memory-to-peripheral/peripheral-to-memory; only byte
+width, incrementing DTCM memory, fixed peripheral address, one-beat burst and
+master0/protection0 are accepted. Wrong direction/address/request, foreign
+protection, width conversion, request changes during transfer and UART2 are
+rejected, not converted to memory copies or success stubs.
+
+The source audit found conflicts: the SDK writes UART_PARAMETER DMA_EXTRA even
+though its own header marks that capability RO, and its UART BUFFERABLE literal
+is1 while the DMA HAL enum is2. UART_PARAMETER stays RO; no guessed enable write
+or bufferability equivalence is implemented. The opt-in profile advertises
+DMA_EXTRA=1, inherited active clocks and exclusive resource ownership. This is
+not evidence of the connected board's actual capability; reference product
+configuration disables UART DMA.
+
+Explicit behavioral assumptions:
+
+- UART TX has a64-byte FIFO plus an independent shift byte. `char-ns` defaults
+  to10000 (range1..1e9), unrelated to the inherited physical baud divisor. TX
+  counter excludes the active shift byte; LINE_STATUS TX_EMPTY only asserts when
+  both are empty. Loopback bytes arrive only after serialization. HALT_TX stops
+  new shift bytes; FIFO reset clears queued bytes but preserves the active one.
+- TX request means at least one FIFO slot; RX request means at least one byte.
+  These are single-byte level requests, not a model of burst thresholds,
+  DMA_EXTRA hardware acknowledge, software ACK or physical APB lane wiring.
+  The dedicated endpoint byte adapter leaves CPU MMIO32-bit. DMA cannot read
+  empty RX as zero or overwrite full TX silently. Request withdrawal prevents a
+  new source beat. Repeated same-level notifications do not postpone its timer.
+- UART `clock` and `tx-stall` inputs preserve serializer remaining time. Clock
+  off suppresses requests. A previously read RX byte still reaches RAM after
+  DMA cancel or UART clock removal. A TX write reaching a now-clocked-off UART
+  produces a model bus error; the physical bus may behave differently. One
+  channel's errors and cancellation do not clear other channels' raw events.
+- DMA TC means the destination accepted the last byte, **not** UART wire idle.
+  Channel halt/disable does not revoke its already-read byte. Full machine reset
+  cancels active events in this model, while external injected faults persist.
+
+`scripts/ws53_mdma_uart_test.py` is in the fullWS53 regression:32
+port/channel/direction cases, both ports simultaneously transferring257 bytes
+through TX/serializer/RX/DMA, FIFO backpressure, empty receive waits, exact clock
+pause/resume, read/write errors, late writes after cancel, reset and46 rejected
+accesses/configurations. QOM `transmitted` counts completed serialized bytes.
+This does not provide a Rust UART DMA HAL yet or establish any physical cache,
+clock, pad, bus-drain, HPROT or control-core ownership guarantee.

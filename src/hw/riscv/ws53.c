@@ -259,9 +259,13 @@ static void ws53_init(MachineState *machine)
         g_autofree char *name = g_strdup_printf("uart%u", i);
         object_property_add_child(OBJECT(machine), name, OBJECT(uart));
         qdev_prop_set_chr(uart, "chardev", serial_hd(i));
+        if (i < 2 && WS53_MDMA(mdma)->assume_uart) {
+            qdev_prop_set_bit(uart, "assume-dma-profile", true);
+        }
         sysbus_realize_and_unref(SYS_BUS_DEVICE(uart), &error_fatal);
         sysbus_mmio_map(SYS_BUS_DEVICE(uart), 0, bases[i]);
         sysbus_connect_irq(SYS_BUS_DEVICE(uart), 0, qdev_get_gpio_in(intc, irqs[i]));
+        if (i < 2) { ws53_mdma_connect_uart(WS53_MDMA(mdma), uart, i == 0 ? 10 : 8, bases[i] + 4); }
     }
     const hwaddr gpio_bases[] = { 0x5700c000, 0x57028000, 0x57010000 };
     DeviceState *nmi = qdev_new(TYPE_WS53_NMI);

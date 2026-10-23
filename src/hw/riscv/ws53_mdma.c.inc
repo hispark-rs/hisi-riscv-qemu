@@ -1,5 +1,6 @@
 /* WS53 ROM v151 MDMA: SDK163d9150, source contract f13eaaf.
- * Explicit digital mem-to-mem profile only, not PL080/WS63 layout reuse.
+ * Explicit digital memory profile and opt-in UART0/1 byte requests, not
+ * PL080/WS63 layout reuse. Peripheral request timing is an assumption.
  * Posted writes survive halt/disable; clock stalls preserve remaining time.
  * SPDX-License-Identifier: GPL-2.0-or-later */
 #define TYPE_WS53_MDMA "ws53-mdma"
@@ -9,7 +10,7 @@ typedef struct WS53MdmaChannel {
     QEMUTimer *read_timer, *write_timer;
     uint32_t source, destination, control, configuration;
     uint8_t index, data[4], width;
-    bool in_flight, stalled, read_error, write_error, bus_stall;
+    bool in_flight, stalled, read_error, write_error, bus_stall, servicing;
     int64_t read_remaining, write_remaining, read_deadline, write_deadline;
 } WS53MdmaChannel;
 struct WS53MdmaState {
@@ -18,9 +19,22 @@ struct WS53MdmaState {
     qemu_irq irq;
     WS53MdmaChannel channel[8];
     uint32_t configuration, raw_tc, raw_error;
-    bool assume_profile, clock_on;
+    bool assume_profile, assume_uart, clock_on, request[16];
+    struct { WS53UartState *uart; uint32_t address; bool receive; } endpoint[16];
     uint64_t phase_ns, reads, writes, errors, transfers, pending_writes;
 };
+static unsigned ws53_mdma_flow(WS53MdmaChannel *c)
+{
+    return (c->configuration >> 9) & 7;
+}
+static unsigned ws53_mdma_request_id(WS53MdmaChannel *c)
+{
+    return (c->configuration >> (ws53_mdma_flow(c) == 1 ? 5 : 1)) & 15;
+}
+static bool ws53_mdma_ready(WS53MdmaChannel *c)
+{
+    return !ws53_mdma_flow(c) || c->owner->request[ws53_mdma_request_id(c)];
+}
 static void ws53_mdma_irq(WS53MdmaState *s)
 {
     unsigned pending = 0;
@@ -44,14 +58,14 @@ static void ws53_mdma_pause(WS53MdmaChannel *c)
 static void ws53_mdma_resume(WS53MdmaChannel *c)
 {
     WS53MdmaState *s = c->owner;
-    if (!s->clock_on || c->stalled) { return; }
+    if (!s->clock_on || c->stalled || c->servicing) { return; }
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     if (c->in_flight) {
         if (!c->bus_stall && !timer_pending(c->write_timer)) {
             c->write_deadline = now + c->write_remaining; timer_mod(c->write_timer, c->write_deadline);
         }
     } else if ((s->configuration & 1) && (c->configuration & 1) && !(c->configuration & 0x10000) &&
-               (c->control & 0xfff) && !timer_pending(c->read_timer)) {
+               (c->control & 0xfff) && ws53_mdma_ready(c) && !timer_pending(c->read_timer)) {
         c->read_deadline = now + c->read_remaining; timer_mod(c->read_timer, c->read_deadline);
     }
 }
@@ -64,8 +78,17 @@ static void ws53_mdma_error(WS53MdmaChannel *c)
 static void ws53_mdma_read_beat(void *opaque)
 {
     WS53MdmaChannel *c = opaque; WS53MdmaState *s = c->owner;
-    MemTxResult result = c->read_error ? MEMTX_ERROR :
-        address_space_read(&address_space_memory, c->source, MEMTXATTRS_UNSPECIFIED, c->data, c->width);
+    if (!ws53_mdma_ready(c)) { return; }
+    c->servicing = true;
+    MemTxResult result = MEMTX_ERROR;
+    if (!c->read_error) {
+        if (ws53_mdma_flow(c) == 2) {
+            result = ws53_uart_dma_read(s->endpoint[ws53_mdma_request_id(c)].uart, c->data) ? MEMTX_OK : MEMTX_ERROR;
+        } else {
+            result = address_space_read(&address_space_memory, c->source, MEMTXATTRS_UNSPECIFIED, c->data, c->width);
+        }
+    }
+    c->servicing = false;
     if (result != MEMTX_OK) { ws53_mdma_error(c); return; }
     s->reads++; s->pending_writes++; c->in_flight = true;
     c->write_remaining = s->phase_ns; ws53_mdma_resume(c);
@@ -73,8 +96,16 @@ static void ws53_mdma_read_beat(void *opaque)
 static void ws53_mdma_write_beat(void *opaque)
 {
     WS53MdmaChannel *c = opaque; WS53MdmaState *s = c->owner;
-    MemTxResult result = c->write_error ? MEMTX_ERROR :
-        address_space_write(&address_space_memory, c->destination, MEMTXATTRS_UNSPECIFIED, c->data, c->width);
+    c->servicing = true;
+    MemTxResult result = MEMTX_ERROR;
+    if (!c->write_error) {
+        if (ws53_mdma_flow(c) == 1) {
+            result = ws53_uart_dma_write(s->endpoint[ws53_mdma_request_id(c)].uart, c->data[0]) ? MEMTX_OK : MEMTX_ERROR;
+        } else {
+            result = address_space_write(&address_space_memory, c->destination, MEMTXATTRS_UNSPECIFIED, c->data, c->width);
+        }
+    }
+    c->servicing = false;
     c->in_flight = false; s->pending_writes--;
     if (result != MEMTX_OK) { ws53_mdma_error(c); return; }
     s->writes++;
@@ -94,11 +125,24 @@ static bool ws53_mdma_range(uint32_t address, unsigned count, unsigned width, bo
     uint64_t limit = (uint64_t)address + (increment ? count : 1) * width;
     return !(address & (width - 1)) && address >= 0x20010000 && limit <= 0x20060000;
 }
-static bool ws53_mdma_valid(WS53MdmaChannel *c)
+static bool ws53_mdma_valid(WS53MdmaChannel *c, uint32_t cfg)
 {
+    WS53MdmaState *s = c->owner;
     unsigned count = c->control & 0xfff, width = 1u << ((c->control >> 18) & 7);
-    return count && ws53_mdma_range(c->source, count, width, c->control & (1u << 26)) &&
-           ws53_mdma_range(c->destination, count, width, c->control & (1u << 27));
+    unsigned flow = (cfg >> 9) & 7, src = (cfg >> 1) & 15, dst = (cfg >> 5) & 15;
+    bool si = c->control & (1u << 26), di = c->control & (1u << 27);
+    if (!count) { return false; }
+    if (!flow) {
+        return !src && !dst && ws53_mdma_range(c->source, count, width, si) &&
+               ws53_mdma_range(c->destination, count, width, di);
+    }
+    if (!s->assume_uart || width != 1) { return false; }
+    if (flow == 1) {
+        return !src && si && !di && s->endpoint[dst].uart && !s->endpoint[dst].receive &&
+               c->destination == s->endpoint[dst].address && ws53_mdma_range(c->source, count, 1, true);
+    }
+    return flow == 2 && !dst && !si && di && s->endpoint[src].uart && s->endpoint[src].receive &&
+           c->source == s->endpoint[src].address && ws53_mdma_range(c->destination, count, 1, true);
 }
 static uint64_t ws53_mdma_read(void *opaque, hwaddr off, unsigned size)
 {
@@ -155,12 +199,14 @@ static void ws53_mdma_write(void *opaque, hwaddr off, uint64_t value, unsigned s
         WS53MdmaChannel *c = &s->channel[(off - 0x100) / 0x20];
         unsigned reg = off & 0x1f;
         if (reg == 8) {
-            /* ACTIVE is status-only: ignore its value during a PAC field RMW.
-             * This profile supports mem-to-mem, no request/lock/flow extensions. */
-            if (v & ~0x1b001u) { goto invalid; }
+            /* ACTIVE is status-only. Request/flow bindings cannot be changed
+             * while enabled or while an already-read beat is pending. */
+            if (v & ~(s->assume_uart ? 0x1bfffu : 0x1b001u)) { goto invalid; }
+            if (((v >> 9) & 7) > 2 ||
+                (((v ^ c->configuration) & 0xffe) && ((c->configuration & 1) || c->in_flight))) { goto invalid; }
             v &= ~0x8000u;
             if (!(c->configuration & 1) && (v & 1)) {
-                if (c->in_flight || !ws53_mdma_valid(c)) { goto invalid; }
+                if (c->in_flight || !ws53_mdma_valid(c, v)) { goto invalid; }
                 if (!s->assume_profile) {
                     qemu_log_mask(LOG_GUEST_ERROR, "ws53-mdma: unimplemented transfer without assume-profile\n"); return;
                 }
@@ -197,6 +243,28 @@ static void ws53_mdma_clock(void *opaque, int n, int level)
     s->clock_on = !!level;
     for (unsigned i = 0; i < 8; i++) { ws53_mdma_resume(&s->channel[i]); }
 }
+static void ws53_mdma_request(void *opaque, int n, int level)
+{
+    WS53MdmaState *s = opaque;
+    if (s->request[n] == !!level) { return; }
+    s->request[n] = !!level;
+    for (unsigned i = 0; i < 8; i++) {
+        WS53MdmaChannel *c = &s->channel[i];
+        if (ws53_mdma_flow(c) && ws53_mdma_request_id(c) == n) {
+            ws53_mdma_pause(c); ws53_mdma_resume(c);
+        }
+    }
+}
+static void ws53_mdma_connect_uart(WS53MdmaState *s, DeviceState *uart, unsigned request, uint32_t data)
+{
+    for (unsigned rx = 0; rx < 2; rx++) {
+        s->endpoint[request + rx].uart = WS53_UART(uart);
+        s->endpoint[request + rx].address = data;
+        s->endpoint[request + rx].receive = rx;
+        qdev_connect_gpio_out_named(uart, "dma-request", rx,
+                                   qdev_get_gpio_in_named(DEVICE(s), "request", request + rx));
+    }
+}
 #define WS53_MDMA_INPUT(name, field) \
 static void ws53_mdma_##name(void *opaque, int n, int level) { \
     WS53MdmaState *s = opaque; WS53MdmaChannel *c = &s->channel[n]; \
@@ -211,7 +279,8 @@ static void ws53_mdma_reset(void *opaque)
     WS53MdmaState *s = opaque;
     for (unsigned i = 0; i < 8; i++) {
         WS53MdmaChannel *c = &s->channel[i]; timer_del(c->read_timer); timer_del(c->write_timer);
-        c->source = c->destination = c->control = c->configuration = 0; c->in_flight = false;
+        c->source = c->destination = c->control = c->configuration = 0;
+        c->in_flight = c->servicing = false;
     }
     s->configuration = s->raw_tc = s->raw_error = 0;
     s->reads = s->writes = s->errors = s->transfers = s->pending_writes = 0;
@@ -221,13 +290,18 @@ static void ws53_mdma_realize(DeviceState *dev, Error **errp)
 {
     WS53MdmaState *s = WS53_MDMA(dev);
     if (!s->phase_ns || s->phase_ns > 1000000000) { error_setg(errp, "ws53-mdma: phase-ns must be 1..1000000000"); return; }
+    if (s->assume_uart && !s->assume_profile) { error_setg(errp, "ws53-mdma: assume-uart requires assume-profile"); return; }
     if (s->assume_profile) {
         qemu_log_mask(LOG_GUEST_ERROR, "ws53-mdma: assumed DTCM mem-to-mem same-width posted-write profile\n");
+    }
+    if (s->assume_uart) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-mdma: assumed UART0/1 byte handshakes with flow1/2, master0/prot0\n");
     }
     qemu_register_reset(ws53_mdma_reset, s);
 }
 static const Property ws53_mdma_properties[] = {
     DEFINE_PROP_BOOL("assume-profile", WS53MdmaState, assume_profile, false),
+    DEFINE_PROP_BOOL("assume-uart", WS53MdmaState, assume_uart, false),
     DEFINE_PROP_UINT64("phase-ns", WS53MdmaState, phase_ns, 500),
 };
 static void ws53_mdma_init(Object *obj)
@@ -241,6 +315,7 @@ static void ws53_mdma_init(Object *obj)
         c->write_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_mdma_write_beat, c);
     }
     qdev_init_gpio_in_named(DEVICE(obj), ws53_mdma_clock, "clock", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_mdma_request, "request", 16);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_mdma_stall, "stall", 8);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_mdma_bus_stall, "bus-stall", 8);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_mdma_read_error, "read-error", 8);
