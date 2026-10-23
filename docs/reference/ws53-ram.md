@@ -460,3 +460,45 @@ This is partial single-line support. Dual/quad protocols, native-CS continuity,
 DMA, slave/Microwire/DDR, IRQ-driven HAL/async, physical routes and waveform timing
 remain unimplemented or unverified. Unsupported features produce guest errors.
 The synthetic fixture pads are not board wiring; never run it on a physical board.
+
+## Temperature polling functional profile
+
+`ws53-tsensor` maps the six source-audited registers at `0x59006300`; its
+layout/access evidence is RDL `04ced9c` and SDK `163d9150`. The complete selected
+C port and 1024-code conversion oracle are checked in hisi-registers `37db3cd`.
+There is no evidenced temperature IRQ, stop command, READY-clear operation or
+clock-gate register, so none is invented by this model.
+
+START requires `-global ws53-tsensor.assume-profile=on`, all four reference
+configuration writes (period160, CONTROL3, sample-time2, refresh-config0) and
+START1. Only these source-profile values are accepted. The explicit diagnostic
+states assumptions: sixteen 256us sample points, integer-floor average, reports
+at 5ms intervals after the first 4.096ms report, sticky READY/latest result and
+START restarting/invalidation. These temporal/averaging/latch semantics are not
+silicon measurements; the C port's comments do not fully specify them.
+
+The controlled ten-bit input defaults to500 and may be set with
+`-global ws53-tsensor.initial-code=933` or `/machine/tsensor` GPIO input `code`
+bits0..9. Every sample uses the current input, so changing input halfway through
+an average affects the result. No nominal-temperature clipping occurs in the
+model: all1024 raw values can be reported. Conversion to nominal Celsius belongs
+to the HAL, with reference-range and calibration limitations kept explicit.
+
+Named inputs `clock` (high=running), `stall` and `corrupt-control` pause/resume
+sampling while retaining partial sum and remaining interval. The corruption
+input exposes CONTROL=0xdead and rejects writes; it is a fault injection, not an
+invented hardware bit. Once READY has latched, loss of clock leaves the old
+sample readable. A successful read therefore does not establish freshness or
+clock health. Reset cancels timers, partial averages and READY; external input
+and faults persist. This reset profile does not emulate vendor thermal startup.
+Read-only QOM counters `starts`, `samples`, `reports` permit test observations
+without adding guest registers. Unsupported access widths, configuration values,
+write-only reads and status writes report guest errors.
+
+`scripts/ws53_tsensor_test.py` checks all1024 inputs, changing-input averaging,
+rounding, deadlines, sticky stale samples, clock/stall/control faults, partial
+reset and20 invalid accesses. The parent `temperature_control` fixture runs the
+real HAL/PAC with reference code933, out-of-reference code1023, clock stopped
+before first readiness and unknown CONTROL. It verifies bounded timeout/retry,
+retained permissions and no restart on reattachment using QOM counters. These
+are digital-contract tests, not calibrated sensor, power or electrical evidence.

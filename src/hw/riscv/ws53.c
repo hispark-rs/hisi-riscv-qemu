@@ -32,6 +32,7 @@
 #include "ws53_i2c.c.inc"
 #include "ws53_mclken1.c.inc"
 #include "ws53_spi.c.inc"
+#include "ws53_tsensor.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -182,6 +183,10 @@ static void ws53_init(MachineState *machine)
     DeviceState *intc = qdev_new(TYPE_WS63_INTC);
     object_property_add_child(OBJECT(machine), "intc", OBJECT(intc));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(intc), &error_fatal);
+    DeviceState *tsensor = qdev_new(TYPE_WS53_TSENSOR);
+    object_property_add_child(OBJECT(machine), "tsensor", OBJECT(tsensor));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(tsensor), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(tsensor), 0, 0x59006300);
     DeviceState *i2c = qdev_new(TYPE_WS53_I2C);
     object_property_add_child(OBJECT(machine), "i2c", OBJECT(i2c));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(i2c), &error_fatal);
@@ -344,6 +349,7 @@ static void ws53_register_types(void)
     type_register_static(&ws53_i2c_type);
     type_register_static(&ws53_mclken1_type);
     type_register_static(&ws53_spi_type);
+    type_register_static(&ws53_tsensor_type);
     type_register_static(&ws53_type);
 }
 type_init(ws53_register_types)
