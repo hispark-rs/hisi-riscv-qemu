@@ -123,10 +123,18 @@ def pwm_test(qemu):
         commit(0, 1); assert read(0x504) == 1 and not irq.get(71, False)
         write(0x510, 1); assert irq.get(71, False)
         write(0x50c, 2); assert irq.get(71, False)
-        write(0x50c, 1); assert not irq.get(71, False)
-        configure(0); commit(0, 1); commit(1, 1)
+        write(0x50c, 1); assert irq.get(71, False) and read(0x504) == 1
+        assert read(0x124) == 1  # invalid count still produces load notification
+        write(0x510, 0); assert not irq.get(71, False)
+        configure(0); commit(0, 1); write(0x50c, 1); write(0x518, 1)
+        assert read(0x504) == read(0x124) == 0
+        write(0x510, 1); assert not irq.get(71, False)
+        commit(1, 1)
         assert read(0x500) == 1 and irq.get(71, False)
-        write(0x508, 1); assert not irq.get(71, False)
+        write(0x508, 1); assert irq.get(71, False) and read(0x500) == 1
+        write(0x510, 0); write(0x10, 0); commit(0, 1); write(0x508, 1)
+        assert read(0x500) == 0
+        write(0x510, 1); assert not irq.get(71, False)
         # A rejected group is atomic: ch1 must not start if ch0 is invalid.
         reset(); clock(); configure(0, duty=33); configure(1, cycles=1)
         commit(0, 3); step(10000)

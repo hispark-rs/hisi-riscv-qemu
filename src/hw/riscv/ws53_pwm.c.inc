@@ -28,6 +28,7 @@ struct WS53PwmState {
     WS53PwmChannel channel[8];
     uint8_t select[4], clear[4], event_enable;
     uint16_t group_errors, count_errors, gate, div, latched_div;
+    uint8_t active_group_errors, active_count_errors;
     bool assume_timing, diagnosed, external_clock;
     uint64_t counter_hz; /* reference effective rate at divisor16 */
 };
@@ -48,6 +49,10 @@ static bool ws53_pwm_clocked(WS53PwmState *s)
 }
 static void ws53_pwm_irq(WS53PwmState *s)
 {
+    /* HIL: W1C alone cannot remove a still-invalid configuration. The model
+     * reasserts at MMIO boundaries; exact hardware latency is unqualified. */
+    s->group_errors |= s->active_group_errors;
+    s->count_errors |= s->active_count_errors;
     bool end = false;
     for (unsigned i = 0; i < 8; i++) { end |= s->channel[i].flag; }
     qemu_set_irq(s->irq[0], (s->event_enable & 1) && (s->group_errors || s->count_errors));
@@ -164,13 +169,27 @@ static void ws53_pwm_commit(WS53PwmState *s, unsigned group)
     ws53_pwm_sync(s);
     uint8_t mask = s->select[group], conflicts = 0, invalid = 0;
     for (unsigned g = 0; g < 4; g++) { if (g != group) { conflicts |= mask & s->select[g]; } }
+    s->active_group_errors = 0;
+    for (unsigned a = 0; a < 4; a++) {
+        for (unsigned b = a + 1; b < 4; b++) {
+            s->active_group_errors |= s->select[a] & s->select[b];
+        }
+    }
     for (unsigned i = 0; i < 8; i++) {
         uint16_t *v = s->channel[i].shadow;
         if (!(mask & (1u << i))) { continue; }
         if (v[PW_EN] && (!v[PW_FREQ_L] || v[PW_DUTY_L] > v[PW_FREQ_L] ||
                          v[PW_OFFSET_L] > v[PW_FREQ_L] - v[PW_DUTY_L])) { invalid |= 1u << i; }
     }
+    /* A corrected START followed by W1C is the qualified recovery sequence.
+     * Whether shadow writes alone remove a fault is not established. */
+    s->active_count_errors = (s->active_count_errors & ~mask) | invalid;
     s->group_errors |= conflicts; s->count_errors |= invalid;
+    if (!conflicts) {
+        for (unsigned i = 0; i < 8; i++) {
+            if (invalid & (1u << i)) { s->channel[i].flag = true; }
+        }
+    }
     if (conflicts || invalid) { ws53_pwm_irq(s); return; }
     for (unsigned i = 0; i < 8; i++) {
         if (!(mask & (1u << i))) { continue; }
@@ -334,6 +353,7 @@ static void ws53_pwm_reset(void *opaque)
     memset(s->channel, 0, sizeof(s->channel));
     memset(s->select, 0, sizeof(s->select)); memset(s->clear, 0, sizeof(s->clear));
     s->event_enable = s->group_errors = s->count_errors = s->div = s->latched_div = 0;
+    s->active_group_errors = s->active_count_errors = 0;
     for (unsigned i = 0; i < 8; i++) {
         s->channel[i].last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL); ws53_pwm_output(s, i);
     }

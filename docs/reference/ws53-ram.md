@@ -1109,4 +1109,29 @@ old model failed the same ELF with missing retained pending/empty entry.
 ISR clients must act on returned event bits, not count every ISR entry as a
 completed pulse block. Whole-group pending is deliberately preserved during
 HAL transactions; blindly clearing it could lose another channel's event.
-No IRQ71 abnormal configuration or other PWM channel is physically qualified.
+IRQ71 abnormal configuration was qualified subsequently as described below;
+other physical PWM channels remain unqualified.
+
+### PWM IRQ71 persistent errors and recovery (2026-10-24)
+
+The A-board RAM `pwm0-abnormal-probe` injects channel0 duty100/period20
+and overlapping G0/G1 selection, before routing the output pad. W1C alone
+reasserts IRQ71: the first diagnostic reached its8-entry safety cap per case.
+Masking abnormal delivery before ACK yields exactly one entry per case. The
+count error additionally sets channel0's configuration-loaded flag; the group
+conflict does not. Correcting the configuration, committing START, and then
+clearing status recovers normal8/16-pulse output on MIO21/D11.
+
+Three same-ELF runs (`88e07ecd54fad15216f9aee32bee621ea76e7606bfe5f916773662b076ff95e3`)
+have exact UART parity and independently captured physical pulse counts.
+See hisi-registers `evidence/ws53-pwm-irq71-hil.json` and integration
+`docs/plan/evidence/ws53-pwm-fault-hil-2026-10-24/summary.json`.
+
+The model separates active errors from sticky status: W1C reasserts active
+errors at MMIO boundaries; corrected START removes the active condition, then
+W1C clears sticky status. The precise reassertion delay and whether shadow
+writes alone suffice are unmeasured; this is a conservative recovery profile.
+No invalid waveform is claimed: invalid groups still suppress modeled output
+atomically, an earlier assumption unqualified by this single-channel test.
+Reset clears both active and sticky state. Tests exercise masking, W1C during
+fault, repair, unmask without retrigger, and existing normal output regression.
