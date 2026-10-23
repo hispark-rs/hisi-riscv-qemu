@@ -360,3 +360,49 @@ fixture injects stopped clock and checks absence of events plus cleanup;
 `start()` does not detect an absent clock. Synthetic pad permissions in these
 fixtures are not a usable board pin map. Physical output, clock ownership,
 control-core cooperation, DMA and silicon stop latency remain unverified.
+
+## I2C master functional profile
+
+`ws53-i2c` implements independent non-PRO v151 controllers at `0x52083000`
+and `0x52084000`, IRQ62/63, and M_CLKEN1 halfword `0x52000044` bits6/7.
+Register layout and accesses are from SDK `163d9150` / RDL `01dcce5`.
+Unmodeled clock bits cannot be changed; inherited TIMER/UART bits remain set.
+This is a boot handoff profile, not asserted silicon reset values.
+
+Transfers require `-global ws53-i2c.assume-profile=on`. The diagnostic declares
+32MHz, eight-entry TX/RX FIFOs, disabled-controller CON address selection,
+read ACK deferred across an empty command FIFO, and 1us enable/disable crossing.
+These timing/ACK/disable assumptions are **not measured hardware facts**.
+A STOP or direction-changing RESTART terminates the prior read with NACK;
+contiguous reads acknowledge all but the last byte. Clock pauses preserve the
+remaining event interval; bus stretching stalls transfer but allows disable.
+The model does not emulate physical SCL/SDA, pinmux, multi-master wire contention,
+or SDA hold/setup effects. Speed3 uses the SDK's HS slots as Fast-plus; no
+high-speed master-code protocol is claimed.
+
+Each instance has its own volatile 256-byte register peer, selected by 7-bit
+0x50 or 10-bit 0x250; these are synthetic test addresses, not board devices.
+The first write byte after START/RESTART selects a wrapping byte pointer, later
+writes store data and reads advance it. Initial memory is `index ^ 0xa5`.
+The peer generates address NACK for other addresses. Named external inputs at
+`/machine/i2c` (`clock`, `stretch`, `nack-address`, `nack-data`, `arbitration`,
+indices0/1) inject faults and survive system reset. Read-only QOM counters
+`startsN`, `restartsN`, `stopsN`, `read-acksN`, `read-nacksN` expose protocol
+observations without inventing guest registers. Reset clears controller/peer
+state; it does not represent a control-core firmware boot.
+
+FIFO thresholds, TX overflow, RX under/overflow and full-RX hold are modeled;
+raw events and abort details remain until write-one clear-all at +0xc4. Selective
+clear, SMBus, slave mode, DMA, dynamic TAR selection, unknown fields/holes and
+invalid widths are rejected with guest-error diagnostics. Masks only accept
+implemented event sources. Explicit ABORT flushes FIFO and retains its source.
+
+`scripts/ws53_i2c_test.py` covers both instances/address modes, data integrity,
+three speed count profiles, long reads, repeated START, final-read NACK, FIFO
+capacity/hold, IRQ62/63 mask/clear, abort/NACK/arbitration, stopped clocks,
+stretching, reset and 38 rejected MMIO operations. The parent `i2c_control` RAM
+fixture executes real Rust HAL/PAC transactions, 100-byte reads, address-NACK
+recovery, resource release/reacquisition and a clock-stall/other-instance case.
+Synthetic pad permissions in that fixture must never be used on a physical board.
+I2C IRQ-driven HAL, DMA/async and physical electrical/timing qualification remain
+outstanding; model passes are not stable-API graduation evidence.

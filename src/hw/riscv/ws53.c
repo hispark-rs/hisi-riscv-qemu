@@ -29,6 +29,7 @@
 #include "ws53_tcxo.c.inc"
 #include "ws53_rtc.c.inc"
 #include "ws53_pwm.c.inc"
+#include "ws53_i2c.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -179,6 +180,14 @@ static void ws53_init(MachineState *machine)
     DeviceState *intc = qdev_new(TYPE_WS63_INTC);
     object_property_add_child(OBJECT(machine), "intc", OBJECT(intc));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(intc), &error_fatal);
+    DeviceState *i2c = qdev_new(TYPE_WS53_I2C);
+    object_property_add_child(OBJECT(machine), "i2c", OBJECT(i2c));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(i2c), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(i2c), 0, 0x52083000);
+    sysbus_mmio_map(SYS_BUS_DEVICE(i2c), 1, 0x52084000);
+    sysbus_mmio_map(SYS_BUS_DEVICE(i2c), 2, 0x52000044);
+    sysbus_connect_irq(SYS_BUS_DEVICE(i2c), 0, qdev_get_gpio_in(intc, 62));
+    sysbus_connect_irq(SYS_BUS_DEVICE(i2c), 1, qdev_get_gpio_in(intc, 63));
     for (unsigned i = 0; i < 2; i++) {
         DeviceState *rtc = qdev_new(TYPE_WS53_RTC);
         g_autofree char *name = g_strdup_printf("rtc%u", i);
@@ -312,6 +321,7 @@ static void ws53_register_types(void)
     type_register_static(&ws53_tcxo_type);
     type_register_static(&ws53_rtc_type);
     type_register_static(&ws53_pwm_type);
+    type_register_static(&ws53_i2c_type);
     type_register_static(&ws53_type);
 }
 type_init(ws53_register_types)
