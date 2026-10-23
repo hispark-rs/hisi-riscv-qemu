@@ -229,6 +229,8 @@ static void ws53_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(mdma), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(mdma), 0, 0x52070000);
     sysbus_connect_irq(SYS_BUS_DEVICE(mdma), 0, qdev_get_gpio_in(intc, 58));
+    ws53_mdma_connect_spi(WS53_MDMA(mdma), spi, 0, 6, 0x5208702c);
+    ws53_mdma_connect_spi(WS53_MDMA(mdma), spi, 1, 4, 0x5208d060);
     qdev_connect_gpio_out_named(mclken1, "gate", 3, qdev_get_gpio_in_named(adc, "gate", 0));
     DeviceState *global_clken = qdev_new(TYPE_WS53_GLOBAL_CLKEN);
     object_property_add_child(OBJECT(machine), "global-clken", OBJECT(global_clken));

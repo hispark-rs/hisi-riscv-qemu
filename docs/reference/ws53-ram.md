@@ -757,3 +757,40 @@ accesses/configurations. QOM `transmitted` counts completed serialized bytes.
 The integration repository separately exercises its experimental Rust UART DMA
 HAL against this profile. Neither test establishes physical cache, clock, pad,
 bus-drain, HPROT or control-core ownership guarantees.
+
+## SPI/QSPI MDMA requests (explicit profile)
+
+Enable `ws53-mdma.assume-profile=on`, `ws53-mdma.assume-spi=on` and
+`ws53-spi.assume-profile=on` together. Without the SPI behavior profile no SPI
+DMA channel can arm. Existing memory and UART DMA profiles retain their own
+accepted widths and protection settings. This is not an implicit physical
+capability probe or an installed-firmware profile.
+
+Pinned SDK163d9150 uses SPI0 requests6/7 at DATA0x5208702c, QSPI1 requests4/5 at
+DATA0x5208d060. Their DMA enable bits are reversed (TX/RX0/1 versus1/0), and
+threshold registers are distinct. The source sets TXlevel4/RXlevel0 and
+HPROT2 (BUFFERABLE). The model accepts only flow1/2, one-beat bursts, master0,
+protection2, fixed peripheral and incrementing DTCM memory, equal8/32-bit widths
+matching configured SPI frames. CPU MMIO stays32-bit; the dedicated DMA byte
+adapter and physical bufferability remain assumptions. UART and memory transfers
+still require protection0. No16-bit, width packing, LLI or burst ACK is modeled.
+
+The existing FIFO8/full-duplex XOR peer is shared by CPU and DMA. TX request is
+asserted while FIFO occupancy is at most the configured TXlevel and below capacity;
+RX request requires occupancy greater than RXlevel. Modeled thresholds0..7 are
+checked against this assumed FIFO size, not claimed silicon limits. Short RX
+tails above zero threshold wait until software lowers it. Clock removal,
+controller-disable and request-disable suppress new requests; clock pauses
+preserve remaining serial time. Request-disable does not flush FIFOs or retract
+already-read DMA beats. An accepted RX beat can still reach RAM after cancellation;
+an accepted TX beat may enter the FIFO after request-disable. TX commit after
+SPI clock/controller removal reports a modeled bus error. Real bus termination
+may differ. DMA TC precedes serial completion; RX overflow remains observable.
+
+`scripts/ws53_mdma_spi_test.py` runs32 port/channel/width full-duplex combinations,
+two concurrent ports with257 frames each, independent memory guards and address
+progress, FIFO backpressure/short tails, serial completion/clock remainder,
+late TX/RX writes after cancel, read/write faults, IRQ58 isolation, reset and26
+rejected accesses/configurations. It is included in `scripts/test-ws53.py`.
+This step adds the model and source contracts; a Rust SPI DMA transfer interface,
+physical waveform/cache/drain/CS verification and control-core handoff remain open.

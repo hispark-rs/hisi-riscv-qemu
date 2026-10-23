@@ -1,7 +1,8 @@
 /* WS53 v151_100 SPI0 and QSPI1 single-line functional profile.
  * Register facts: hisi-registers 04ced9c, fbb_ws53 163d9150.
  * FIFO8, 32MHz, 1us enable crossing and XOR peer are explicit test assumptions.
- * No native CS/electrical/XIP/dual/quad/DMA behavior is claimed.
+ * Optional same-width DMA endpoint timing is also an explicit assumption.
+ * No native CS/electrical/XIP/dual/quad behavior is claimed.
  * SPDX-License-Identifier: GPL-2.0-or-later */
 #define TYPE_WS53_SPI "ws53-spi"
 OBJECT_DECLARE_SIMPLE_TYPE(WS53SpiState, WS53_SPI)
@@ -26,7 +27,7 @@ typedef struct WS53SpiChannel {
     unsigned index;
     MemoryRegion mmio;
     QEMUTimer *timer;
-    qemu_irq irq;
+    qemu_irq irq, dma_request[2];
     uint32_t regs[SP_REG_COUNT], tx[8], rx[8], latched;
     unsigned tx_head, tx_len, rx_head, rx_len;
     bool enabled, scheduled, enable_event, clock, stretch, collision, disable_stall;
@@ -44,8 +45,9 @@ struct WS53SpiState {
     WS53SpiChannel channel[2];
     /* SPI_CLOCK, SPI_DEVICE_MODE, GLOBAL_CLKEN, XIP_QSPI_CLOCK, XIP_CLOCK_ENABLE */
     WS53SpiGate gate[5];
-    bool spi_gate, assume_profile;
+    bool spi_gate, assume_profile, assume_dma;
 };
+static bool ws53_spi_clocked(WS53SpiChannel *c);
 static uint32_t ws53_spi_encode(WS53SpiChannel *c, uint32_t v)
 {
     if (c->index) { return v; }
@@ -60,6 +62,12 @@ static uint32_t ws53_spi_raw(WS53SpiChannel *c)
 static void ws53_spi_irq(WS53SpiChannel *c)
 {
     qemu_set_irq(c->irq, !!(ws53_spi_encode(c, ws53_spi_raw(c)) & c->regs[SP_MASK]));
+    bool active = c->owner->assume_dma && c->enabled && c->regs[SP_ENABLE] && ws53_spi_clocked(c);
+    unsigned tx_bit = c->index ? 2 : 1, rx_bit = c->index ? 1 : 2;
+    qemu_set_irq(c->dma_request[0], active && (c->regs[SP_DMA] & tx_bit) &&
+                 c->tx_len < 8 && c->tx_len <= c->regs[SP_DMA_TX]);
+    qemu_set_irq(c->dma_request[1], active && (c->regs[SP_DMA] & rx_bit) &&
+                 c->rx_len > c->regs[SP_DMA_RX]);
 }
 static bool ws53_spi_clocked(WS53SpiChannel *c)
 {
@@ -78,6 +86,7 @@ static void ws53_spi_pause(WS53SpiChannel *c)
 }
 static void ws53_spi_resume(WS53SpiChannel *c)
 {
+    ws53_spi_irq(c);
     if (c->scheduled && !timer_pending(c->timer) && ws53_spi_clocked(c) &&
         (c->enable_event ? (c->regs[SP_ENABLE] || !c->disable_stall) : !c->stretch)) {
         c->deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + c->remaining;
@@ -132,6 +141,28 @@ static bool ws53_spi_fifo(WS53SpiChannel *c, hwaddr off)
 {
     unsigned start = c->index ? 0x60 : 0x2c;
     return off >= start && off < start + 36 * 4;
+}
+/* Explicit byte/word DMA bridge. CPU accesses remain aligned 32-bit MMIO.
+ * Once accepted, a posted TX write is allowed after request-disable, but not
+ * after controller disable/clock removal. This is a model policy, not bus proof. */
+static bool ws53_spi_dma_read(WS53SpiChannel *c, uint8_t *data, unsigned width)
+{
+    if (!c->owner->assume_dma || !c->enabled || !c->regs[SP_ENABLE] ||
+        !ws53_spi_clocked(c) || !c->rx_len || width * 8 != ws53_spi_bits(c)) { return false; }
+    uint32_t word = c->rx[c->rx_head];
+    c->rx_head = (c->rx_head + 1) % 8; c->rx_len--;
+    for (unsigned i = 0; i < width; i++) { data[i] = word >> (8 * i); }
+    ws53_spi_irq(c); return true;
+}
+static bool ws53_spi_dma_write(WS53SpiChannel *c, const uint8_t *data, unsigned width)
+{
+    if (!c->owner->assume_dma || !c->enabled || !c->regs[SP_ENABLE] ||
+        !ws53_spi_clocked(c) || c->tx_len == 8 || !c->regs[SP_SELECT] ||
+        width * 8 != ws53_spi_bits(c)) { return false; }
+    uint32_t word = 0;
+    for (unsigned i = 0; i < width; i++) { word |= (uint32_t)data[i] << (8 * i); }
+    c->tx[(c->tx_head + c->tx_len) % 8] = word; c->tx_len++;
+    ws53_spi_next(c); ws53_spi_irq(c); return true;
 }
 static uint64_t ws53_spi_read(void *opaque, hwaddr off, unsigned size)
 {
@@ -204,8 +235,10 @@ static void ws53_spi_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
     case SP_SELECT:
         if (v > 1 || (c->tx_len && v != c->regs[r])) { goto invalid; }
         c->regs[r] = v; ws53_spi_next(c); return;
-    case SP_DMA: case SP_DMA_RX: case SP_DMA_TX:
-        if (v) { goto invalid; } break;
+    case SP_DMA:
+        if (v & ~3u || (v && !s->assume_dma)) { goto invalid; } break;
+    case SP_DMA_RX: case SP_DMA_TX:
+        if (v > 7 || (v && !s->assume_dma)) { goto invalid; } break;
     case SP_CONTROL: {
         unsigned shift = c->index ? 16 : 13;
         uint32_t allowed = (31u << shift) | (c->index ? 0xc0 : 0x18);
@@ -301,6 +334,7 @@ static void ws53_spi_init(Object *obj)
         WS53SpiChannel *c = &s->channel[i]; c->owner = s; c->index = i; c->clock = true;
         memory_region_init_io(&c->mmio, obj, &ws53_spi_ops, c, TYPE_WS53_SPI, 0x1000);
         sysbus_init_mmio(SYS_BUS_DEVICE(obj), &c->mmio); sysbus_init_irq(SYS_BUS_DEVICE(obj), &c->irq);
+        qdev_init_gpio_out_named(DEVICE(obj), c->dma_request, i ? "dma1" : "dma0", 2);
         c->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_spi_tick, c);
         g_autofree char *name = g_strdup_printf("frames%u", i);
         object_property_add_uint64_ptr(obj, name, &c->frames, OBJ_PROP_FLAG_READ);
