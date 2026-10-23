@@ -17,12 +17,13 @@ struct WS53I2sState {
     SysBusDevice parent_obj;
     MemoryRegion mmio, cmu_mmio;
     QEMUTimer *timer;
-    qemu_irq irq;
+    qemu_irq irq, dma_request[2];
     WS53I2sFifo tx[2], rx[2];
     uint32_t mode, width, threshold, mask, control, crg, div, fs, ratio, cmu;
     uint32_t errors, pending[2];
     bool assume_profile, gate, clock_on, slave_clock, stall, reset_stall;
-    bool active;
+    bool active, assume_dma, merge;
+    unsigned tx_phase, rx_phase;
     int64_t remaining, deadline;
     uint64_t slave_period_ns, frames, transmitted, received, in_flight;
     uint64_t last_left, last_right;
@@ -49,9 +50,11 @@ static uint32_t ws53_i2s_status(WS53I2sState *s)
     }
     return status;
 }
+static void ws53_i2s_dma_update(WS53I2sState *s);
 static void ws53_i2s_irq(WS53I2sState *s)
 {
     qemu_set_irq(s->irq, (s->control & I2S_IRQ) && (ws53_i2s_status(s) & ~s->mask));
+    ws53_i2s_dma_update(s);
 }
 static uint32_t ws53_i2s_pop(WS53I2sFifo *q)
 {
@@ -77,6 +80,38 @@ static bool ws53_i2s_configured(WS53I2sState *s)
     unsigned width = ws53_i2s_width(s);
     return width && (!(s->mode & 128) ||
         (s->div && s->fs == width * 2 && s->ratio == width && (s->crg & 1)));
+}
+/* Explicit DMA assumption: one 32-bit access is one sample; merge alternates
+ * left/right starting at left. This is not a silicon packing claim. Requests
+ * use FIFO watermarks independently of IRQ masks and serializer direction.
+ * TX can prefill before enabling the serializer; RX can drain after disabling.
+ * Clock/merge/reset gate new accesses. Already-read memory writes stay in MDMA. */
+static bool ws53_i2s_dma_available(WS53I2sState *s, bool receive)
+{
+    if (!s->assume_dma || !s->assume_profile || !s->merge ||
+        !(s->control & I2S_RSTN) || !ws53_i2s_configured(s) || !ws53_i2s_clocked(s)) { return false; }
+    return receive ? s->rx[s->rx_phase].count != 0 : s->tx[s->tx_phase].count < 8;
+}
+static void ws53_i2s_dma_update(WS53I2sState *s)
+{
+    qemu_set_irq(s->dma_request[0], ws53_i2s_dma_available(s, false) &&
+        s->tx[s->tx_phase].count <= (s->threshold & 255));
+    qemu_set_irq(s->dma_request[1], ws53_i2s_dma_available(s, true) &&
+        s->rx[s->rx_phase].count > (s->threshold >> 8));
+}
+static bool ws53_i2s_dma_read(WS53I2sState *s, uint8_t *data, unsigned width)
+{
+    if (width != 4 || !ws53_i2s_dma_available(s, true)) { return false; }
+    stl_le_p(data, ws53_i2s_pop(&s->rx[s->rx_phase]));
+    s->rx_phase ^= 1; ws53_i2s_irq(s); return true;
+}
+static bool ws53_i2s_dma_write(WS53I2sState *s, const uint8_t *data, unsigned width)
+{
+    if (width != 4 || !ws53_i2s_dma_available(s, false)) { return false; }
+    uint32_t value = ldl_le_p(data);
+    if (value & ~ws53_i2s_sample_mask(s)) { return false; }
+    ws53_i2s_push(&s->tx[s->tx_phase], value);
+    s->tx_phase ^= 1; ws53_i2s_irq(s); return true;
 }
 static void ws53_i2s_pause(WS53I2sState *s)
 {
@@ -136,7 +171,14 @@ static uint64_t ws53_i2s_read(void *opaque, hwaddr off, unsigned size)
     case 0x3c: return 0; /* Model version, not a claimed silicon VERSION. */
     case 0x40: return s->mode;
     case 0x44: return ws53_i2s_status(s);
+    case 0xa0: {
+        uint8_t data[4];
+        if (!ws53_i2s_dma_read(s, data, size)) { goto invalid; }
+        return ldl_le_p(data);
+    }
+    case 0x88: return s->merge;
     case 0x54: case 0x58: {
+        if (s->merge) { goto invalid; }
         WS53I2sFifo *q = &s->rx[off == 0x58];
         if (!q->count) { goto invalid; }
         uint32_t v = ws53_i2s_pop(q); ws53_i2s_irq(s); return v;
@@ -145,7 +187,7 @@ static uint64_t ws53_i2s_read(void *opaque, hwaddr off, unsigned size)
     case 0x68: return s->rx[0].count | (s->rx[1].count << 8);
     case 0x6c: return s->tx[0].count | (s->tx[1].count << 8);
     case 0x78: return s->width;
-    case 0x7c: case 0x80: case 0x84: case 0x88: return 0;
+    case 0x7c: case 0x80: case 0x84: return 0;
     case 0x8c: return s->mask;
     case 0x90: return s->crg;
     case 0x94: return s->div;
@@ -165,7 +207,16 @@ static void ws53_i2s_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
     case 0x48:
         if (v & ~63u) { goto invalid; }
         s->errors &= ~v; ws53_i2s_irq(s); return;
+    case 0xc0: {
+        uint8_t data[4]; stl_le_p(data, v);
+        if (!ws53_i2s_dma_write(s, data, size)) { goto invalid; }
+        return;
+    }
+    case 0x64:
+        if ((v & ~0x707u) || (ws53_i2s_enabled(s) && !s->assume_dma)) { goto invalid; }
+        s->threshold = v; ws53_i2s_irq(s); return;
     case 0x4c: case 0x50: {
+        if (s->merge) { goto invalid; }
         WS53I2sFifo *q = &s->tx[off == 0x50];
         if (!(s->control & I2S_RSTN) || !ws53_i2s_width(s) ||
             q->count == 8 || (v & ~ws53_i2s_sample_mask(s))) { goto invalid; }
@@ -188,6 +239,7 @@ static void ws53_i2s_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
             s->control &= ~(I2S_TX | I2S_RX);
             if (!s->reset_stall) {
                 memset(s->tx, 0, sizeof(s->tx)); memset(s->rx, 0, sizeof(s->rx)); s->errors = 0;
+                s->tx_phase = s->rx_phase = 0;
             }
         }
         ws53_i2s_irq(s); ws53_i2s_resume(s); return;
@@ -197,17 +249,19 @@ static void ws53_i2s_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
         s->mask = v; ws53_i2s_irq(s); return;
     case 0x90:
         if ((v & ~3u) || (ws53_i2s_enabled(s) && ((v ^ s->crg) & ~2u))) { goto invalid; }
-        ws53_i2s_pause(s); s->crg = v; ws53_i2s_resume(s); return;
+        ws53_i2s_pause(s); s->crg = v; ws53_i2s_resume(s); ws53_i2s_dma_update(s); return;
     default: break;
     }
     if (ws53_i2s_enabled(s)) { goto invalid; }
     switch (off) {
-    case 0x3c: case 0x7c: case 0x80: case 0x84: case 0x88:
+    case 0x88:
+        if (v > 1 || (v && !s->assume_dma) || s->tx[0].count || s->tx[1].count ||
+            s->rx[0].count || s->rx[1].count || s->tx_phase || s->rx_phase) { goto invalid; }
+        s->merge = v; ws53_i2s_dma_update(s); return;
+    case 0x3c: case 0x7c: case 0x80: case 0x84:
         if (v) { goto invalid; } return;
     case 0x40:
         if (v & ~0xc0u) { goto invalid; } s->mode = v; return;
-    case 0x64:
-        if ((v & ~0x707u)) { goto invalid; } s->threshold = v; return;
     case 0x78:
         if ((v & ~0x3fu) || !(v & 7) || (v & 7) > 5 || (v & 7) != (v >> 3)) { goto invalid; }
         s->width = v; return;
@@ -234,7 +288,7 @@ static void ws53_i2s_cmu_write(void *opaque, hwaddr off, uint64_t v, unsigned si
     if (off || size != 4 || (v & ~1u)) {
         qemu_log_mask(LOG_GUEST_ERROR, "ws53-i2s: unimplemented CMU write size=%u value=0x%" PRIx64 "\n", size, v); return;
     }
-    ws53_i2s_pause(s); s->cmu = v; ws53_i2s_resume(s);
+    ws53_i2s_pause(s); s->cmu = v; ws53_i2s_resume(s); ws53_i2s_dma_update(s);
 }
 static const MemoryRegionOps ws53_i2s_ops = {
     .read=ws53_i2s_read,.write=ws53_i2s_write,.endianness=DEVICE_LITTLE_ENDIAN,
@@ -250,7 +304,7 @@ static const MemoryRegionOps ws53_i2s_cmu_ops = {
 static void ws53_i2s_##name(void *opaque, int n, int level) \
 { \
     WS53I2sState *s = opaque; \
-    ws53_i2s_pause(s); s->field = !!level; ws53_i2s_resume(s); \
+    ws53_i2s_pause(s); s->field = !!level; ws53_i2s_resume(s); ws53_i2s_dma_update(s); \
 }
 WS53_I2S_INPUT(gate_input, gate)
 WS53_I2S_INPUT(clock_input, clock_on)
@@ -265,6 +319,7 @@ static void ws53_i2s_reset(void *opaque)
     memset(s->tx, 0, sizeof(s->tx)); memset(s->rx, 0, sizeof(s->rx));
     s->mode = s->width = s->threshold = s->mask = s->control = s->crg = 0;
     s->div = s->fs = s->ratio = s->cmu = s->errors = 0;
+    s->merge = false; s->tx_phase = s->rx_phase = 0;
     s->frames = s->transmitted = s->received = s->last_left = s->last_right = 0;
     /* Faults/external clocks survive; these zeros are model reset policy. */
     ws53_i2s_irq(s);
@@ -293,6 +348,7 @@ static void ws53_i2s_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->cmu_mmio);
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
+    qdev_init_gpio_out_named(DEVICE(obj), s->dma_request, "dma-request", 2);
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_i2s_tick, s);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_i2s_gate_input, "gate", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_i2s_clock_input, "clock", 1);

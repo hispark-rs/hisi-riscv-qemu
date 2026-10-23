@@ -851,3 +851,47 @@ STOP/ACK/NACK, IRQ58/62/63 isolation, NACK/arbitration, injected read/write erro
 posted TX/RX cancellation, late FIFO-full writes, invalid commands and reset.
 An I2C DMA Rust HAL and actual Rust/PAC transfer scenarios remain to be added;
 passing this model does not complete I2C DMA hardware acceptance.
+
+## I2S merge-port MDMA profile (explicit assumptions)
+
+Enable all three options: `ws53-mdma.assume-profile=on`,
+`ws53-mdma.assume-i2s=on` and `ws53-i2s.assume-profile=on`.
+Source evidence is SDK `163d9150` and hisi-registers `ef2ee9b`: merge TX/RX
+addresses `0x520300c0` / `0x520300a0`, requests 12/13, flow 1/2 and protection 1
+in both directions. The selected SDK product disables I2S DMA. Its source does
+not establish physical merge packing, request timing or legal bus lanes.
+
+The opt-in model assumes:
+
+- One little-endian 32-bit DATA access transfers one sample. Accesses alternate
+  left/right, starting at left after reset; the five existing sample widths
+  16/18/20/24/32 constrain payload bits. Byte/halfword DMA is rejected.
+- Each direction keeps its merge phase across DMA completion and serializer
+  stop. An odd element count completes DMA but leaves an incomplete stereo pair.
+  Peripheral reset clears phase and FIFOs; it cannot retract a sample already
+  consumed into an MDMA pending write.
+- New requests require the explicit profile, merge, reset release, valid format
+  and running clocks. TX requests use the next channel's FIFO depth `<= TX
+  threshold`; RX uses `> RX threshold`. They are independent of IRQ masks.
+  The original paired IRQ comparisons (MAX TX / MIN RX) remain unchanged.
+- TX can prefill before starting the serializer; RX can drain after stopping
+  it. Direction disable alone is therefore not a DMA request-disable operation.
+  Merge switching requires a stopped serializer, empty FIFOs and complete phase.
+  Split DATA accesses while merge is active fail visibly.
+- Equal source/destination burst lengths 1/4/8/16 are supported. An accepted
+  burst retains credits below the watermark, bounded by the DMA count; each
+  sample still requires data/space and clocks. No last-request pulse is invented.
+  A short RX tail below its watermark waits until software lowers the threshold.
+- TX reads posted before HALT/disable can still reach the FIFO. If merge, clock
+  or reset is removed before that write, MDMA reports a bus error. RX posted
+  memory writes can complete even after I2S reset and DMA disable. Neither path
+  is a silicon quiescence guarantee.
+
+`scripts/ws53_mdma_i2s_test.py` checks 160 width/burst/channel combinations with
+full-width payloads, 15 short tails, four odd-sample sequences, 12 posted-write/
+error cases, clock pauses, FIFO errors, separate IRQs and 14 invalid diagnostics.
+It is part of `scripts/test-ws53.py`; existing I2S PIO and other DMA tests remain.
+The model emits a dedicated assumption notice. These tests move actual words
+through memory, FIFOs, a serializer and the data-dependent virtual peer; they
+do not certify physical audio timing, packing, caches or control-core ownership.
+The Rust I2S DMA driver and its actual RAM fixture are still pending.

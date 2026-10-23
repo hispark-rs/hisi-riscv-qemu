@@ -1,5 +1,5 @@
 /* WS53 ROM v151 MDMA: SDK163d9150, source contract f13eaaf.
- * Explicit digital memory and opt-in UART/SPI/I2C request profiles, not
+ * Explicit digital memory and opt-in UART/SPI/I2C/I2S request profiles, not
  * PL080/WS63 layout reuse. Peripheral request timing is an assumption.
  * Posted writes survive halt/disable; clock stalls preserve remaining time.
  * SPDX-License-Identifier: GPL-2.0-or-later */
@@ -19,8 +19,8 @@ struct WS53MdmaState {
     qemu_irq irq;
     WS53MdmaChannel channel[8];
     uint32_t configuration, raw_tc, raw_error;
-    bool assume_profile, assume_uart, assume_spi, assume_i2c, clock_on, request[16];
-    struct { WS53UartState *uart; WS53SpiChannel *spi; WS53I2cChannel *i2c;
+    bool assume_profile, assume_uart, assume_spi, assume_i2c, assume_i2s, clock_on, request[16];
+    struct { WS53UartState *uart; WS53SpiChannel *spi; WS53I2cChannel *i2c; WS53I2sState *i2s;
              uint32_t address; bool receive; } endpoint[16];
     uint64_t phase_ns, reads, writes, errors, transfers, pending_writes;
 };
@@ -40,6 +40,9 @@ static bool ws53_mdma_ready(WS53MdmaChannel *c)
         /* An accepted I2C burst continues below the threshold, but cannot
          * consume absent FIFO data or ignore clock/abort/request-disable. */
         return ws53_i2c_dma_available(c->owner->endpoint[id].i2c, ws53_mdma_flow(c) == 2);
+    }
+    if (c->owner->endpoint[id].i2s && c->burst_left) {
+        return ws53_i2s_dma_available(c->owner->endpoint[id].i2s, ws53_mdma_flow(c) == 2);
     }
     return c->owner->request[id];
 }
@@ -88,17 +91,19 @@ static void ws53_mdma_read_beat(void *opaque)
 {
     WS53MdmaChannel *c = opaque; WS53MdmaState *s = c->owner;
     if (!ws53_mdma_ready(c)) { return; }
-    if (ws53_mdma_flow(c) && s->endpoint[ws53_mdma_request_id(c)].i2c && !c->burst_left) {
+    if (ws53_mdma_flow(c) && (s->endpoint[ws53_mdma_request_id(c)].i2c || s->endpoint[ws53_mdma_request_id(c)].i2s) && !c->burst_left) {
         /* No inferred single/last request for RX tails: software must lower
-         * the watermark when fewer than four remaining bytes are available. */
-        c->burst_left = MIN((c->control & 0x1000) ? 4 : 1, c->control & 0xfff);
+         * the watermark when the remaining data cannot assert a request. */
+        unsigned burst = (c->control >> 12) & 7;
+        c->burst_left = MIN(burst ? 2u << burst : 1u, c->control & 0xfff);
     }
     c->servicing = true;
     MemTxResult result = MEMTX_ERROR;
     if (!c->read_error) {
         if (ws53_mdma_flow(c) == 2) {
             unsigned id = ws53_mdma_request_id(c);
-            bool ok = s->endpoint[id].i2c ? ws53_i2c_dma_read(s->endpoint[id].i2c, c->data, c->width) :
+            bool ok = s->endpoint[id].i2s ? ws53_i2s_dma_read(s->endpoint[id].i2s, c->data, c->width) :
+                       s->endpoint[id].i2c ? ws53_i2c_dma_read(s->endpoint[id].i2c, c->data, c->width) :
                        s->endpoint[id].uart ? ws53_uart_dma_read(s->endpoint[id].uart, c->data) :
                        ws53_spi_dma_read(s->endpoint[id].spi, c->data, c->width);
             result = ok ? MEMTX_OK : MEMTX_ERROR;
@@ -119,7 +124,8 @@ static void ws53_mdma_write_beat(void *opaque)
     if (!c->write_error) {
         if (ws53_mdma_flow(c) == 1) {
             unsigned id = ws53_mdma_request_id(c);
-            bool ok = s->endpoint[id].i2c ? ws53_i2c_dma_write(s->endpoint[id].i2c, c->data, c->width) :
+            bool ok = s->endpoint[id].i2s ? ws53_i2s_dma_write(s->endpoint[id].i2s, c->data, c->width) :
+                       s->endpoint[id].i2c ? ws53_i2c_dma_write(s->endpoint[id].i2c, c->data, c->width) :
                        s->endpoint[id].uart ? ws53_uart_dma_write(s->endpoint[id].uart, c->data[0]) :
                        ws53_spi_dma_write(s->endpoint[id].spi, c->data, c->width);
             result = ok ? MEMTX_OK : MEMTX_ERROR;
@@ -162,9 +168,11 @@ static bool ws53_mdma_valid(WS53MdmaChannel *c, uint32_t cfg)
                ws53_mdma_range(c->destination, count, width, di);
     }
     unsigned id = flow == 1 ? dst : src;
-    bool i2c = s->assume_i2c && s->endpoint[id].i2c && s->endpoint[id].i2c->owner->assume_profile &&
+    bool i2s = s->assume_i2s && s->endpoint[id].i2s && s->endpoint[id].i2s->assume_profile &&
+        width == 4 && protection == 1 && burst <= 3;
+    bool i2c = burst <= 1 && s->assume_i2c && s->endpoint[id].i2c && s->endpoint[id].i2c->owner->assume_profile &&
         (flow == 1 ? (width == 1 || width == 2) && protection == 1 : width == 1 && protection == 2);
-    bool endpoint = i2c || (!burst && s->assume_uart && s->endpoint[id].uart && width == 1 && !protection) ||
+    bool endpoint = i2s || i2c || (!burst && s->assume_uart && s->endpoint[id].uart && width == 1 && !protection) ||
         (!burst && s->assume_spi && s->endpoint[id].spi && s->endpoint[id].spi->owner->assume_profile &&
          (width == 1 || width == 4) && width * 8 == ws53_spi_bits(s->endpoint[id].spi) && protection == 2);
     if (!endpoint) { return false; }
@@ -232,7 +240,7 @@ static void ws53_mdma_write(void *opaque, hwaddr off, uint64_t value, unsigned s
         if (reg == 8) {
             /* ACTIVE is status-only. Request/flow bindings cannot be changed
              * while enabled or while an already-read beat is pending. */
-            if (v & ~((s->assume_uart || s->assume_spi || s->assume_i2c) ? 0x1bfffu : 0x1b001u)) { goto invalid; }
+            if (v & ~((s->assume_uart || s->assume_spi || s->assume_i2c || s->assume_i2s) ? 0x1bfffu : 0x1b001u)) { goto invalid; }
             if (((v >> 9) & 7) > 2 ||
                 (((v ^ c->configuration) & 0xffe) && ((c->configuration & 1) || c->in_flight))) { goto invalid; }
             v &= ~0x8000u;
@@ -254,9 +262,9 @@ static void ws53_mdma_write(void *opaque, hwaddr off, uint64_t value, unsigned s
         case 0x10: c->source = v; return;
         case 0x14: {
             unsigned sw = (v >> 18) & 7, dw = (v >> 21) & 7;
-            /* I2C optionally uses equal four-beat bursts and HPROT1/2.
+            /* I2C uses up to four beats; I2S up to sixteen, with HPROT1/2.
              * Actual peripheral endpoints constrain width/burst/protection. */
-            uint32_t mask = s->assume_i2c ? 0xbcfc9fffu : s->assume_spi ? 0xacfc0fffu : 0x8cfc0fffu;
+            uint32_t mask = s->assume_i2s ? 0xbcfdbfffu : s->assume_i2c ? 0xbcfc9fffu : s->assume_spi ? 0xacfc0fffu : 0x8cfc0fffu;
             if ((v & ~mask) || sw > 2 || dw != sw || ((v >> 12) & 7) != ((v >> 15) & 7)) { goto invalid; }
             c->control = v; return;
         }
@@ -282,9 +290,9 @@ static void ws53_mdma_request(void *opaque, int n, int level)
 {
     WS53MdmaState *s = opaque;
     if (s->request[n] == !!level) {
-        /* I2C FIFO availability may change within an accepted burst without
+        /* I2C/I2S FIFO availability may change within an accepted burst without
          * crossing its watermark. Do not restart an existing timer. */
-        if (s->endpoint[n].i2c) {
+        if (s->endpoint[n].i2c || s->endpoint[n].i2s) {
             for (unsigned i = 0; i < 8; i++) {
                 WS53MdmaChannel *c = &s->channel[i];
                 if (ws53_mdma_flow(c) && ws53_mdma_request_id(c) == n) {
@@ -335,6 +343,18 @@ static void ws53_mdma_connect_i2c(WS53MdmaState *s, DeviceState *i2c, unsigned p
                                    qdev_get_gpio_in_named(DEVICE(s), "request", request));
     }
 }
+static void ws53_mdma_connect_i2s(WS53MdmaState *s, DeviceState *i2s)
+{
+    WS53_I2S(i2s)->assume_dma = s->assume_i2s;
+    for (unsigned rx = 0; rx < 2; rx++) {
+        unsigned request = 12 + rx;
+        s->endpoint[request].i2s = WS53_I2S(i2s);
+        s->endpoint[request].address = rx ? 0x520300a0 : 0x520300c0;
+        s->endpoint[request].receive = rx;
+        qdev_connect_gpio_out_named(i2s, "dma-request", rx,
+                                   qdev_get_gpio_in_named(DEVICE(s), "request", request));
+    }
+}
 #define WS53_MDMA_INPUT(name, field) \
 static void ws53_mdma_##name(void *opaque, int n, int level) { \
     WS53MdmaState *s = opaque; WS53MdmaChannel *c = &s->channel[n]; \
@@ -364,6 +384,7 @@ static void ws53_mdma_realize(DeviceState *dev, Error **errp)
     if (s->assume_uart && !s->assume_profile) { error_setg(errp, "ws53-mdma: assume-uart requires assume-profile"); return; }
     if (s->assume_spi && !s->assume_profile) { error_setg(errp, "ws53-mdma: assume-spi requires assume-profile"); return; }
     if (s->assume_i2c && !s->assume_profile) { error_setg(errp, "ws53-mdma: assume-i2c requires assume-profile"); return; }
+    if (s->assume_i2s && !s->assume_profile) { error_setg(errp, "ws53-mdma: assume-i2s requires assume-profile"); return; }
     if (s->assume_profile) {
         qemu_log_mask(LOG_GUEST_ERROR, "ws53-mdma: assumed DTCM mem-to-mem same-width posted-write profile\n");
     }
@@ -376,6 +397,9 @@ static void ws53_mdma_realize(DeviceState *dev, Error **errp)
     if (s->assume_i2c) {
         qemu_log_mask(LOG_GUEST_ERROR, "ws53-mdma: assumed I2C0/1 byte-data halfword-command requests, burst1/4, TXprot1/RXprot2\n");
     }
+    if (s->assume_i2s) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-mdma: assumed I2S merge alternating-LR words, burst1/4/8/16, prot1\n");
+    }
     qemu_register_reset(ws53_mdma_reset, s);
 }
 static const Property ws53_mdma_properties[] = {
@@ -383,6 +407,7 @@ static const Property ws53_mdma_properties[] = {
     DEFINE_PROP_BOOL("assume-uart", WS53MdmaState, assume_uart, false),
     DEFINE_PROP_BOOL("assume-spi", WS53MdmaState, assume_spi, false),
     DEFINE_PROP_BOOL("assume-i2c", WS53MdmaState, assume_i2c, false),
+    DEFINE_PROP_BOOL("assume-i2s", WS53MdmaState, assume_i2s, false),
     DEFINE_PROP_UINT64("phase-ns", WS53MdmaState, phase_ns, 500),
 };
 static void ws53_mdma_init(Object *obj)

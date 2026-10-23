@@ -300,6 +300,7 @@ static void ws53_init(MachineState *machine)
     sysbus_mmio_map(SYS_BUS_DEVICE(i2s), 0, 0x52030000);
     sysbus_mmio_map(SYS_BUS_DEVICE(i2s), 1, 0x57008600);
     sysbus_connect_irq(SYS_BUS_DEVICE(i2s), 0, qdev_get_gpio_in(intc, 67));
+    ws53_mdma_connect_i2s(WS53_MDMA(mdma), i2s);
 
     DeviceState *mclken0 = qdev_new(TYPE_WS53_MCLKEN0);
     object_property_add_child(OBJECT(machine), "mclken0", OBJECT(mclken0));
