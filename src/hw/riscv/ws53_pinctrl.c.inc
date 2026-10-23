@@ -43,8 +43,25 @@ struct WS53PinctrlState {
     bool external_level[48], external_drive[48], gpio_out[48], gpio_oe[48];
     bool delivered[48];
     bool pwm0_level, pwm0_drive;
+    bool uart_tx_profile, uart_console_profile;
+    bool uart_level[3], uart_drive[3];
+    uint8_t uart_byte[3];
+    uint64_t uart_frame_pads[3], uart_bytes[48], uart_hash[48];
     qemu_irq gpio_in[48], level[48], drive[48], floating[48], contention[48];
 };
+
+static int ws53_pad_uart_tx(unsigned id, unsigned mode)
+{
+    if (id == 12 && mode == 2) { return 0; }
+    if ((id == 17 && mode == 2) || (id == 8 && mode == 1)) { return 1; }
+    if (id == 33 && mode == 1) { return 2; }
+    return -1;
+}
+static bool ws53_pad_uart_rx(unsigned id, unsigned mode)
+{
+    return (id == 36 && mode == 2) || (id == 18 && mode == 2) ||
+           (id == 9 && mode == 1) || (id == 34 && mode == 1);
+}
 
 /* WS53 hardware guide pin-function table: PWM0P on MGPIO10 mode4,
  * MGPIO21/SGPIO2 mode1, AGPIO2 mode2. SDK PWM sample uses pin47/mode1/ch0.
@@ -68,11 +85,17 @@ static void ws53_pad_update(WS53PinctrlState *s, const WS53PadDesc *d)
     unsigned n = d->id, pull = (s->config[n] >> 3) & 3;
     bool gpio = d->bank != 255 && s->mode[n] == 0;
     bool pwm = ws53_pad_pwm0(n, s->mode[n]);
-    bool driving = (gpio && s->gpio_oe[n]) || (pwm && s->pwm0_drive);
-    bool driven_level = pwm ? s->pwm0_level : s->gpio_out[n];
+    int uart = s->uart_tx_profile ? ws53_pad_uart_tx(n, s->mode[n]) : -1;
+    bool driving = (gpio && s->gpio_oe[n]) || (pwm && s->pwm0_drive) ||
+                   (uart >= 0 && s->uart_drive[uart]);
+    bool driven_level = uart >= 0 ? s->uart_level[uart] :
+                        pwm ? s->pwm0_level : s->gpio_out[n];
     bool floating = !driving && !s->external_drive[n] && pull == 0;
     bool conflict = driving && s->external_drive[n] &&
                     driven_level != s->external_level[n];
+    if (conflict) {
+        for (unsigned port = 0; port < 3; port++) { s->uart_frame_pads[port] &= ~(1ULL << n); }
+    }
     /* Deterministic digital resolution: active internal output wins a conflict,
      * which is
      * separately reported. Floating resolves low. Neither policy predicts an
@@ -133,6 +156,58 @@ static void ws53_pad_pwm0_drive(void *opaque, int n, int level)
     ws53_pad_pwm0_update(s);
 }
 
+static void ws53_pad_uart_update(WS53PinctrlState *s, int port)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(ws53_pad_desc); i++) {
+        const WS53PadDesc *d = &ws53_pad_desc[i];
+        if (ws53_pad_uart_tx(d->id, s->mode[d->id]) == port) {
+            ws53_pad_update(s, d);
+        }
+    }
+}
+static void ws53_pad_uart_level(void *opaque, int n, int level)
+{
+    WS53PinctrlState *s = opaque;
+    s->uart_level[n] = level != 0;
+    ws53_pad_uart_update(s, n);
+}
+static void ws53_pad_uart_drive(void *opaque, int n, int level)
+{
+    WS53PinctrlState *s = opaque;
+    s->uart_drive[n] = level != 0;
+    if (!level) { s->uart_frame_pads[n] = 0; }
+    ws53_pad_uart_update(s, n);
+}
+/* Serializer events qualify only pads selected throughout the frame. Counts
+ * and FNV1a64 hashes are virtual-peer observations, not analog measurements.
+ * No global TX selector: the observed H0 signal fans out to both muxed pads. */
+static void ws53_pad_uart_frame(void *opaque, int n, int event)
+{
+    WS53PinctrlState *s = opaque;
+    if (!s->uart_tx_profile) { return; }
+    if (event <= 0) {
+        if (!event) {
+            for (unsigned id = 0; id < 48; id++) {
+                if (s->uart_frame_pads[n] & (1ULL << id)) {
+                    s->uart_bytes[id]++;
+                    s->uart_hash[id] = (s->uart_hash[id] ^ s->uart_byte[n]) * 1099511628211ULL;
+                }
+            }
+        }
+        s->uart_frame_pads[n] = 0;
+        return;
+    }
+    s->uart_byte[n] = event - 1;
+    s->uart_frame_pads[n] = 0;
+    for (unsigned i = 0; i < ARRAY_SIZE(ws53_pad_desc); i++) {
+        unsigned id = ws53_pad_desc[i].id;
+        if (s->uart_drive[n] && ws53_pad_uart_tx(id, s->mode[id]) == n &&
+            !(s->external_drive[id] && s->external_level[id] != s->uart_level[n])) {
+            s->uart_frame_pads[n] |= 1ULL << id;
+        }
+    }
+}
+
 static uint64_t ws53_pinctrl_read(void *opaque, hwaddr off, unsigned size)
 {
     WS53PinRegion *r = opaque;
@@ -161,9 +236,14 @@ static void ws53_pinctrl_write(void *opaque, hwaddr off, uint64_t value, unsigne
         }
         if (d->mux == addr) {
             if (value > 7 || !(d->modes & (1u << value))) { break; }
+            if (s->mode[d->id] != value) {
+                for (unsigned n = 0; n < 3; n++) { s->uart_frame_pads[n] &= ~(1ULL << d->id); }
+            }
             s->mode[d->id] = value;
             ws53_pad_update(s, d);
-            if (value && !ws53_pad_pwm0(d->id, value)) {
+            if (value && !ws53_pad_pwm0(d->id, value) &&
+                !(s->uart_tx_profile && (ws53_pad_uart_tx(d->id, value) >= 0 ||
+                                         ws53_pad_uart_rx(d->id, value)))) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                     "ws53-pinctrl: unimplemented alternate peripheral route pad %u mode %u\n",
                     d->id, (unsigned)value);
@@ -187,9 +267,16 @@ static void ws53_pinctrl_reset(void *opaque)
         /* RAM boot profile, NOT asserted silicon reset values. Keep external
          * driver state, select GPIO, enable inputs, no pulls and drive code 0. */
         s->mode[d->id] = 0;
+        if (s->uart_console_profile) {
+            if (d->id == 17 || d->id == 18) { s->mode[d->id] = 2; }
+            if (d->id == 33 || d->id == 34) { s->mode[d->id] = 1; }
+        }
         s->config[d->id] = 4;
+        s->uart_bytes[d->id] = 0;
+        s->uart_hash[d->id] = 14695981039346656037ULL;
         ws53_pad_update(s, d);
     }
+    memset(s->uart_frame_pads, 0, sizeof(s->uart_frame_pads));
 }
 static void ws53_pinctrl_init(Object *obj)
 {
@@ -208,14 +295,41 @@ static void ws53_pinctrl_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_gpio_oe, "gpio-oe", 48);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_pwm0_level, "pwm0-level", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_pwm0_drive, "pwm0-drive", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_uart_level, "uart-tx-level", 3);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_uart_drive, "uart-tx-drive", 3);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_uart_frame, "uart-tx-frame", 3);
     qdev_init_gpio_out_named(DEVICE(obj), s->gpio_in, "gpio-in", 48);
     qdev_init_gpio_out_named(DEVICE(obj), s->level, "level", 48);
     qdev_init_gpio_out_named(DEVICE(obj), s->drive, "drive-enable", 48);
     qdev_init_gpio_out_named(DEVICE(obj), s->floating, "floating", 48);
     qdev_init_gpio_out_named(DEVICE(obj), s->contention, "contention", 48);
+    for (unsigned id = 0; id < 48; id++) {
+        g_autofree char *count = g_strdup_printf("uart-tx-bytes-%u", id);
+        g_autofree char *hash = g_strdup_printf("uart-tx-hash-%u", id);
+        object_property_add_uint64_ptr(obj, count, &s->uart_bytes[id], OBJ_PROP_FLAG_READ);
+        object_property_add_uint64_ptr(obj, hash, &s->uart_hash[id], OBJ_PROP_FLAG_READ);
+    }
     qemu_register_reset(ws53_pinctrl_reset, s);
+}
+static const Property ws53_pinctrl_properties[] = {
+    DEFINE_PROP_BOOL("assume-uart-tx", WS53PinctrlState, uart_tx_profile, false),
+    DEFINE_PROP_BOOL("uart-console-profile", WS53PinctrlState, uart_console_profile, false),
+};
+static void ws53_pinctrl_realize(DeviceState *dev, Error **errp)
+{
+    WS53PinctrlState *s = WS53_PINCTRL(dev);
+    if (s->uart_console_profile && !s->uart_tx_profile) {
+        error_setg(errp, "ws53-pinctrl: UART console profile requires UART TX routing");
+    }
+}
+static void ws53_pinctrl_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+    dc->realize = ws53_pinctrl_realize;
+    device_class_set_props(dc, ws53_pinctrl_properties);
 }
 static const TypeInfo ws53_pinctrl_type = {
     .name = TYPE_WS53_PINCTRL, .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(WS53PinctrlState), .instance_init = ws53_pinctrl_init,
+    .class_init = ws53_pinctrl_class_init,
 };

@@ -285,8 +285,9 @@ static void ws53_init(MachineState *machine)
     qdev_prop_set_bit(uart_l0_reset, "l0-bank", true);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(uart_l0_reset), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(uart_l0_reset), 0, 0x570000b0);
+    DeviceState *uarts[3];
     for (unsigned i = 0; i < 3; i++) {
-        DeviceState *uart = qdev_new(TYPE_WS53_UART);
+        DeviceState *uart = uarts[i] = qdev_new(TYPE_WS53_UART);
         g_autofree char *name = g_strdup_printf("uart%u", i);
         object_property_add_child(OBJECT(machine), name, OBJECT(uart));
         qdev_prop_set_chr(uart, "chardev", serial_hd(i));
@@ -347,6 +348,14 @@ static void ws53_init(MachineState *machine)
     DeviceState *pinctrl = qdev_new(TYPE_WS53_PINCTRL);
     object_property_add_child(OBJECT(machine), "pinctrl", OBJECT(pinctrl));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(pinctrl), &error_fatal);
+    for (unsigned i = 0; i < 3; i++) {
+        qdev_connect_gpio_out_named(uarts[i], "pad-tx-level", 0,
+            qdev_get_gpio_in_named(pinctrl, "uart-tx-level", i));
+        qdev_connect_gpio_out_named(uarts[i], "pad-tx-drive", 0,
+            qdev_get_gpio_in_named(pinctrl, "uart-tx-drive", i));
+        qdev_connect_gpio_out_named(uarts[i], "pad-tx-frame", 0,
+            qdev_get_gpio_in_named(pinctrl, "uart-tx-frame", i));
+    }
     qdev_connect_gpio_out_named(pwm, "out", 0,
         qdev_get_gpio_in_named(pinctrl, "pwm0-level", 0));
     qdev_connect_gpio_out_named(pwm, "output-enable", 0,

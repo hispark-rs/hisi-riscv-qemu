@@ -120,3 +120,27 @@ ws63-qemu/
 ## 许可
 
 `src/hw/riscv/ws63.c` 派生自 QEMU 代码风格，按 **GPL-2.0-or-later** 授权（与 QEMU 一致）。
+
+### WS53 UART 外部 TX 引脚模型
+
+显式开启 `ws53-uart.assume-pad-tx=on`、`ws53-uart.assume-dma-profile=on`
+和 `ws53-pinctrl.assume-uart-tx=on`，8N1 字节按分频寄存器及假设32MHz时钟
+输出逐位电平。仅 TX 已建模；其他外部帧格式及发送中改格式明确报错。既有
+内部回环继续使用独立的 `char-ns` 时序假设，默认行为保持。非零分频、精确
+时钟来源、模拟边沿和负载仍不能由模型证明。
+
+路由为 H1/MGPIO12(mode2)、H0/MGPIO17(mode2)及MGPIO8(mode1)、
+L0/AGPIO1(mode1)。各 pad 独立选择信号，允许 H0 同时驱动两个已复用 pad，
+对应 `hisi-registers` 的 `ws53-uart-pad-route-hil.json` 三轮实测。pad 的
+`uart-tx-bytes-N` 与 `uart-tx-hash-N` QOM属性记录整帧期间连接有效的虚拟对端
+字节数/FNV1a64；中途切换、复位或数字争用的帧不计成功。GPIO数字争用仍可
+单独观测，不能据此推断电流。RX mux可配置/读回，但没有RX串行采样模型。
+
+`ws53-pinctrl.uart-console-profile=on` 是明确的 RAM 继承配置：M17/M18 mode2、
+AG1/AG2 mode1，其余 mode0；不是芯片复位默认值。用于主工程的
+`uart-pad-probe` 同一ELF对照。所有 pad 字节数/校验和及八对pad配置和GPIO
+方向恢复都必须检查，不能只看控制台成功标记。
+
+`uv run --script scripts/ws53_uart_pads_test.py --qemu <qemu-system-riscv32>`
+覆盖逐位数据/停止位、双pad输出、复用切换、内部回环隔离、暂停、复位、争用
+及不支持配置；已接入 `test-ws53.py`。原有 H1/H0/L0 复位和UART DMA模型独立。
