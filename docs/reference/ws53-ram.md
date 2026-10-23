@@ -727,6 +727,24 @@ It is part of `scripts/test-ws53.py`. The integration repository now has a polli
 memory-copy HAL and actual Rust RAM fixtures; their completion observation never
 proves physical cache/drain safety, and hardware tests remain separate work.
 
+## UART line configuration readback
+
+`ws53-uart.div-l-read-requires-enable=on` models A-board UART2's observed low
+integer divisor read condition: DIV_L returns0 when UART_CTL.DIV_EN is clear,
+and the programmed value when set. Closing access does not erase the latch.
+Default remains off for existing source/model profiles. The parameter is
+available on each modeled instance; only UART2 has physical evidence. High
+divisor read gating and writes while DIV_EN is clear are not established.
+The18-case register test checks both profiles across three modeled instances.
+
+The shared `uart-line` Rust fixture uses this stricter profile and opens access
+before reading the integer divisor, as the original SDK getter does. Its72
+frame/baud combinations and144 internal-loopback bytes passed three UART2 RAM
+runs with1152008N1 console recovery. The original closed-access fixture now
+fails in this model as it did on hardware. This is register configuration and
+loopback evidence, not physical baud/frame timing, clock-tree provisioning or
+UART0/1 HIL qualification. Default byte delivery remains immediate.
+
 ## UART0/1 request-paced MDMA profile
 
 Enable both `-global ws53-mdma.assume-profile=on` and

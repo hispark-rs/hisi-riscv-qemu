@@ -23,6 +23,7 @@ struct WS53UartState {
     /* Optional single-byte DMA handshake/serializer profile. Timing, request
      * levels and byte lane adaptation are assumptions, not silicon evidence. */
     bool dma_profile, clock_on, tx_stall, tx_active, tx_halt;
+    bool div_l_read_requires_enable;
     uint8_t tx[WS53_UART_DEPTH], tx_shift;
     unsigned tx_head, tx_count;
 };
@@ -190,7 +191,9 @@ static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
     }
     case 0x08: return s->control;
     case 0x0c: return s->div_h;
-    case 0x10: return s->div_l;
+    case 0x10:
+        /* Observed on A-board UART2. Other instances remain unqualified. */
+        return s->div_l_read_requires_enable && !(s->control & 1) ? 0 : s->div_l;
     case 0x14: return s->div_fra;
     case 0x18: return s->ier;
     case 0x28: return s->far;
@@ -356,6 +359,7 @@ static const Property ws53_uart_properties[] = {
     DEFINE_PROP_CHR("chardev", WS53UartState, chr),
     DEFINE_PROP_UINT64("rx-timeout-ns", WS53UartState, rx_timeout_ns, 0),
     DEFINE_PROP_BOOL("assume-dma-profile", WS53UartState, dma_profile, false),
+    DEFINE_PROP_BOOL("div-l-read-requires-enable", WS53UartState, div_l_read_requires_enable, false),
     DEFINE_PROP_UINT64("char-ns", WS53UartState, char_ns, 10000),
 };
 
