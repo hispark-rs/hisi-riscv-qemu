@@ -22,6 +22,7 @@
 #include "elf.h"
 #include "hisi_riscv31.h"
 #include "ws53_uart.c.inc"
+#include "ws53_uart_reset.c.inc"
 #include "ws53_gpio.c.inc"
 #include "ws53_pinctrl.c.inc"
 #include "ws53_nmi.c.inc"
@@ -275,6 +276,10 @@ static void ws53_init(MachineState *machine)
     memory_region_add_subregion(sys, 0x52002000, &s->timer_mmio);
     const hwaddr bases[] = { 0x52081000, 0x52080000, 0x57014000 };
     const unsigned irqs[] = { 39, 41, 42 };
+    DeviceState *uart_reset = qdev_new(TYPE_WS53_UART_RESET);
+    object_property_add_child(OBJECT(machine), "uart-reset", OBJECT(uart_reset));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(uart_reset), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(uart_reset), 0, 0x52000168);
     for (unsigned i = 0; i < 3; i++) {
         DeviceState *uart = qdev_new(TYPE_WS53_UART);
         g_autofree char *name = g_strdup_printf("uart%u", i);
@@ -286,6 +291,10 @@ static void ws53_init(MachineState *machine)
         sysbus_realize_and_unref(SYS_BUS_DEVICE(uart), &error_fatal);
         sysbus_mmio_map(SYS_BUS_DEVICE(uart), 0, bases[i]);
         sysbus_connect_irq(SYS_BUS_DEVICE(uart), 0, qdev_get_gpio_in(intc, irqs[i]));
+        if (i < 2) {
+            qdev_connect_gpio_out_named(uart_reset, "reset-n", i,
+                                       qdev_get_gpio_in_named(uart, "soft-reset-n", 0));
+        }
         if (i < 2) { ws53_mdma_connect_uart(WS53_MDMA(mdma), uart, i == 0 ? 10 : 8, bases[i] + 4); }
     }
     const hwaddr gpio_bases[] = { 0x5700c000, 0x57028000, 0x57010000 };
@@ -405,6 +414,7 @@ static const TypeInfo ws53_type = {
 static void ws53_register_types(void)
 {
     type_register_static(&ws53_uart_type);
+    type_register_static(&ws53_uart_reset_type);
     type_register_static(&ws53_gpio_type);
     type_register_static(&ws53_pinctrl_type);
     type_register_static(&ws53_nmi_type);

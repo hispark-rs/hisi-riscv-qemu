@@ -24,6 +24,7 @@ struct WS53UartState {
      * levels and byte lane adaptation are assumptions, not silicon evidence. */
     bool dma_profile, clock_on, tx_stall, tx_active, tx_halt;
     bool div_l_read_requires_enable;
+    bool soft_reset_asserted;
     uint8_t tx[WS53_UART_DEPTH], tx_shift;
     unsigned tx_head, tx_count;
 };
@@ -68,8 +69,8 @@ static unsigned ws53_uart_irq_id(WS53UartState *s)
 
 static void ws53_uart_irq_update(WS53UartState *s)
 {
-    qemu_set_irq(s->irq, ws53_uart_irq_id(s) != 1);
-    bool enabled = s->dma_profile && s->clock_on && (s->fifo & 0x10);
+    qemu_set_irq(s->irq, !s->soft_reset_asserted && ws53_uart_irq_id(s) != 1);
+    bool enabled = !s->soft_reset_asserted && s->dma_profile && s->clock_on && (s->fifo & 0x10);
     qemu_set_irq(s->dma_request[0], enabled && s->tx_count < WS53_UART_DEPTH);
     qemu_set_irq(s->dma_request[1], enabled && s->count != 0);
 }
@@ -114,7 +115,7 @@ static void ws53_uart_push(WS53UartState *s, uint8_t value, uint8_t errors)
 
 static void ws53_uart_tx_resume(WS53UartState *s)
 {
-    if (!s->dma_profile || !s->clock_on || s->tx_stall) { return; }
+    if (s->soft_reset_asserted || !s->dma_profile || !s->clock_on || s->tx_stall) { return; }
     if (!s->tx_active && s->tx_count && !s->tx_halt) {
         s->tx_shift = s->tx[s->tx_head];
         s->tx_head = (s->tx_head + 1) % WS53_UART_DEPTH;
@@ -147,14 +148,14 @@ static bool ws53_uart_tx_enqueue(WS53UartState *s, uint8_t value)
  * byte DMA widths but does not prove APB bridge byte-lane behavior. */
 static bool ws53_uart_dma_read(WS53UartState *s, uint8_t *value)
 {
-    if (!s->dma_profile || !s->clock_on || !(s->fifo & 0x10) || !s->count) { return false; }
+    if (s->soft_reset_asserted || !s->dma_profile || !s->clock_on || !(s->fifo & 0x10) || !s->count) { return false; }
     *value = s->rx[s->head]; s->head = (s->head + 1) % WS53_UART_DEPTH; s->count--;
     ws53_uart_rx_activity(s); qemu_chr_fe_accept_input(&s->chr); return true;
 }
 
 static bool ws53_uart_dma_write(WS53UartState *s, uint8_t value)
 {
-    return s->dma_profile && s->clock_on && (s->fifo & 0x10) && ws53_uart_tx_enqueue(s, value);
+    return !s->soft_reset_asserted && s->dma_profile && s->clock_on && (s->fifo & 0x10) && ws53_uart_tx_enqueue(s, value);
 }
 
 static void ws53_uart_tx_gate(void *opaque, int n, int level)
@@ -176,6 +177,10 @@ static void ws53_uart_tx_stall(void *opaque, int n, int level)
 static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
 {
     WS53UartState *s = opaque;
+    if (s->soft_reset_asserted) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: read while soft reset asserted is unqualified\n");
+        return 0;
+    }
     switch (off) {
     case 0x00: return ws53_uart_irq_id(s) | (s->fifo & 0x10);
     case 0x04: {
@@ -218,7 +223,10 @@ static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
     case 0x4c: return s->count;
     case 0x58: return s->baud;
     case 0x50: if (s->dma_profile) { return s->tx_halt; } break;
-    case 0x60: return 0x204 | (s->dma_profile ? 0x800 : 0); /* RO capability. */
+    /* Read-only silicon identity, observed on all three A-board instances.
+     * APB width advertises 16 bits although CPU accesses use SDK 32-bit slots.
+     * This does not claim a CTS/RTS model or proven DMA byte-lane adaptation. */
+    case 0x60: return 0xd04;
     }
     qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: unimplemented read +0x%" HWADDR_PRIx "\n", off);
     return 0;
@@ -227,6 +235,10 @@ static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
 static void ws53_uart_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     WS53UartState *s = opaque;
+    if (s->soft_reset_asserted) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: write while soft reset asserted is unqualified\n");
+        return;
+    }
     switch (off) {
     case 0x04: {
         uint8_t byte = value;
@@ -309,12 +321,13 @@ static const MemoryRegionOps ws53_uart_ops = {
 static int ws53_uart_can_receive(void *opaque)
 {
     WS53UartState *s = opaque;
-    return ws53_uart_capacity(s) - s->count;
+    return s->soft_reset_asserted ? 0 : ws53_uart_capacity(s) - s->count;
 }
 
 static void ws53_uart_receive(void *opaque, const uint8_t *buf, int size)
 {
     WS53UartState *s = opaque;
+    if (s->soft_reset_asserted) { return; }
     for (int i = 0; i < size; i++) {
         ws53_uart_push(s, buf[i], 0);
     }
@@ -323,6 +336,7 @@ static void ws53_uart_receive(void *opaque, const uint8_t *buf, int size)
 static void ws53_uart_reset(void *opaque)
 {
     WS53UartState *s = opaque;
+    s->soft_reset_asserted = false;
     timer_del(s->timeout);
     timer_del(s->tx_timer);
     s->tx_head = s->tx_count = 0;
@@ -337,6 +351,27 @@ static void ws53_uart_reset(void *opaque)
     s->baud = 0x7f;
     s->fifo = 0x10;
     ws53_uart_irq_update(s);
+}
+
+static void ws53_uart_soft_reset_n(void *opaque, int n, int level)
+{
+    WS53UartState *s = opaque;
+    bool asserted = !level;
+    if (asserted && !s->soft_reset_asserted) {
+        /* H1/H0 profile from ws53-uart-reset-hil.json, not machine boot state.
+         * Divisor-zero and cancellation of in-flight TX/errors are explicit
+         * model assumptions; the board fixture tested queued clean RX only. */
+        timer_del(s->timeout);
+        timer_del(s->tx_timer);
+        s->tx_head = s->tx_count = s->head = s->count = 0;
+        s->tx_active = s->tx_halt = s->overrun = s->timed_out = false;
+        s->control = s->div_h = s->div_l = s->div_fra = 0;
+        s->ier = s->far = s->modem = s->scratch = s->fifo = 0;
+        s->baud = 0x7f;
+    }
+    s->soft_reset_asserted = asserted;
+    ws53_uart_irq_update(s);
+    if (!asserted) { qemu_chr_fe_accept_input(&s->chr); }
 }
 
 static void ws53_uart_realize(DeviceState *dev, Error **errp)
@@ -373,6 +408,7 @@ static void ws53_uart_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(obj), s->dma_request, "dma-request", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_tx_gate, "clock", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_tx_stall, "tx-stall", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_soft_reset_n, "soft-reset-n", 1);
     object_property_add_uint64_ptr(obj, "transmitted", &s->transmitted, OBJ_PROP_FLAG_READ);
 }
 

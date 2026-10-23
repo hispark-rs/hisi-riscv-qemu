@@ -51,7 +51,7 @@ def uart_dma_test(qemu):
             for ch in range(8):
                 for receive in (False, True):
                     reset(); b.write(0x1c, 1); u.write(0x2c, 2)
-                    assert u.read(0x60) == 0xa04
+                    assert u.read(0x60) == 0xd04
                     data = bytes((i*13+ch*23+port*17)&255 for i in range(17))
                     if receive:
                         u.inject(data); b.fill(DST-1, b'\xa5'*19)
@@ -190,7 +190,7 @@ def uart_dma_test(qemu):
             assert b.reg(0, 8) == 0
         for off in (0x60, 0x54):
             u.write(off, 0x800); rejected += 1
-        assert u.read(0x60) == 0xa04
+        assert u.read(0x60) == 0xd04
         reset(); u.write(0x50, 1); u.write(4, 65); u.write(4, 66)
         u.write(0x24, 0x40); rejected += 1
         assert u.read(0)&0x10 and u.read(0x48) == 2

@@ -1214,3 +1214,32 @@ match the strict state/notification oracle, while numeric counter values retain
 their difference. See hisi-registers `evidence/ws53-rtc-hil.json` and integration
 `docs/plan/evidence/ws53-rtc-hil-2026-10-24/summary.json` for failures and final runs.
 No common RTC registers, clock mux, low-power service or Flash were changed.
+
+### UART H1/H0 soft-reset observation profile (2026-10-24)
+
+`-global ws53-uart-reset.assume-profile=on` enables the halfword reset word at
+0x52000168: bit1 releases application UART0/H1, bit0 releases UART1/H0. UART2/L0
+is not connected to this word. The default-disabled profile diagnoses access;
+invalid widths, offsets and unknown bits are rejected without partial writes.
+The initial released value3 belongs to the inherited RAM boot profile, not a
+claimed silicon power-on default. Machine reset still restores the configured
+console, while a peripheral reset clears the measured frame/fraction/modem,
+interrupt enable, scratch and RX FIFO state and sets BAUD_CTL to0x7f.
+
+The three A-board runs in hisi-registers `evidence/ws53-uart-reset-hil.json`
+qualify only queued clean RX and post-release recovery. Integer divisor zero,
+in-flight TX/error cancellation, held-reset access and neighbor isolation remain
+explicit model assumptions. Held-reset MMIO produces diagnostics; IRQ and DMA
+requests are suppressed. The model does not claim UART2 reset or clock ownership.
+UART_PARAMETER is the observed0xd04 for all three instances, independently of
+the DMA model switch; this identity does not qualify CTS/RTS or DMA byte lanes.
+
+`ws53_uart_reset_test.py` covers28 reset/recovery cases plus default-disabled
+access, capability identity and machine boot restoration. The exact hardware
+ELF `04b5893e26cf6380c29b7c1d81e6d661590e8f0b26bbde025566450cc2a6dcbc`
+also completes its observation and recovery sequence in QEMU. Full raw parity
+is deliberately not accepted: before reset, each of UART0/1 reads DIV_L0 on
+hardware versus1 in QEMU, and FIFO_STATUS0x12 versus0x06. The integration offline
+comparator retains these four differences and exits1, even though all11 fields
+in the confirmed subset agree. RX-dependent divisor access and FIFO status bit
+semantics require further physical measurements; no HAL reset API graduates.
