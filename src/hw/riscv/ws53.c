@@ -188,6 +188,9 @@ static void ws53_init(MachineState *machine)
     ws63_make_ram(sys, &s->dtcm, "ws53.acore.dtcm", 0x20010000, 0x50000);
     /* No ROM, flash, shared-memory or catch-all unimplemented-device regions. */
     DeviceState *intc = qdev_new(TYPE_WS63_INTC);
+    /* A-board PWM_CFG retains pending after its initial load flag is ACKed
+     * while LOCIEN72 is masked. Other sources need independent evidence. */
+    ws63_intc_latch_source(intc, 72);
     object_property_add_child(OBJECT(machine), "intc", OBJECT(intc));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(intc), &error_fatal);
     DeviceState *tsensor = qdev_new(TYPE_WS53_TSENSOR);

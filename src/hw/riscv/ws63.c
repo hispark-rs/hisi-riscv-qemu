@@ -138,6 +138,7 @@ struct WS63IntcState {
     SysBusDevice parent_obj;
     CPURISCVState *env;            /* target hart (set by the machine) */
     uint32_t loci[0x40];           /* LOCIPRI/PRITHD read-back (0xBC0..0xBFF) */
+    uint64_t latched_inputs[2];    /* machine-qualified sources only */
 };
 
 /* Single global so the (context-free) custom-CSR ops can reach the intc. */
@@ -165,6 +166,12 @@ static void ws63_intc_set_irq(void *opaque, int n, int level)
         /* Standard mie bits — QEMU delivers via mip + vectored mtvec. */
         riscv_cpu_update_mip(s->env, 1ull << n, level ? (1ull << n) : 0);
     } else {
+        /* Some sources retain LOCIPD after peripheral deassertion, even
+         * with delivery masked. CPU trap/LOCIPCLR handles acknowledgement.
+         * Default masks are zero, preserving existing machine behavior. */
+        if (!level && (s->latched_inputs[n >> 6] & (1ULL << (n & 63)))) {
+            return;
+        }
         /* Custom local interrupt (>=32): deliver via the target/riscv hook,
          * which sets mcause=irq + vectored mtvec, gated by LOCIEN + mstatus.MIE. */
         riscv_cpu_set_local_irq(s->env, n, level);
@@ -185,6 +192,12 @@ static void ws63_intc_realize(DeviceState *dev, Error **errp)
 void ws63_intc_set_cpu_env(DeviceState *intc, CPURISCVState *env)
 {
     WS63_INTC(intc)->env = env;
+}
+
+void ws63_intc_latch_source(DeviceState *intc, unsigned irq)
+{
+    g_assert(irq >= 32 && irq < WS63_IRQ_MAX);
+    WS63_INTC(intc)->latched_inputs[irq >> 6] |= 1ULL << (irq & 63);
 }
 
 static void ws63_intc_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)

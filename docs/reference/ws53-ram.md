@@ -1081,3 +1081,32 @@ need not be equal; both must satisfy those bounds. Missing/extra lines, stale
 zero-based counts, incorrect flags and time-window violations are rejected.
 This qualifies the measured finite case, not continuous mode, repeating-block
 boundaries, overflow, different offset/polarity or other physical channels.
+
+### PWM IRQ72 retained pending (2026-10-24)
+
+A-board measurements distinguish the controller pending bit from peripheral
+status: the initial configuration event sets LOCIPD72 while local delivery is
+masked. Acknowledging PWM_PERIODLOAD_FLAG0 clears the peripheral flag but
+leaves LOCIPD72=1. Unmasking therefore causes one empty-status ISR before the
+later finite-completion ISR. Peripheral event masking, separately, retains the
+raw flag without producing an IRQ until the event output is unmasked.
+
+The shared controller now supports per-machine selection of latched inputs.
+WS53 selects IRQ72 only; WS63/BS2X and unqualified WS53 sources retain their
+previous profile. Peripheral deassertion no longer clears that selected
+pending bit. This does not claim silicon trap-entry auto-ack or persistent
+high-level reassertion semantics; those parts of the CPU profile still need
+separate evidence. Reset remains the CPU's pending-state reset.
+
+`ws53_irq_latch_test.py` injects IRQ71/72 high then low with guest delivery
+disabled and executes actual CPU CSR instructions. LOCIPD1 must contain only
+IRQ72; clearing IRQ71 preserves it and LOCIPCLR72 clears it. The shared Rust
+`pwm0-finite-irq-probe` runs real ISR72, records entry versus nonempty event
+counts, checks peripheral-mask retention, reads pending before local unmask,
+and checks ACK plus rearm with simultaneous8/16-pulse physical capture. The
+old model failed the same ELF with missing retained pending/empty entry.
+
+ISR clients must act on returned event bits, not count every ISR entry as a
+completed pulse block. Whole-group pending is deliberately preserved during
+HAL transactions; blindly clearing it could lose another channel's event.
+No IRQ71 abnormal configuration or other PWM channel is physically qualified.

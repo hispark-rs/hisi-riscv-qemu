@@ -81,7 +81,7 @@ def run(qemu):
     return {'cases':len(cases),'immediates_per_comparator':256,'comparators':6,'tcg_execution':True,'hardware_accessed':False}
 
 
-def execute_ram(qemu, regions, result_base, result_size, done):
+def execute_ram(qemu, regions, result_base, result_size, done, setup_commands=()):
     """Run RAM-only TCG code at the WS53 reset PC and read a guarded result."""
     with tempfile.TemporaryDirectory(prefix='ws53-branch-') as tmp:
         tmp=Path(tmp)
@@ -104,6 +104,8 @@ def execute_ram(qemu, regions, result_base, result_size, done):
                         for off in range(0,len(payload),4096):
                             chunk=payload[off:off+4096]
                             cmd(f'write {base+off:#x} {len(chunk)} 0x{chunk.hex()}')
+                    for command in setup_commands:
+                        cmd(command)
                     execute('cont'); deadline=time.monotonic()+10
                     while int(cmd(f'readl {done:#x}')[0],0)!=1:
                         assert time.monotonic()<deadline,'guest did not complete'
