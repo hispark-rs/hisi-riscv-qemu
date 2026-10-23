@@ -53,17 +53,22 @@ def tsensor_test(qemu):
         for raw in range(1024):
             s.code(raw); s.step(5000000)
             assert s.read() == (raw << 2 | 2)
-        # Floor arithmetic for a non-integral average; START deliberately clears
-        # the latest latch and restarts only in this explicit test profile.
-        s.code(0); s.write(0, 1); s.step(15*256000)
+        # START clears READY, retaining the stale CODE through the next report.
+        # Accumulation/restart timing remains an explicit model assumption.
+        old = s.read() & ~2
+        s.code(0); s.write(0, 1); assert s.read() == old
+        s.step(32000); assert s.read() == old
+        s.step(468000); assert s.read() == old
+        s.step(15*256000-500000); assert s.read() == old
         s.code(15); s.step(256000); assert s.read() == 2
         # Stop source or stall conversion part-way; preserve partial sum and time.
         for name in ('clock', 'stall', 'corrupt-control'):
+            old = s.read() & ~2
             s.code(118); s.write(0, 1); s.step(100000)
             s.fault(name, name != 'clock'); s.step(10000000)
-            assert s.read() == 0
+            assert s.read() == old
             if name == 'corrupt-control': assert s.read(4) == 0xdead
-            s.fault(name, name == 'clock'); s.step(3995999); assert s.read() == 0
+            s.fault(name, name == 'clock'); s.step(3995999); assert s.read() == old
             s.step(1); assert s.read() == (118 << 2 | 2)
         # Already-ready values survive lost clock; stale data is observable.
         s.fault('clock', False); before = s.count('reports')
@@ -102,7 +107,7 @@ def tsensor_test(qemu):
     assert all('unimplemented' in line for line in lines[1:]), diagnostics
     return {'raw_code_cases': 1024, 'average': '16-point floor, varying input',
             'first_report_ns_assumption': 4096000, 'report_period_ns_assumption': 5000000,
-            'sticky_ready': True, 'clock_stall_control_faults': True,
+            'sticky_ready': True, 'start_preserves_stale_code': True, 'clock_stall_control_faults': True,
             'reset_cancels_pending_average': True, 'invalid_mmio_diagnostics': count,
             'hardware_verified': False}
 

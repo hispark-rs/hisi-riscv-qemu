@@ -1,6 +1,7 @@
 /* WS53 temperature polling profile, SDK 163d9150 / RDL 04ced9c.
  * Assumptions: 16 point average, 256us samples, 5ms report cadence,
- * sticky READY/latest result, START restarts the accumulation. No stop/IRQ.
+ * sticky READY/latest result, START restarts the accumulation. A-board START1
+ * clears READY while retaining old CODE (not valid until READY). No stop/IRQ.
  * SPDX-License-Identifier: GPL-2.0-or-later */
 #define TYPE_WS53_TSENSOR "ws53-tsensor"
 OBJECT_DECLARE_SIMPLE_TYPE(WS53TsensorState, WS53_TSENSOR)
@@ -69,7 +70,9 @@ static void ws53_tsensor_write(void *opaque, hwaddr off, uint64_t v, unsigned si
             qemu_log_mask(LOG_GUEST_ERROR, "ws53-tsensor: unimplemented START without assume-profile\n"); return;
         }
         timer_del(s->timer); s->sum = s->count = 0; s->ready = false;
-        s->result = 0; s->starts++; s->running = true; s->remaining = 256000;
+        /* Hardware retains the previous CODE field through a new START.
+         * Software must still reject it while READY is clear. */
+        s->starts++; s->running = true; s->remaining = 256000;
         ws53_tsensor_resume(s); return;
     default: break;
     }
