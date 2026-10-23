@@ -34,6 +34,7 @@
 #include "ws53_spi.c.inc"
 #include "ws53_tsensor.c.inc"
 #include "ws53_trng.c.inc"
+#include "ws53_efuse.c.inc"
 #include "ws53_i2s.c.inc"
 #include "ws53_mclken0.c.inc"
 #include "ws53_adc.c.inc"
@@ -198,6 +199,11 @@ static void ws53_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(trng), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(trng), 0, 0x52024000);
     sysbus_mmio_map(SYS_BUS_DEVICE(trng), 1, 0x52001600);
+    DeviceState *efuse = qdev_new(TYPE_WS53_EFUSE);
+    object_property_add_child(OBJECT(machine), "efuse", OBJECT(efuse));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(efuse), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(efuse), 0, 0x57024000);
+    sysbus_mmio_map(SYS_BUS_DEVICE(efuse), 1, 0x57030258);
     DeviceState *i2c = qdev_new(TYPE_WS53_I2C);
     object_property_add_child(OBJECT(machine), "i2c", OBJECT(i2c));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(i2c), &error_fatal);
@@ -407,6 +413,7 @@ static void ws53_register_types(void)
     type_register_static(&ws53_spi_type);
     type_register_static(&ws53_tsensor_type);
     type_register_static(&ws53_trng_type);
+    type_register_static(&ws53_efuse_type);
     type_register_static(&ws53_type);
 }
 type_init(ws53_register_types)

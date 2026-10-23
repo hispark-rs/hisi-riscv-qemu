@@ -941,3 +941,54 @@ disable/re-enable, faults/reset and 19 rejected access diagnostics. It is part
 of the complete WS53 model suite. The integration RAM fixture checks actual
 Rust/PAC filtering, partial byte fills, timeout, service release and recovery;
 its synthetic handoff is not proof of physical ownership or entropy quality.
+
+## eFuse immutable read-service profile
+
+SDK `163d9150` / hisi-registers `8d50f1e` establish one 256-byte logical region:
+each aligned 32-bit DATA slot at `0x57024800 + (byte/2)*4` holds two bytes in
+its low16. The model deliberately poisons upper16 with 0xdead to expose packed
+word/byte-addressing mistakes. It does not load real device identities or secrets.
+
+`ws53-efuse.assume-profile=on` permits the read service. The synthetic contents
+are immutable bytes `(logical_index*73 + test-byte-key) & 255`; the key property
+defaults to 19 and rejects values above255. Reset and all guest writes leave
+these bytes unchanged. No default claim is made about physical OTP contents.
+
+Explicit assumptions and controls:
+
+- External `boot-done` starts low; test setup must assert it. `clock` starts high.
+  BOOT0_DONE is visible only with the profile, clock and boot input present and
+  no injected loss. This is a synthetic readiness contract, not a boot/ROM model.
+- Software configures the word-wide timing register at +0x34, including its
+  opaque upper24, and writes only read-mode low16=0x5a5a at +0x30. The entire
+  written word is retained, allowing upper16 preservation to be verified.
+  A usable command requires timing low8=0x1f and readiness. It admits exactly
+  one DATA word; this is an explicit model assumption based on the SDK's command
+  before each byte, not proof of silicon command-completion or admission rules.
+- Data access without that command/profile is diagnosed. Status/config reads
+  do not consume admission. Clock/boot/fault/timing changes invalidate it.
+- `fault` inputs0–3 inject missing readiness, mode readback0x1234, timing readback7
+  and mode corruption to0x1234 when a read command is issued. These are error
+  conditions, not programming modes. QOM `fail-after-read=N` makes boot readiness
+  disappear immediately after successful DATA readN, to test rejection of that
+  candidate and reporting only the earlier successful prefix. Zero disables it;
+  asserting `boot-done` again clears the latched loss.
+- Model reset clears timing/mode/admission and counters; synthetic contents,
+  externally set boot/clock/fault levels and the failure-injection threshold
+  persist. These choices are not claimed as physical reset values.
+- OTP DATA writes, AVDD, programming modes, the system programming switch,
+  wrong widths/unaligned operations and unknown accesses are explicitly rejected.
+  The switch region is mapped only to diagnose rejection, not to simulate an
+  enabled programming path. There is no IRQ, power sequencer or provisioning API.
+
+`scripts/ws53_efuse_test.py` covers three complete 256-byte images, stride/upper
+bits, read admission, boot/clock/mode/timing faults, post-read loss/recovery,
+immutable data after programming attempts and reset, and rejected diagnostics.
+It runs in the full WS53 model suite. The integration repository's
+`efuse_control` RAM fixture and `test-ws53-efuse.py` additionally execute actual
+Rust/PAC reads in 111 cases: three image keys, full-region and boundary reads,
+20 failed-prefix positions per key, configuration/command/boot/clock faults,
+empty/invalid ranges and recovery. They check guarded output, exact access counts
+and upper control bits; no programming path is exposed by that HAL. Shared boot/
+security/control-core ownership, identity schemas and physical read timing remain
+unverified; no real eFuse was accessed or programmed.
