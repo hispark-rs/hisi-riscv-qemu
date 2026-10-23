@@ -20,6 +20,7 @@ struct WS53MdmaState {
     WS53MdmaChannel channel[8];
     uint32_t configuration, raw_tc, raw_error;
     bool assume_profile, assume_uart, assume_spi, assume_i2c, assume_i2s, clock_on, request[16];
+    bool observed_memory;
     struct { WS53UartState *uart; WS53SpiChannel *spi; WS53I2cChannel *i2c; WS53I2sState *i2s;
              uint32_t address; bool receive; } endpoint[16];
     uint64_t phase_ns, reads, writes, errors, transfers, pending_writes;
@@ -138,9 +139,13 @@ static void ws53_mdma_write_beat(void *opaque)
     if (result != MEMTX_OK) { ws53_mdma_error(c); return; }
     s->writes++;
     if (c->burst_left) { c->burst_left--; }
-    if (c->control & (1u << 26)) { c->source += c->width; }
-    if (c->control & (1u << 27)) { c->destination += c->width; }
     unsigned left = (c->control & 0xfff) - 1;
+    /* Qualified memory profile retains the final element address. Partial
+     * progress keeps the next address; that detail remains a model assumption. */
+    if (!s->observed_memory || ws53_mdma_flow(c) || left) {
+        if (c->control & (1u << 26)) { c->source += c->width; }
+        if (c->control & (1u << 27)) { c->destination += c->width; }
+    }
     c->control = (c->control & ~0xfffu) | left;
     if (!left) {
         c->configuration &= ~1u; s->transfers++;
@@ -207,12 +212,13 @@ static uint64_t ws53_mdma_read(void *opaque, hwaddr off, unsigned size)
     }
     if (off >= 0x100 && off < 0x200) {
         WS53MdmaChannel *c = &s->channel[(off - 0x100) / 0x20];
+        if (s->observed_memory && c->index >= 4) { return 0; }
         switch (off & 0x1f) {
         case 0: return 0; /* Only unlinked transfer supported. */
         case 4: return c->destination;
         case 8: return c->configuration | (c->in_flight ? 0x8000 : 0);
         case 0x10: return c->source;
-        case 0x14: return c->control;
+        case 0x14: return s->observed_memory && !(c->configuration & 1) && !c->in_flight ? c->control & ~0xfffu : c->control;
         default: break;
         }
     }
@@ -236,6 +242,7 @@ static void ws53_mdma_write(void *opaque, hwaddr off, uint64_t value, unsigned s
     }
     if (off >= 0x100 && off < 0x200) {
         WS53MdmaChannel *c = &s->channel[(off - 0x100) / 0x20];
+        if (s->observed_memory && c->index >= 4) { return; }
         unsigned reg = off & 0x1f;
         if (reg == 8) {
             /* ACTIVE is status-only. Request/flow bindings cannot be changed
@@ -404,6 +411,7 @@ static void ws53_mdma_realize(DeviceState *dev, Error **errp)
 }
 static const Property ws53_mdma_properties[] = {
     DEFINE_PROP_BOOL("assume-profile", WS53MdmaState, assume_profile, false),
+    DEFINE_PROP_BOOL("observed-memory", WS53MdmaState, observed_memory, false),
     DEFINE_PROP_BOOL("assume-uart", WS53MdmaState, assume_uart, false),
     DEFINE_PROP_BOOL("assume-spi", WS53MdmaState, assume_spi, false),
     DEFINE_PROP_BOOL("assume-i2c", WS53MdmaState, assume_i2c, false),

@@ -169,7 +169,32 @@ def mdma_test(qemu):
         result=subprocess.run([qemu,'-M','ws53','-accel','qtest','-display','none','-monitor','none',
             '-serial','null','-global',f'ws53-mdma.phase-ns={value}'],capture_output=True,text=True,timeout=5)
         assert result.returncode!=0 and 'phase-ns must be' in result.stderr,result
-    return {'channel_width_increment_combinations':combinations,'parallel_channels':8,
+    observed_cases=0
+    with running(qemu,False,PROFILE+('-global','ws53-mdma.observed-memory=on')) as (cmd,irq,reset,diagnostics):
+        b=Bus(cmd)
+        for ch in range(4):
+            for width in (1,2,4):
+                for count in (1,17,4095):
+                    reset();b.write(0x1c,1)
+                    data=bytes((i*37+ch*11)&255 for i in range(count*width))
+                    b.fill(SRC,data);b.fill(DST-4,b'\xa5'*(len(data)+8))
+                    b.configure(ch,count,width)
+                    assert b.reg(ch,0x14)&4095==0  # idle status, not programmed length
+                    b.enable(ch);b.step(count*1000)
+                    assert b.mem(DST-4,len(data)+8)==b'\xa5'*4+data+b'\xa5'*4
+                    assert b.mem(SRC,len(data))==data
+                    assert b.reg(ch,0x10)==SRC+(count-1)*width
+                    assert b.reg(ch,4)==DST+(count-1)*width
+                    assert b.reg(ch,0x14)&4095==0 and b.read(0x10)==0
+                    assert b.read(0xc)==1<<ch
+                    observed_cases+=1
+        for ch in range(4,8):
+            b.configure(ch);b.enable(ch)
+            assert all(b.reg(ch,off)==0 for off in (0,4,8,0x10,0x14))
+        reset(); assert b.read(0xc)==b.read(0x10)==0
+    clean(diagnostics)
+    return {'observed_memory_cases':observed_cases,'observed_channels':4,
+            'channel_width_increment_combinations':combinations,'parallel_channels':8,
             'maximum_elements':4095,'width_bytes':[1,2,4],'irq':58,'invalid_diagnostics':invalid,
             'posted_write_survives_halt_disable':True,'read_write_errors_and_recovery':True,
             'exact_clock_pauses':True,'peripheral_requests_implemented':False,
