@@ -731,6 +731,9 @@ Explicit behavioral assumptions:
   counter excludes the active shift byte; LINE_STATUS TX_EMPTY only asserts when
   both are empty. Loopback bytes arrive only after serialization. HALT_TX stops
   new shift bytes; FIFO reset clears queued bytes but preserves the active one.
+  FIFO_STATUS bit0 means FIFO full and bit1 means FIFO empty, independently of
+  the active shift byte. A regression checks the empty-but-still-transmitting
+  interval, queued data, and final LINE_STATUS TX_EMPTY.
 - TX request means at least one FIFO slot; RX request means at least one byte.
   These are single-byte level requests, not a model of burst thresholds,
   DMA_EXTRA hardware acknowledge, software ACK or physical APB lane wiring.
@@ -751,5 +754,6 @@ port/channel/direction cases, both ports simultaneously transferring257 bytes
 through TX/serializer/RX/DMA, FIFO backpressure, empty receive waits, exact clock
 pause/resume, read/write errors, late writes after cancel, reset and46 rejected
 accesses/configurations. QOM `transmitted` counts completed serialized bytes.
-This does not provide a Rust UART DMA HAL yet or establish any physical cache,
-clock, pad, bus-drain, HPROT or control-core ownership guarantee.
+The integration repository separately exercises its experimental Rust UART DMA
+HAL against this profile. Neither test establishes physical cache, clock, pad,
+bus-drain, HPROT or control-core ownership guarantees.

@@ -208,7 +208,7 @@ static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
     }
     case 0x38: return s->scratch;
     case 0x44: return (s->dma_profile ?
-                      ((s->tx_active || s->tx_count ? 1 : 0) | (s->tx_count < ws53_uart_capacity(s) ? 2 : 0)) : 2) |
+                      ((s->tx_count == ws53_uart_capacity(s) ? 1 : 0) | (!s->tx_count ? 2 : 0)) : 2) |
                        (s->count ? 4 : 0) |
                        (s->count == ws53_uart_capacity(s) ? 8 : 0);
     case 0x48: return s->tx_count;

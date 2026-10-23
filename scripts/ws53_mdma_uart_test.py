@@ -103,6 +103,12 @@ def uart_dma_test(qemu):
         u.configure(1, 96, True); u.fault('tx-stall', False); b.step(1000000)
         assert b.mem(DST, 96) == bytes(range(96)) and b.prop('transfers') == 2
         # Software halt stops starting another frame, not the active shift byte.
+        reset(); u.write(4, 65)
+        assert u.read(0x44)&3 == 2 and not u.read(0x34)&0x80
+        u.write(4, 66)
+        assert u.read(0x44)&3 == 0 and u.read(0x48) == 1
+        b.step(20000)
+        assert u.read(0x44)&3 == 2 and u.read(0x34)&0x80
         reset(); u.write(0x2c, 2); u.write(0x50, 1); u.write(4, 65); u.write(4, 66)
         b.step(100000); assert u.read(0x48) == 2 and u.prop('transmitted') == 0
         u.write(0x50, 0); b.step(5000); u.write(0x50, 1); b.step(5000)
