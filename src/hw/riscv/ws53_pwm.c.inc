@@ -1,7 +1,8 @@
 /* WS53 PWM v151, SDK163d9150/RDL f188fd4. Explicit assumed digital profile:
  * Configurable effective counter rate, low16 counters, immediate/deferred commit.
  * 32MHz is the SDK report; A-board bounded RAM handoff measures 2MHz.
- * The upstream source/divider relationship remains unmodeled.
+ * The measured profile supports local divisors1/2/4/8/16 with an effective
+ * 32MHz input. Upstream source identity and other encodings remain unmodeled.
  * These are channel outputs, not an invented physical pinmux/electrical model.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -25,12 +26,22 @@ struct WS53PwmState {
     uint8_t select[4], clear[4], event_enable;
     uint16_t group_errors, count_errors, gate, div, latched_div;
     bool assume_timing, diagnosed, external_clock;
-    uint64_t counter_hz;
+    uint64_t counter_hz; /* reference effective rate at divisor16 */
 };
 
+/* Only the measured A-board profile qualifies divisors other than16. */
+static bool ws53_pwm_divisor_valid(WS53PwmState *s, unsigned divisor)
+{
+    return divisor == 16 || (s->counter_hz == 2000000 &&
+           (divisor == 1 || divisor == 2 || divisor == 4 || divisor == 8));
+}
+static uint64_t ws53_pwm_rate(WS53PwmState *s)
+{
+    return s->counter_hz * 16 / s->latched_div;
+}
 static bool ws53_pwm_clocked(WS53PwmState *s)
 {
-    return s->external_clock && (s->gate & 0x80) && (s->div & 1) && s->latched_div == 16;
+    return s->external_clock && (s->gate & 0x80) && (s->div & 1) && ws53_pwm_divisor_valid(s, s->latched_div);
 }
 static void ws53_pwm_irq(WS53PwmState *s)
 {
@@ -78,8 +89,9 @@ static void ws53_pwm_sync(WS53PwmState *s)
         uint64_t elapsed = now - c->last_ns;
         c->last_ns = now;
         if (!c->running || !ws53_pwm_clocked(s)) { continue; }
-        uint64_t part = (elapsed % WS53_PWM_SECOND) * s->counter_hz + c->fraction;
-        uint64_t ticks = (elapsed / WS53_PWM_SECOND) * s->counter_hz + part / WS53_PWM_SECOND;
+        uint64_t hz = ws53_pwm_rate(s);
+        uint64_t part = (elapsed % WS53_PWM_SECOND) * hz + c->fraction;
+        uint64_t ticks = (elapsed / WS53_PWM_SECOND) * hz + part / WS53_PWM_SECOND;
         c->fraction = part % WS53_PWM_SECOND;
         while (c->running && ticks) {
             uint64_t period = c->active[PW_FREQ_L];
@@ -126,7 +138,8 @@ static void ws53_pwm_arm(WS53PwmState *s)
         if (c->phase < start) { edge = start; }
         else if (c->phase < end) { edge = end; }
         uint64_t numerator = (edge - c->phase) * WS53_PWM_SECOND - c->fraction;
-        next = MIN(next, (numerator + s->counter_hz - 1) / s->counter_hz);
+        uint64_t hz = ws53_pwm_rate(s);
+        next = MIN(next, (numerator + hz - 1) / hz);
     }
     if (next != UINT64_MAX) {
         timer_mod(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + next);
@@ -239,7 +252,7 @@ static void ws53_pwm_gate_input(void *opaque, int n, int level)
 static void ws53_pwm_div_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
 {
     WS53PwmState *s = opaque;
-    if (off || size != 2 || (v & ~0x7fu) || ((v & 2) && !(s->div & 2) && ((v >> 2) & 31) != 16)) {
+    if (off || size != 2 || (v & ~0x7fu) || ((v & 2) && !(s->div & 2) && !ws53_pwm_divisor_valid(s, (v >> 2) & 31))) {
         qemu_log_mask(LOG_GUEST_ERROR, "ws53-pwm: unimplemented divider write value=0x%" PRIx64 " size=%u\n", v, size); return;
     }
     ws53_pwm_sync(s);

@@ -49,7 +49,55 @@ def pwm_pad_test(qemu, hz=2000000):
         checks=['real PWM channel to pad','all documented PWM0P aliases','input buffer independence',
                 'GPIO mux disconnect','stop low','reset mux'],hardware_verified=False)
 
+
+
+def pwm_divider_test(qemu):
+    profile=(*PROFILE,'-global','ws53-pwm.counter-hz=2000000')
+    periods=[]
+    with running(qemu,False,profile) as (command,level,reset,diagnostics):
+        command('irq_intercept_out /machine/pinctrl level')
+        command('writel 0x52008054 1')
+        read,write,clock,configure,commit,step=access(command)
+        clock()
+        for divisor in (16,8,4,2,1):
+            write(0x100,0);commit(0,1)
+            command(f'writew 0x5200007c {(divisor<<2)|1}')
+            command(f'writew 0x5200007c {(divisor<<2)|3}')
+            assert int(command('readw 0x5200007c')[0],0)==(divisor<<2)|3
+            configure(0,period=200,duty=50,offset=0);commit(0,1)
+            period=200*divisor*1_000_000_000//32_000_000
+            high=(50*divisor*1_000_000_000+31_999_999)//32_000_000
+            assert level[47]
+            step(high-1); assert level[47]
+            step(1); assert not level[47]
+            step(period-high); assert level[47]
+            periods.append(period)
+        write(0x100,0);commit(0,1);step(100000)
+        assert not level[47]
+        # Keep the established explicit load-edge model. A plain field update
+        # without LOAD must not change the active divisor; silicon latch timing
+        # outside the reviewed sequence is not claimed by this qtest.
+        command('writew 0x5200007c 0x41');command('writew 0x5200007c 0x43')
+        command('writew 0x5200007c 0x21')
+        configure(0,period=200,duty=50,offset=0);commit(0,1)
+        step(24999); assert level[47]
+        step(1); assert not level[47]
+        write(0x100,0);commit(0,1)
+        for unsupported in (0,3,31):
+            command(f'writew 0x5200007c {(unsupported<<2)|1}')
+            command(f'writew 0x5200007c {(unsupported<<2)|3}')
+            # Failed LOAD must retain the preceding written field and LOAD=0.
+            assert int(command('readw 0x5200007c')[0],0)==(unsupported<<2)|1
+    lines=diagnostics[0].splitlines()
+    assert lines[0]==NOTICE.replace('32000000','2000000'),diagnostics
+    assert len(lines)==4 and all(line.startswith('ws53-pwm: unimplemented divider write') for line in lines[1:]),diagnostics
+    return dict(dividers=[16,8,4,2,1],period_ns=periods,high_ticks=50,period_ticks=200,
+                assumed_input_hz=32000000,unsupported_divisors_rejected=[0,3,31],
+                hardware_source_identity_proven=False)
+
+
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--qemu',required=True)
     qemu=p.parse_args().qemu
-    print(json.dumps([pwm_pad_test(qemu,hz) for hz in (2000000,32000000)],indent=2))
+    print(json.dumps(dict(pads=[pwm_pad_test(qemu,hz) for hz in (2000000,32000000)],
+                          divider=pwm_divider_test(qemu)),indent=2))

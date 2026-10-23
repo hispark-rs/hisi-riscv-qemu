@@ -1015,3 +1015,22 @@ frequencies are rejected at realize. The integration `pwm0-smoke` fixture uses
 2MHz explicitly for its same-ELF comparison; its first160kHz expectation failed
 on silicon and remains in the evidence. A match with the measured profile does
 not establish the upstream clock handoff or fix the missing clock-tree support.
+
+### PWM local divisor qualification (2026-10-23 follow-up)
+
+The measured profile (`counter-hz=2000000`) now models local divisors1/2/4/8/16.
+The property denotes the reference counter rate **at divisor16**. In this profile
+an effective32MHz input divided by the latched field gives counter rates32/16/8/4/2MHz;
+period200 therefore produces160/80/40/20/10kHz. The original SDK32MHz-counter
+profile remains restricted to divisor16; it does not extrapolate a512MHz input
+or authorize other divider encodings. Source identity and clock-tree switching
+are still unmodeled.
+
+`pwm_divider_test` checks the five waveforms and rejects encodings0/3/31. The
+existing LOAD-edge behavior remains an explicit model assumption outside the
+reviewed clear/write/set sequence. Integration `pwm0-clock-probe` uses the real
+HAL `ClockDivider` API, verifies that a running group rejects changes, restores
+Div16, stops and releases its pad. Three repeated same-ELF A-board runs match
+QEMU and the independently sampled DSLogic waveforms. This qualifies the local
+ratio in that RAM takeover, not IRQ/finite behavior, live glitch-free transitions,
+all hardware channels or production cross-core clock ownership.
