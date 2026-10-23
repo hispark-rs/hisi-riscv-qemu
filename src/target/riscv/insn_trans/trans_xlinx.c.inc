@@ -92,7 +92,10 @@ static bool trans_xlinx_muliadd(DisasContext *ctx, uint32_t insn)
 static bool trans_xlinx_branchi(DisasContext *ctx, uint32_t insn)
 {
     int f3 = xlinx_f3(insn);
-    int32_t cmp = (int32_t)(int8_t)(insn >> 24);
+    /* Unsigned branch immediates are u8, unlike signed/equality s8.
+     * WS53 SDIO ROM uses bgeui index,129 to bound its ADMA table. */
+    int32_t cmp = (f3 == 6 || f3 == 7) ? (insn >> 24) :
+                  (int32_t)(int8_t)(insn >> 24);
     int32_t off = 0;
     TCGCond cond;
     DisasExtend ext;

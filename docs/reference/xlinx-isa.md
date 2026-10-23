@@ -18,7 +18,7 @@ push/pop/uxt，funct3=001/101 的 D-float 槽位）。在我们的 RV32 核上�
 |--------|-------------|------|------|
 | `l.li rd, imm32` | 48 位，halfword0 `& 0x3f == 0x1f`，bits[15:12]=0 | `rd = imm32` | rd=bits[11:7]；其后 4 字节小端 = imm32 |
 | `{add,sub,or,xor,and}shf rd,rs1,rs2,mode,sh` | `0x1b` | `rd = rs1 OP (rs2 移位 sh)` | funct3: 0 add,1 sub,2 or,3 xor,4 and；rd[11:7] rs1[19:15] rs2[24:20]；sh=bits[29:25]；mode=bits[31:30]: 0 sll,1 srl,2 sra,3 ror |
-| `{beq,bne,blt,bge,bltu,bgeu}i rs1,imm8,off` | `0x3b` | 比较 `rs1` 与 8 位有符号 `imm8`，成立则跳转 | funct3: 0 eq,1 ne,4 lt,5 ge,6 ltu,7 geu；rs1[19:15]；imm8=bits[31:24]（符号）；off: imm[1]=bit7, imm[5:2]=bits[11:8], imm[9:6]=bits[23:20]（10 位有符号，±1KB）|
+| `{beq,bne,blt,bge,bltu,bgeu}i rs1,imm8,off` | `0x3b` | 比较 `rs1` 与 `imm8`：ltu/geu 零扩展，其余符号扩展，成立则跳转 | funct3: 0 eq,1 ne,4 lt,5 ge,6 ltu,7 geu；rs1[19:15]；imm8=bits[31:24]（ltu/geu 为 u8，其余为 s8）；off: imm[1]=bit7, imm[5:2]=bits[11:8], imm[9:6]=bits[23:20]（10 位有符号，±1KB）|
 | `muliadd rd,rs1,rs2,imm6` | `0x5b`（bits[13:12]=01）| `rd = rs1 + rs2 * imm6` | rd[11:7] rs1[19:15] rs2[24:20]；imm6 = bit14 \| (bits[29:25]<<1) |
 | `jal16 / j16 target` | `0x7b` | `pc += off`；`jal16`(bit7=0) 置 `ra=pc+4`，`j16`(bit7=1) 置 `rd=x0` | **25 位有符号 off（±16MB）**：标准 J 型给 imm[20:1]（imm[10:1]=bits[30:21], imm[11]=bit20, imm[19:12]=bits[19:12], imm[20]=bit31）**外加** imm[24:21]=bits[11:8]，符号位 imm[24]=bit11 |
 | `ldmia/stmia {ra,s0-s11},(base)` | `0x0b` | 多寄存器 load/store，地址递增，base 不回写 | bit12: 0 ld / 1 st；base=bits[19:15]；寄存器存在位图：ra=bit7, s0=bit9, s1=bit10, s2..s11=bits21..30 |
@@ -95,3 +95,25 @@ cpu 0 entering scheduler
 - Rust 工具链是否需要实现 xlinx → [Rust 工具链是否需要 xlinx](../explanation/rust-toolchain-xlinx.md)
 - ROM 拦截机制与清单 → [ROM 桩目录](rom-stubs.md)
 - 更广的 ROM 数据墙边界 → [已知边界与非目标](../explanation/limitations.md)
+
+
+## WS53 SDIO 边界审计发现的立即数扩展修复
+
+2026-10-23 核对 WS53 ROM 时发现 `bgeui index,129` 的上界检查在模型中失效。
+旧解码统一符号扩展 imm8，使无符号128–255变成接近u32上界的值。
+SDK厂商汇编器在相同字节0x81下明确区分 `bgeui a1,129` 与
+`bgei a1,-127`；ROM的ADMA参数检查与公开头文件的129个描述符容量相符。
+修复后仅ltu/geu使用零扩展，signed/equality保持符号扩展。
+
+`scripts/ws53_branch_immediate_test.py` 在TCG上执行六种比较、各256个立即数及
+边界操作数，共16836项；旧版本1530项错误，修复后全部通过。它在纯RAM中构造
+测试函数及结果，不依赖SDK、ROM或板卡，已纳入完整WS53回归。
+
+可选的 `scripts/ws53_sdio_rom_contract.py --qemu /path/to/qemu-system-riscv32
+--rom /path/to/sdio-rom.bin` 验证已固定SHA256的本地ROM采集，选取两段无外部调用、
+仅相对分支的原始叶函数字节移至仿真RAM执行。101项ADMA描述符参数测试确认8字节
+步长、索引0–128、flags=0x21、零参数拒绝，以及32位长度截为16位（含65536变0）。
+6144项CMD53长度测试确认字节模式count0=512，块模式零乘积返回0xffffffff。
+这只证明原固件的软件行为；未模拟SDIO数据传输、停止/排空或真实电气状态。
+原ROM不随仓库分发，普通CI也不要求它。上述CPU修复由两个芯片家族共享，旧芯片
+11项qtest及完整WS53回归通过；未宣称所有历史厂商固件均已重跑。
