@@ -12,8 +12,8 @@ struct WS53WdtState {
     MemoryRegion mmio;
     QEMUTimer *timer;
     qemu_irq pending_irq, reset_request[1];
-    uint32_t load, control, latched, assumed_low_byte;
-    int64_t remaining_ns, deadline;
+    uint32_t load, control, latched, assumed_low_byte, snapshot_rearm_ns;
+    int64_t remaining_ns, deadline, snapshot_rearm_until;
     bool assume_timing, profile_diagnosed, locked, pending, second_stage;
     bool clock_on, stall_snapshot, snapshot_requested, snapshot_valid;
     bool reset_asserted, counting;
@@ -35,6 +35,11 @@ static bool ws53_wdt_timing(WS53WdtState *s)
         qemu_log_mask(LOG_GUEST_ERROR,
             "ws53-wdt: assumed timing low-byte=%u expiry=count+1 stage=reload clock=32000\n",
             s->assumed_low_byte);
+        if (s->snapshot_rearm_ns) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                "ws53-wdt: assumed snapshot rearm window=%uns; not exact silicon timing\n",
+                s->snapshot_rearm_ns);
+        }
         s->profile_diagnosed = true;
     }
     return true;
@@ -116,8 +121,10 @@ static uint64_t ws53_wdt_read(void *opaque, hwaddr off, unsigned size)
         case 0x14:
             if (!s->snapshot_valid) { break; }
             /* A-board observation: consuming CNT clears CCVR validity.
-             * The measured rearm gap is not modeled by this immediate profile. */
+             * Rearm duration is an explicit test parameter, not a fitted fact. */
             s->snapshot_valid = false;
+            s->snapshot_rearm_until = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                      s->snapshot_rearm_ns;
             return s->latched;
         case 0x18: return s->pending;
         case 0x1c: return s->pending && !(s->control & 0x40);
@@ -179,6 +186,11 @@ static void ws53_wdt_write(void *opaque, hwaddr off, uint64_t value, unsigned si
         if (v != 1) { goto invalid; }
         if (!ws53_wdt_timing(s)) { return; }
         s->snapshot_valid = false;
+        if (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->snapshot_rearm_until) {
+            /* A request lost during rearm is not queued for later completion. */
+            s->snapshot_requested = false;
+            return;
+        }
         s->snapshot_requested = true;
         ws53_wdt_snapshot(s);
         return;
@@ -223,6 +235,7 @@ static void ws53_wdt_reset(void *opaque)
     s->locked = true;
     s->pending = s->second_stage = s->counting = s->reset_asserted = false;
     s->snapshot_requested = s->snapshot_valid = false;
+    s->snapshot_rearm_until = 0;
     ws53_wdt_irq(s);
     qemu_set_irq(s->reset_request[0], 0);
 }
@@ -241,6 +254,7 @@ static void ws53_wdt_realize(DeviceState *dev, Error **errp)
 static const Property ws53_wdt_properties[] = {
     DEFINE_PROP_BOOL("assume-timing", WS53WdtState, assume_timing, false),
     DEFINE_PROP_UINT32("assumed-load-low-byte", WS53WdtState, assumed_low_byte, 255),
+    DEFINE_PROP_UINT32("snapshot-rearm-ns", WS53WdtState, snapshot_rearm_ns, 0),
 };
 
 static void ws53_wdt_init(Object *obj)

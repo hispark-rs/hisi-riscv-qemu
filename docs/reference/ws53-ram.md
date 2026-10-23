@@ -264,8 +264,13 @@ cause: after reading CNT, immediately repeating a request fails even without
 feed/start/stop. Offsets0/16us fail and32/64/200us succeed in this measured setup;
 waiting200us after the preceding read avoids those failures. BUSY stays0, so it
 does not expose this rearm window. The model now clears CCVR validity on a CNT
-read, matching the observed side effect, but still does not model the rearm gap
-or prove count freshness across a pending reload. Source evidence:
+read, matching the observed side effect. Optional `snapshot-rearm-ns` (default0)
+adds a virtual-time request exclusion window after that read: requests during
+the window are lost, not deferred, and feed does not clear it. Reset clears the
+window. Tests sweep1/31250/62500ns; the shared Rust/HIL runner uses62500ns as a
+stress parameter, not measured silicon latency. A diagnostic identifies this
+assumption. This does not model stale count freshness across a pending reload,
+BUSY, or the window's behavior during low-power/clock gating. Source evidence:
 `hisi-registers/evidence/ws53-wdt-rearm-hil.json`.
 
 `ws53-wdt` at `0x5702b000` implements 32-bit command/status views from RDL

@@ -75,6 +75,27 @@ def wdt_test(qemu):
         "ws53-wdt: unimplemented read +0xc size=4",
         "ws53-wdt: unimplemented read +0x14 size=4", *([UNKNOWN] * 3)], diagnostics
 
+    # Lost requests must not spontaneously complete once the test window ends.
+    # Parameter sweep, not a claim of exact measured silicon rearm duration.
+    for gap in (1, 31250, 62500):
+        options=profile(255)+('-global',f'ws53-wdt.snapshot-rearm-ns={gap}')
+        with running(qemu, False, options) as (command, irq, reset, diagnostics):
+            read, write, sample, step, _, start = access(command)
+            start()
+            sample()
+            write(8, KEY)  # A feed must not erase the previous CNT read's window.
+            write(0x28, 1)
+            assert read(0x28) == 0
+            if gap > 1:
+                step(gap-1)
+            assert read(0x28) == 0
+            step(1); assert read(0x28) == 0
+            sample()  # Only a fresh request after the window is accepted.
+            reset()
+            start(); sample()  # Reset clears the window as well as the latch.
+        assert diagnostics[0].splitlines() == [notice(255),
+            f'ws53-wdt: assumed snapshot rearm window={gap}ns; not exact silicon timing'], diagnostics
+
     # Test both extreme low-byte assumptions. This is a parameter sweep, not
     # evidence that either value describes the actual silicon.
     for low in (0, 255):
@@ -234,11 +255,13 @@ def wdt_test(qemu):
     assert all(line.startswith("ws53-wdt: unimplemented") for line in lines[1:]), diagnostics
     return {"hardware_verified": False, "counting_requires_explicit_assumption": True,
             "assumed_low_bytes_tested": [0, 255], "clock_hz": 32000,
+            "assumed_snapshot_rearm_ns_tested": [1, 31250, 62500],
             "invalid_accesses_diagnosed": len(invalid), "locked_writes_diagnosed": 4,
             "invalid_low_byte_property_rejected": True,
             "pending_eoi_rejections": 2,
             "checks": ["default profile rejects counting", "count/latch/reload", "valid zero",
                        "fractional clock gating", "snapshot stall/recovery", "stop/restart",
+                       "rearm-window request lost until explicitly retried", "reset clears rearm window",
                        "first/second expiry modes", "feed versus EOI", "mask/raw status",
                        "NMI source 1 wiring", "reset request and recovery", "32-bit maximum",
                        "invalid access preserves state", "reset retains external input levels"],
