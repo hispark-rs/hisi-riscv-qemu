@@ -249,6 +249,16 @@ physical recovery are not implemented or certified by this model.
 
 ## Watchdog command and assumed-timing model
 
+**Known hardware divergence (A-board RAM observations, 2026-10-24):** immediate
+snapshots after start/feed/stop can time out, and an initial sample can reflect
+the previous LOAD configuration. The current immediate model does not reproduce
+this command-completion ordering. A diagnostic that waits200us after each such
+command passes three hardware runs, but neither the minimum delay nor a general
+synchronization protocol is established. Do not use an immediate-profile test
+pass as proof of silicon snapshot freshness. NMI/expiry/reset remain unqualified.
+The source evidence is `hisi-registers/evidence/ws53-wdt-command-hil.json`; no
+fitted command latency has been added to the model.
+
 `ws53-wdt` at `0x5702b000` implements 32-bit command/status views from RDL
 4939cd2. `scripts/ws53_wdt_test.py` is included in the normal model regression.
 Unlock/restart use `0x5a5a5a5a`; EOI consumes a read and never infers an independent
