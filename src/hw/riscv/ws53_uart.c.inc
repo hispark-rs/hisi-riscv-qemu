@@ -2,7 +2,8 @@
  * Default TX delivery is immediate. An opt-in MDMA profile adds FIFO64 and a
  * timed serializer with byte requests. A separate opt-in8N1 TX pad profile
  * derives bit time from divisors at an assumed32MHz. No analog timing,
- * RX pad decoding, bridge byte-lane or hardware flow-control claim.
+ * bridge byte-lane or hardware flow-control claim. A separate RX8N1 profile
+ * adds digital center sampling with explicitly unqualified physical timing.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #define TYPE_WS53_UART "ws53-uart"
@@ -31,9 +32,14 @@ struct WS53UartState {
     bool pad_profile, pad_frame;
     unsigned pad_phase;
     uint64_t pad_bit_ns;
+    bool pad_rx_profile, pad_rx_level, pad_rx_enabled, pad_rx_active;
+    QEMUTimer *pad_rx_timer;
+    unsigned pad_rx_phase;
+    uint8_t pad_rx_byte;
+    uint64_t pad_rx_bit_ns, pad_rx_frames, pad_rx_aborted;
 };
 
-/* TX-only wire profile: confirmed 8N1 pad routes, assumed stable32MHz input.
+/* Wire profiles share divisor arithmetic at an assumed stable32MHz input.
  * Other formats still use the existing internal-loopback profile. */
 static uint64_t ws53_uart_pad_bit_ns(WS53UartState *s)
 {
@@ -126,6 +132,57 @@ static void ws53_uart_push(WS53UartState *s, uint8_t value, uint8_t errors)
     ws53_uart_rx_activity(s);
 }
 
+static void ws53_uart_pad_rx_abort(WS53UartState *s)
+{
+    if (s->pad_rx_active) { s->pad_rx_aborted++; }
+    s->pad_rx_active = false;
+    timer_del(s->pad_rx_timer);
+}
+static void ws53_uart_pad_rx_sample(void *opaque)
+{
+    WS53UartState *s = opaque;
+    if (!s->pad_rx_phase) {
+        if (s->pad_rx_level) { ws53_uart_pad_rx_abort(s); return; }
+    } else if (s->pad_rx_phase <= 8) {
+        s->pad_rx_byte |= s->pad_rx_level << (s->pad_rx_phase - 1);
+    } else {
+        s->pad_rx_active = false;
+        s->pad_rx_frames++;
+        /* Existing SDK LSR encoding: bit2 framing error, cleared on LSR read.
+         * Break detection and receiver oversampling/hysteresis remain unmodeled. */
+        ws53_uart_push(s, s->pad_rx_byte, s->pad_rx_level ? 0 : 4);
+        return;
+    }
+    s->pad_rx_phase++;
+    timer_mod(s->pad_rx_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->pad_rx_bit_ns);
+}
+static void ws53_uart_pad_rx_level(void *opaque, int n, int level)
+{
+    WS53UartState *s = opaque;
+    bool falling = s->pad_rx_level && !level;
+    s->pad_rx_level = level != 0;
+    if (!s->pad_rx_profile || !s->pad_rx_enabled || !falling ||
+        s->pad_rx_active || s->soft_reset_asserted || !s->clock_on || (s->modem & 2)) { return; }
+    uint64_t bit_ns = ws53_uart_pad_bit_ns(s);
+    if (s->control != 0x0c || !bit_ns) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: RX pad profile requires8N1 and nonzero divisor\n");
+        return;
+    }
+    s->pad_rx_active = true;
+    s->pad_rx_phase = 0;
+    s->pad_rx_byte = 0;
+    s->pad_rx_bit_ns = bit_ns;
+    timer_mod(s->pad_rx_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + DIV_ROUND_UP(bit_ns, 2));
+}
+static void ws53_uart_pad_rx_enable(void *opaque, int n, int level)
+{
+    WS53UartState *s = opaque;
+    s->pad_rx_enabled = level != 0;
+    /* Selection changes abort a partial frame. Enabling a low line is not a
+     * new start edge; a valid high-to-low transition is required afterwards. */
+    if (!level) { ws53_uart_pad_rx_abort(s); }
+}
+
 static void ws53_uart_tx_resume(WS53UartState *s)
 {
     if (s->soft_reset_asserted || !s->dma_profile || !s->clock_on || s->tx_stall) { return; }
@@ -203,6 +260,7 @@ static void ws53_uart_tx_gate(void *opaque, int n, int level)
         timer_del(s->tx_timer);
     }
     if (n == 0) { s->clock_on = !!level; } else { s->tx_stall = !!level; }
+    if (n == 0 && !level) { ws53_uart_pad_rx_abort(s); }
     ws53_uart_tx_resume(s); ws53_uart_irq_update(s);
 }
 
@@ -280,6 +338,11 @@ static void ws53_uart_write(void *opaque, hwaddr off, uint64_t value, unsigned s
     if (s->pad_profile && s->tx_active && (off == 0x08 || off == 0x0c || off == 0x10 ||
                         off == 0x14 || off == 0x2c || off == 0x58)) {
         qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: live TX pad format change is unqualified\n");
+        return;
+    }
+    if (s->pad_rx_active && (off == 0x08 || off == 0x0c || off == 0x10 ||
+                            off == 0x14 || off == 0x2c || off == 0x58)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: live RX pad format change is unqualified\n");
         return;
     }
     switch (off) {
@@ -368,13 +431,15 @@ static const MemoryRegionOps ws53_uart_ops = {
 static int ws53_uart_can_receive(void *opaque)
 {
     WS53UartState *s = opaque;
-    return s->soft_reset_asserted ? 0 : ws53_uart_capacity(s) - s->count;
+    /* Wire-profile input must traverse pad selection, not the logical byte
+     * backend. A serial virtual peer may drive that pad separately. */
+    return s->soft_reset_asserted || s->pad_rx_profile ? 0 : ws53_uart_capacity(s) - s->count;
 }
 
 static void ws53_uart_receive(void *opaque, const uint8_t *buf, int size)
 {
     WS53UartState *s = opaque;
-    if (s->soft_reset_asserted) { return; }
+    if (s->soft_reset_asserted || s->pad_rx_profile) { return; }
     for (int i = 0; i < size; i++) {
         ws53_uart_push(s, buf[i], 0);
     }
@@ -386,6 +451,8 @@ static void ws53_uart_reset(void *opaque)
     s->soft_reset_asserted = false;
     timer_del(s->timeout);
     timer_del(s->tx_timer);
+    ws53_uart_pad_rx_abort(s);
+    s->pad_rx_frames = s->pad_rx_aborted = 0;
     s->tx_head = s->tx_count = 0;
     s->tx_active = s->tx_halt = false; s->transmitted = 0;
     s->head = s->count = 0;
@@ -415,6 +482,7 @@ static void ws53_uart_soft_reset_n(void *opaque, int n, int level)
          * model assumptions; the board fixture tested queued clean RX only. */
         timer_del(s->timeout);
         timer_del(s->tx_timer);
+        ws53_uart_pad_rx_abort(s);
         s->tx_head = s->tx_count = s->head = s->count = 0;
         s->tx_active = s->tx_halt = s->overrun = s->timed_out = false;
         s->control = s->div_h = s->div_l = s->div_fra = 0;
@@ -445,10 +513,16 @@ static void ws53_uart_realize(DeviceState *dev, Error **errp)
         if (!s->dma_profile) {
             error_setg(errp, "ws53-uart: TX pad profile requires timed serializer profile"); return;
         }
-        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: TX pad8N1 profile assumes stable32MHz; RX pads unmodeled\n");
+        qemu_log_mask(LOG_GUEST_ERROR, s->pad_rx_profile ?
+            "ws53-uart: TX pad8N1 profile assumes stable32MHz; RX separate profile\n" :
+            "ws53-uart: TX pad8N1 profile assumes stable32MHz; RX pads unmodeled\n");
+    }
+    if (s->pad_rx_profile) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: RX pad8N1 center sampling assumes stable32MHz; physical timing unqualified\n");
     }
     s->timeout = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_uart_timeout, s);
     s->tx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_uart_tx_complete, s);
+    s->pad_rx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_uart_pad_rx_sample, s);
     qemu_chr_fe_set_handlers(&s->chr, ws53_uart_can_receive, ws53_uart_receive,
                             NULL, NULL, s, NULL, true);
     qemu_register_reset(ws53_uart_reset, s);
@@ -459,6 +533,7 @@ static const Property ws53_uart_properties[] = {
     DEFINE_PROP_UINT64("rx-timeout-ns", WS53UartState, rx_timeout_ns, 0),
     DEFINE_PROP_BOOL("assume-dma-profile", WS53UartState, dma_profile, false),
     DEFINE_PROP_BOOL("assume-pad-tx", WS53UartState, pad_profile, false),
+    DEFINE_PROP_BOOL("assume-pad-rx", WS53UartState, pad_rx_profile, false),
     DEFINE_PROP_BOOL("div-l-read-requires-enable", WS53UartState, div_l_read_requires_enable, false),
     DEFINE_PROP_UINT64("char-ns", WS53UartState, char_ns, 10000),
 };
@@ -477,7 +552,11 @@ static void ws53_uart_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_tx_gate, "clock", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_tx_stall, "tx-stall", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_soft_reset_n, "soft-reset-n", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_pad_rx_level, "pad-rx-level", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_pad_rx_enable, "pad-rx-enable", 1);
     object_property_add_uint64_ptr(obj, "transmitted", &s->transmitted, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "pad-rx-frames", &s->pad_rx_frames, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "pad-rx-aborted", &s->pad_rx_aborted, OBJ_PROP_FLAG_READ);
 }
 
 static void ws53_uart_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)

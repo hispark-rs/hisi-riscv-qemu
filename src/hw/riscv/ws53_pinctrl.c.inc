@@ -47,6 +47,9 @@ struct WS53PinctrlState {
     bool uart_level[3], uart_drive[3];
     uint8_t uart_byte[3];
     uint64_t uart_frame_pads[3], uart_bytes[48], uart_hash[48];
+    bool uart_rx_profile, uart_rx_ambiguous[3];
+    int uart_rx_selected[3];
+    qemu_irq uart_rx_level[3], uart_rx_enable[3];
     qemu_irq gpio_in[48], level[48], drive[48], floating[48], contention[48];
 };
 
@@ -57,10 +60,47 @@ static int ws53_pad_uart_tx(unsigned id, unsigned mode)
     if (id == 33 && mode == 1) { return 2; }
     return -1;
 }
-static bool ws53_pad_uart_rx(unsigned id, unsigned mode)
+static int ws53_pad_uart_rx_port(unsigned id, unsigned mode)
 {
-    return (id == 36 && mode == 2) || (id == 18 && mode == 2) ||
-           (id == 9 && mode == 1) || (id == 34 && mode == 1);
+    if (id == 36 && mode == 2) { return 0; }
+    if ((id == 18 && mode == 2) || (id == 9 && mode == 1)) { return 1; }
+    if (id == 34 && mode == 1) { return 2; }
+    return -1;
+}
+
+/* Multi-selected RX semantics are not evidenced. Fail closed instead of
+ * inventing an OR, AND, priority mux or last-writer selection. */
+static void ws53_pad_uart_rx_update(WS53PinctrlState *s)
+{
+    if (!s->uart_rx_profile) { return; }
+    for (unsigned port = 0; port < 3; port++) {
+        int selected = -1;
+        unsigned count = 0;
+        for (unsigned i = 0; i < ARRAY_SIZE(ws53_pad_desc); i++) {
+            unsigned id = ws53_pad_desc[i].id;
+            if ((s->config[id] & 4) && ws53_pad_uart_rx_port(id, s->mode[id]) == port) {
+                selected = id; count++;
+            }
+        }
+        bool ambiguous = count > 1;
+        if (ambiguous && !s->uart_rx_ambiguous[port]) {
+            qemu_log_mask(LOG_GUEST_ERROR, "ws53-pinctrl: UART%u multiple RX pads are unqualified; input disconnected\n", port);
+        }
+        s->uart_rx_ambiguous[port] = ambiguous;
+        if (ambiguous) { selected = -1; }
+        bool high = true;
+        if (selected >= 0) {
+            unsigned pull = (s->config[selected] >> 3) & 3;
+            if (!s->external_drive[selected] && !pull) { selected = -1; }
+            else { high = s->external_drive[selected] ? s->external_level[selected] : pull == 1; }
+        }
+        if (selected != s->uart_rx_selected[port]) {
+            qemu_set_irq(s->uart_rx_enable[port], 0);
+            s->uart_rx_selected[port] = selected;
+        }
+        qemu_set_irq(s->uart_rx_level[port], high);
+        qemu_set_irq(s->uart_rx_enable[port], selected >= 0);
+    }
 }
 
 /* WS53 hardware guide pin-function table: PWM0P on MGPIO10 mode4,
@@ -112,6 +152,7 @@ static void ws53_pad_update(WS53PinctrlState *s, const WS53PadDesc *d)
         s->delivered[n] = input;
         qemu_set_irq(s->gpio_in[n], input);
     }
+    ws53_pad_uart_rx_update(s);
 }
 
 static void ws53_pad_signal(WS53PinctrlState *s, bool *values, int n, int level)
@@ -243,7 +284,8 @@ static void ws53_pinctrl_write(void *opaque, hwaddr off, uint64_t value, unsigne
             ws53_pad_update(s, d);
             if (value && !ws53_pad_pwm0(d->id, value) &&
                 !(s->uart_tx_profile && (ws53_pad_uart_tx(d->id, value) >= 0 ||
-                                         ws53_pad_uart_rx(d->id, value)))) {
+                                         ws53_pad_uart_rx_port(d->id, value) >= 0)) &&
+                !(s->uart_rx_profile && ws53_pad_uart_rx_port(d->id, value) >= 0)) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                     "ws53-pinctrl: unimplemented alternate peripheral route pad %u mode %u\n",
                     d->id, (unsigned)value);
@@ -262,6 +304,12 @@ static const MemoryRegionOps ws53_pinctrl_ops = {
 static void ws53_pinctrl_reset(void *opaque)
 {
     WS53PinctrlState *s = opaque;
+    memset(s->mode, 0, sizeof(s->mode));
+    for (unsigned port = 0; port < 3; port++) {
+        s->uart_rx_selected[port] = -1;
+        s->uart_rx_ambiguous[port] = false;
+        qemu_set_irq(s->uart_rx_enable[port], 0);
+    }
     for (unsigned i = 0; i < ARRAY_SIZE(ws53_pad_desc); i++) {
         const WS53PadDesc *d = &ws53_pad_desc[i];
         /* RAM boot profile, NOT asserted silicon reset values. Keep external
@@ -303,6 +351,8 @@ static void ws53_pinctrl_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(obj), s->drive, "drive-enable", 48);
     qdev_init_gpio_out_named(DEVICE(obj), s->floating, "floating", 48);
     qdev_init_gpio_out_named(DEVICE(obj), s->contention, "contention", 48);
+    qdev_init_gpio_out_named(DEVICE(obj), s->uart_rx_level, "uart-rx-level", 3);
+    qdev_init_gpio_out_named(DEVICE(obj), s->uart_rx_enable, "uart-rx-enable", 3);
     for (unsigned id = 0; id < 48; id++) {
         g_autofree char *count = g_strdup_printf("uart-tx-bytes-%u", id);
         g_autofree char *hash = g_strdup_printf("uart-tx-hash-%u", id);
@@ -313,6 +363,7 @@ static void ws53_pinctrl_init(Object *obj)
 }
 static const Property ws53_pinctrl_properties[] = {
     DEFINE_PROP_BOOL("assume-uart-tx", WS53PinctrlState, uart_tx_profile, false),
+    DEFINE_PROP_BOOL("assume-uart-rx", WS53PinctrlState, uart_rx_profile, false),
     DEFINE_PROP_BOOL("uart-console-profile", WS53PinctrlState, uart_console_profile, false),
 };
 static void ws53_pinctrl_realize(DeviceState *dev, Error **errp)

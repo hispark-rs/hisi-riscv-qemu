@@ -125,7 +125,8 @@ ws63-qemu/
 
 显式开启 `ws53-uart.assume-pad-tx=on`、`ws53-uart.assume-dma-profile=on`
 和 `ws53-pinctrl.assume-uart-tx=on`，8N1 字节按分频寄存器及假设32MHz时钟
-输出逐位电平。仅 TX 已建模；其他外部帧格式及发送中改格式明确报错。既有
+输出逐位电平。该开关只启用TX；RX由下方独立开关启用。其他外部帧格式及
+发送中改格式明确报错。既有
 内部回环继续使用独立的 `char-ns` 时序假设，默认行为保持。非零分频、精确
 时钟来源、模拟边沿和负载仍不能由模型证明。
 
@@ -134,7 +135,7 @@ L0/AGPIO1(mode1)。各 pad 独立选择信号，允许 H0 同时驱动两个已�
 对应 `hisi-registers` 的 `ws53-uart-pad-route-hil.json` 三轮实测。pad 的
 `uart-tx-bytes-N` 与 `uart-tx-hash-N` QOM属性记录整帧期间连接有效的虚拟对端
 字节数/FNV1a64；中途切换、复位或数字争用的帧不计成功。GPIO数字争用仍可
-单独观测，不能据此推断电流。RX mux可配置/读回，但没有RX串行采样模型。
+单独观测，不能据此推断电流。TX场景不会自动开启RX串行采样模型。
 
 `ws53-pinctrl.uart-console-profile=on` 是明确的 RAM 继承配置：M17/M18 mode2、
 AG1/AG2 mode1，其余 mode0；不是芯片复位默认值。用于主工程的
@@ -144,3 +145,30 @@ AG1/AG2 mode1，其余 mode0；不是芯片复位默认值。用于主工程的
 `uv run --script scripts/ws53_uart_pads_test.py --qemu <qemu-system-riscv32>`
 覆盖逐位数据/停止位、双pad输出、复用切换、内部回环隔离、暂停、复位、争用
 及不支持配置；已接入 `test-ws53.py`。原有 H1/H0/L0 复位和UART DMA模型独立。
+
+### WS53 UART RX 数字输入模型
+
+`ws53-uart.assume-pad-rx=on` 与 `ws53-pinctrl.assume-uart-rx=on` 显式启用
+8N1接收器。按分频寄存器及假设32MHz时钟，在起始位中心检查低电平、随后逐位
+采样数据和停止位。正常/帧错误数据送入原有FIFO、LSR、IRQ和DMA请求路径，
+不增加绕过寄存器行为的“成功”返回。起始毛刺、输入使能/复用断开、
+无pull时外部驱动丢失、时钟丢失及复位取消未完成帧；有pull维持电平时继续
+数字采样。这些取消策略属于模型约定，尚无相应电气实测。
+
+RX路由为UART0/AGPIO4(mode2)、UART1/MGPIO18(mode2)或MGPIO9(mode1)、
+UART2/AGPIO2(mode1)。要求输入缓冲使能，且外部驱动或内部pull建立数字电平；
+悬空pad不凭数字默认零制造输入字节。UART1同时选中两个RX pad时，输出明确
+诊断并断开输入，既不猜测OR/AND，也不假设优先级。恢复单一路由后需要新的
+有效起始边沿。内部回环期间外部pad输入被隔离。
+
+开启RX模型会禁止原字符后端直接向FIFO注入字节，测试须通过
+`/machine/pinctrl` 的 `external-level` / `external-drive` 数字输入驱动实际pad。
+宿主字节到数字波形的虚拟串口对端及RAM实板同镜像RX流程尚待接入；不能把
+旧逻辑字节注入的回归当作RX引脚验证。RX默认关闭，旧场景保持兼容。
+
+`uv run --script scripts/ws53_uart_rx_pads_test.py --qemu <qemu-system-riscv32>`
+覆盖四组路由各256字节、数据IRQ及屏蔽恢复、帧错误读清、FIFO满/溢出、起始
+毛刺、复用/输入/驱动断开、内部回环隔离、时钟/复位恢复、双RX歧义、非法帧
+格式、接收中改分频拒绝及禁止后端旁路；纳入完整 `test-ws53.py`。
+`pad-rx-frames` / `pad-rx-aborted` 为只读QOM统计。没有RX电气、过采样抗扰、
+Break、其他帧格式或精准分数分频调制的验收结论。

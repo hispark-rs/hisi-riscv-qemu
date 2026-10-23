@@ -355,6 +355,10 @@ static void ws53_init(MachineState *machine)
             qdev_get_gpio_in_named(pinctrl, "uart-tx-drive", i));
         qdev_connect_gpio_out_named(uarts[i], "pad-tx-frame", 0,
             qdev_get_gpio_in_named(pinctrl, "uart-tx-frame", i));
+        qdev_connect_gpio_out_named(pinctrl, "uart-rx-level", i,
+            qdev_get_gpio_in_named(uarts[i], "pad-rx-level", 0));
+        qdev_connect_gpio_out_named(pinctrl, "uart-rx-enable", i,
+            qdev_get_gpio_in_named(uarts[i], "pad-rx-enable", 0));
     }
     qdev_connect_gpio_out_named(pwm, "out", 0,
         qdev_get_gpio_in_named(pinctrl, "pwm0-level", 0));
