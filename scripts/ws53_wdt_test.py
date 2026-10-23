@@ -34,7 +34,9 @@ def access(command):
     def sample():
         write(0x28, 1)
         assert read(0x28) == 2
-        return read(0x14)
+        count = read(0x14)
+        assert read(0x28) == 0  # CNT consumption clears validity on silicon.
+        return count
     def step(ns):
         command(f"clock_step {ns}")
     def input_(name, high):
@@ -95,8 +97,11 @@ def wdt_test(qemu):
             assert sample() == count - 1  # fractional clock phase survived gating
             write(8, KEY)
             assert sample() == count
+            write(0x28, 1)
+            assert read(0x28) == 2
             step(2 * TICK)
             assert read(0x14) == count  # snapshot must not become a live counter
+            assert read(0x28) == 0
             assert sample() == count - 2
             input_("stall-snapshot", True)
             write(0x28, 1)
@@ -210,14 +215,17 @@ def wdt_test(qemu):
         write(8, KEY)
         assert sample() == 256
         for operation in invalid:
+            write(0x28, 1)
             command(operation)
             assert read(0) == read(0x10) == read(0x18) == 0
             assert read(4) == 0x100 and read(0x28) == 2 and read(0x14) == 256
+        write(0x28, 1)
         write(0, 0)  # lock status is not a key readback
         assert read(0) == 1
         for off, value in ((4, 0x200), (8, KEY), (0x10, 0xbd), (0x28, 1)):
             write(off, value)
-            assert read(4) == 0x100 and read(0x10) == 0 and read(0x14) == 256
+            assert read(4) == 0x100 and read(0x10) == 0 and read(0x28) == 2
+        assert read(0x14) == 256 and read(0x28) == 0
         write(0, KEY)
         write(0x10, 0xbd)
         assert sample() == 256

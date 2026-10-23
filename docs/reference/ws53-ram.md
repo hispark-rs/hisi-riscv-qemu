@@ -259,11 +259,21 @@ pass as proof of silicon snapshot freshness. NMI/expiry/reset remain unqualified
 The source evidence is `hisi-registers/evidence/ws53-wdt-command-hil.json`; no
 fitted command latency has been added to the model.
 
+Further three-run,40-case controls isolate CNT consumption as an independent
+cause: after reading CNT, immediately repeating a request fails even without
+feed/start/stop. Offsets0/16us fail and32/64/200us succeed in this measured setup;
+waiting200us after the preceding read avoids those failures. BUSY stays0, so it
+does not expose this rearm window. The model now clears CCVR validity on a CNT
+read, matching the observed side effect, but still does not model the rearm gap
+or prove count freshness across a pending reload. Source evidence:
+`hisi-registers/evidence/ws53-wdt-rearm-hil.json`.
+
 `ws53-wdt` at `0x5702b000` implements 32-bit command/status views from RDL
 4939cd2. `scripts/ws53_wdt_test.py` is included in the normal model regression.
 Unlock/restart use `0x5a5a5a5a`; EOI consumes a read and never infers an independent
 write-clear effect. Raw status survives masking and feeding. Snapshot requests
-clear validity until completion, and counter reads consume the captured value,
+clear validity until completion, and counter reads consume the captured value
+and clear validity,
 not a continuously changing counter. The WDT output connects to NMI source bit1.
 
 The SDK does **not** establish the initial low counter byte, zero-expiry edge,

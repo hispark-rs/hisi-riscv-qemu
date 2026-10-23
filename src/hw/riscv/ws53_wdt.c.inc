@@ -115,6 +115,9 @@ static uint64_t ws53_wdt_read(void *opaque, hwaddr off, unsigned size)
         case 0x10: return s->control;
         case 0x14:
             if (!s->snapshot_valid) { break; }
+            /* A-board observation: consuming CNT clears CCVR validity.
+             * The measured rearm gap is not modeled by this immediate profile. */
+            s->snapshot_valid = false;
             return s->latched;
         case 0x18: return s->pending;
         case 0x1c: return s->pending && !(s->control & 0x40);
