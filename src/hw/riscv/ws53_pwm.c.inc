@@ -1,11 +1,12 @@
 /* WS53 PWM v151, SDK163d9150/RDL f188fd4. Explicit assumed digital profile:
- * 32MHz low16 counters, clear-start commits now, other commits at block end.
+ * Configurable effective counter rate, low16 counters, immediate/deferred commit.
+ * 32MHz is the SDK report; A-board bounded RAM handoff measures 2MHz.
+ * The upstream source/divider relationship remains unmodeled.
  * These are channel outputs, not an invented physical pinmux/electrical model.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #define TYPE_WS53_PWM "ws53-pwm"
 OBJECT_DECLARE_SIMPLE_TYPE(WS53PwmState, WS53_PWM)
-#define WS53_PWM_HZ 32000000ULL
 #define WS53_PWM_SECOND 1000000000ULL
 enum { PW_EN, PW_POL, PW_OE, PW_OFFSET_L, PW_OFFSET_H, PW_FREQ_L,
        PW_FREQ_H, PW_DUTY_L, PW_DUTY_H, PW_FLAG, PW_CYCLES, PW_COUNT };
@@ -24,6 +25,7 @@ struct WS53PwmState {
     uint8_t select[4], clear[4], event_enable;
     uint16_t group_errors, count_errors, gate, div, latched_div;
     bool assume_timing, diagnosed, external_clock;
+    uint64_t counter_hz;
 };
 
 static bool ws53_pwm_clocked(WS53PwmState *s)
@@ -55,7 +57,8 @@ static bool ws53_pwm_profile(WS53PwmState *s)
     }
     if (!s->diagnosed) {
         qemu_log_mask(LOG_GUEST_ERROR,
-            "ws53-pwm: assumed timing clock=32000000 width=16 clear=immediate deferred=block-end\n");
+            "ws53-pwm: assumed timing clock=%" PRIu64 " width=16 clear=immediate deferred=block-end\n",
+            s->counter_hz);
         s->diagnosed = true;
     }
     return true;
@@ -75,8 +78,8 @@ static void ws53_pwm_sync(WS53PwmState *s)
         uint64_t elapsed = now - c->last_ns;
         c->last_ns = now;
         if (!c->running || !ws53_pwm_clocked(s)) { continue; }
-        uint64_t part = (elapsed % WS53_PWM_SECOND) * WS53_PWM_HZ + c->fraction;
-        uint64_t ticks = (elapsed / WS53_PWM_SECOND) * WS53_PWM_HZ + part / WS53_PWM_SECOND;
+        uint64_t part = (elapsed % WS53_PWM_SECOND) * s->counter_hz + c->fraction;
+        uint64_t ticks = (elapsed / WS53_PWM_SECOND) * s->counter_hz + part / WS53_PWM_SECOND;
         c->fraction = part % WS53_PWM_SECOND;
         while (c->running && ticks) {
             uint64_t period = c->active[PW_FREQ_L];
@@ -123,7 +126,7 @@ static void ws53_pwm_arm(WS53PwmState *s)
         if (c->phase < start) { edge = start; }
         else if (c->phase < end) { edge = end; }
         uint64_t numerator = (edge - c->phase) * WS53_PWM_SECOND - c->fraction;
-        next = MIN(next, (numerator + WS53_PWM_HZ - 1) / WS53_PWM_HZ);
+        next = MIN(next, (numerator + s->counter_hz - 1) / s->counter_hz);
     }
     if (next != UINT64_MAX) {
         timer_mod(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + next);
@@ -269,10 +272,16 @@ static void ws53_pwm_reset(void *opaque)
 }
 static void ws53_pwm_realize(DeviceState *dev, Error **errp)
 {
-    qemu_register_reset(ws53_pwm_reset, WS53_PWM(dev));
+    WS53PwmState *s = WS53_PWM(dev);
+    if (s->counter_hz != 2000000 && s->counter_hz != 32000000) {
+        error_setg(errp, "ws53-pwm: counter-hz must select the 2MHz HIL or 32MHz SDK profile");
+        return;
+    }
+    qemu_register_reset(ws53_pwm_reset, s);
 }
 static const Property ws53_pwm_properties[] = {
     DEFINE_PROP_BOOL("assume-timing", WS53PwmState, assume_timing, false),
+    DEFINE_PROP_UINT64("counter-hz", WS53PwmState, counter_hz, 32000000),
 };
 static void ws53_pwm_init(Object *obj)
 {

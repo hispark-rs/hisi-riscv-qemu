@@ -992,3 +992,26 @@ empty/invalid ranges and recovery. They check guarded output, exact access count
 and upper control bits; no programming path is exposed by that HAL. Shared boot/
 security/control-core ownership, identity schemas and physical read timing remain
 unverified; no real eFuse was accessed or programmed.
+
+### PWM0P pad routing and explicit counter frequency (2026-10-23)
+
+PWM channel0 now drives the pinctrl resolver at documented PWM0P routes:
+MGPIO10/mode4, SDK47 (MGPIO21/SGPIO2)/mode1, AGPIO2/mode2. Input-buffer enable
+remains independent of peripheral output; switching back to GPIO disconnects
+PWM. Other alternate signals remain diagnosed rather than invented.
+
+`-global ws53-pwm.assume-timing=on` still explicitly opts into the digital timing
+model. `-global ws53-pwm.counter-hz=2000000` selects the effective rate observed
+in A-board bounded RAM takeover: divider16, period200, about100us. The default
+32000000 retains the previous SDK-reported assumption for existing tests.
+Only these two profiles are accepted; neither models the unknown upstream
+clock tree. No hardware claim is made for32MHz, all channels, finite/IRQ timing,
+analog drive, or the two untested physical aliases.
+
+`scripts/ws53_pwm_pad_test.py` and the full WS53 suite test both profiles,
+25/50/75% and constant duty endpoints, all three source-defined aliases,
+input-buffer independence, GPIO disconnection, stop-low and reset. Four invalid
+frequencies are rejected at realize. The integration `pwm0-smoke` fixture uses
+2MHz explicitly for its same-ELF comparison; its first160kHz expectation failed
+on silicon and remains in the evidence. A match with the measured profile does
+not establish the upstream clock handoff or fix the missing clock-tree support.

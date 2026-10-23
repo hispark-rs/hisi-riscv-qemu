@@ -42,8 +42,18 @@ struct WS53PinctrlState {
     uint8_t mode[48], config[48];
     bool external_level[48], external_drive[48], gpio_out[48], gpio_oe[48];
     bool delivered[48];
+    bool pwm0_level, pwm0_drive;
     qemu_irq gpio_in[48], level[48], drive[48], floating[48], contention[48];
 };
+
+/* WS53 hardware guide pin-function table: PWM0P on MGPIO10 mode4,
+ * MGPIO21/SGPIO2 mode1, AGPIO2 mode2. SDK PWM sample uses pin47/mode1/ch0.
+ * Other PWM channels and alternate peripheral routes remain unimplemented. */
+static bool ws53_pad_pwm0(unsigned id, unsigned mode)
+{
+    return (id == 10 && mode == 4) || (id == 47 && mode == 1) ||
+           (id == 34 && mode == 2);
+}
 
 static const WS53PadDesc *ws53_pad_id(unsigned id)
 {
@@ -57,14 +67,17 @@ static void ws53_pad_update(WS53PinctrlState *s, const WS53PadDesc *d)
 {
     unsigned n = d->id, pull = (s->config[n] >> 3) & 3;
     bool gpio = d->bank != 255 && s->mode[n] == 0;
-    bool driving = gpio && s->gpio_oe[n];
+    bool pwm = ws53_pad_pwm0(n, s->mode[n]);
+    bool driving = (gpio && s->gpio_oe[n]) || (pwm && s->pwm0_drive);
+    bool driven_level = pwm ? s->pwm0_level : s->gpio_out[n];
     bool floating = !driving && !s->external_drive[n] && pull == 0;
     bool conflict = driving && s->external_drive[n] &&
-                    s->gpio_out[n] != s->external_level[n];
-    /* Deterministic digital resolution: active GPIO wins a conflict, which is
+                    driven_level != s->external_level[n];
+    /* Deterministic digital resolution: active internal output wins a conflict,
+     * which is
      * separately reported. Floating resolves low. Neither policy predicts an
      * analog voltage. Drive code/Schmitt thresholds have no electrical model. */
-    bool level = driving ? s->gpio_out[n] :
+    bool level = driving ? driven_level :
                  s->external_drive[n] ? s->external_level[n] : pull == 1;
     bool input = gpio && (s->config[n] & 4) && level;
     qemu_set_irq(s->level[n], level);
@@ -100,6 +113,26 @@ PAD_INPUT(ws53_pad_gpio_out, gpio_out)
 PAD_INPUT(ws53_pad_gpio_oe, gpio_oe)
 #undef PAD_INPUT
 
+static void ws53_pad_pwm0_update(WS53PinctrlState *s)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(ws53_pad_desc); i++) {
+        const WS53PadDesc *d = &ws53_pad_desc[i];
+        if (ws53_pad_pwm0(d->id, s->mode[d->id])) { ws53_pad_update(s, d); }
+    }
+}
+static void ws53_pad_pwm0_level(void *opaque, int n, int level)
+{
+    WS53PinctrlState *s = opaque;
+    s->pwm0_level = level != 0;
+    ws53_pad_pwm0_update(s);
+}
+static void ws53_pad_pwm0_drive(void *opaque, int n, int level)
+{
+    WS53PinctrlState *s = opaque;
+    s->pwm0_drive = level != 0;
+    ws53_pad_pwm0_update(s);
+}
+
 static uint64_t ws53_pinctrl_read(void *opaque, hwaddr off, unsigned size)
 {
     WS53PinRegion *r = opaque;
@@ -130,7 +163,7 @@ static void ws53_pinctrl_write(void *opaque, hwaddr off, uint64_t value, unsigne
             if (value > 7 || !(d->modes & (1u << value))) { break; }
             s->mode[d->id] = value;
             ws53_pad_update(s, d);
-            if (value) {
+            if (value && !ws53_pad_pwm0(d->id, value)) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                     "ws53-pinctrl: unimplemented alternate peripheral route pad %u mode %u\n",
                     d->id, (unsigned)value);
@@ -173,6 +206,8 @@ static void ws53_pinctrl_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_external_drive, "external-drive", 48);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_gpio_out, "gpio-out", 48);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_gpio_oe, "gpio-oe", 48);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_pwm0_level, "pwm0-level", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_pwm0_drive, "pwm0-drive", 1);
     qdev_init_gpio_out_named(DEVICE(obj), s->gpio_in, "gpio-in", 48);
     qdev_init_gpio_out_named(DEVICE(obj), s->level, "level", 48);
     qdev_init_gpio_out_named(DEVICE(obj), s->drive, "drive-enable", 48);

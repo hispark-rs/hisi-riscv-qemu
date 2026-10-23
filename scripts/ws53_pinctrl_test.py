@@ -110,7 +110,7 @@ def pinctrl_test(qemu):
                        "external drive overrides pull", "output enable/data routing",
                        "floating indication", "contention indication", "mux disconnect",
                        "reset preserves external driver", "invalid config retained"],
-            "unsupported_diagnostics": 11, "alternate_peripheral_signals_modeled": False,
+            "unsupported_diagnostics": 11, "alternate_peripheral_signals_modeled": ["PWM0P"],
             "electrical_or_hardware_verified": False}
 
 

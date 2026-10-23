@@ -325,6 +325,10 @@ static void ws53_init(MachineState *machine)
     DeviceState *pinctrl = qdev_new(TYPE_WS53_PINCTRL);
     object_property_add_child(OBJECT(machine), "pinctrl", OBJECT(pinctrl));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(pinctrl), &error_fatal);
+    qdev_connect_gpio_out_named(pwm, "out", 0,
+        qdev_get_gpio_in_named(pinctrl, "pwm0-level", 0));
+    qdev_connect_gpio_out_named(pwm, "output-enable", 0,
+        qdev_get_gpio_in_named(pinctrl, "pwm0-drive", 0));
     const hwaddr pin_bases[] = { 0x52008000, 0x57036000, 0x5703a000 };
     for (unsigned i = 0; i < 3; i++) {
         sysbus_mmio_map(SYS_BUS_DEVICE(pinctrl), i, pin_bases[i]);
