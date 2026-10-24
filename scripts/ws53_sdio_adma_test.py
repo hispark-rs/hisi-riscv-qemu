@@ -84,7 +84,15 @@ def sdio_adma_test(qemu):
                 table += desc(0xffffffff,0,0xffff)
                 s.memory(TABLE,table)
                 s.memory(DATA-16,b'\xa5'*16+(b'\xa5'*length if write else payload)+b'\xa5'*16)
+                if not write:
+                    old_status=s.read(0x104)
+                    s.write(0x120,(s.read(0x120)&~0x1fffff)|length)
+                    s.write(0x104,old_status|1)
+                    assert s.count('read-offer-pending') and s.count('read-offer-length')==length
+                    assert s.count('read-notifications')==1 and s.read(0x104)==old_status|1
+                    assert s.count('dma-bytes')==0 and not s.count('dma-active')
                 s.request(write,length,payload)
+                assert not s.count('read-offer-pending')
                 s.submit(write,length)
                 s.step(100000000)
                 assert s.count('dma-transfers')==1 and s.count('dma-bytes')==length
@@ -190,10 +198,27 @@ def sdio_adma_test(qemu):
         assert s.bytes(DATA,16)==b'\xa5'*16
         s.input('fault',6,False); s.step(100000)
         assert s.count('dma-transfers')==1 and s.bytes(DATA,16)==pattern(8)+b'\xa5'*8
+    with peer(qemu) as (s,_,_):
+        s.write(0x104,s.read(0x104)|1)
+        assert s.count('rejections')==1 and s.count('read-notifications')==0
+        s.write(0x120,(s.read(0x120)&~0x1fffff)|64)
+        s.write(0x104,s.read(0x104)|1)
+        assert s.count('read-offer-pending') and s.count('read-notifications')==1
+        s.write(0x104,s.read(0x104)|1)
+        assert s.count('rejections')==2 and s.count('read-notifications')==1
+    with peer(qemu) as (s,_,reset):
+        s.write(0x120,(s.read(0x120)&~0x1fffff)|64)
+        s.write(0x104,s.read(0x104)|1)
+        assert s.count('read-offer-pending') and s.count('read-notifications')==1
+        reset()
+        assert not s.count('read-offer-pending') and s.count('read-notifications')==0
+        assert s.count('read-offer-length')==0
     return dict(normal_transfers=normal, dma_faults=faults, irq46_mask_and_ack=True,
                 posted_write_survives_mask_clock_loss=True, posted_write_survives_ip_reset=True,
                 reset_reinitialize=True, stall_resume=True, completion_suppression=True,
                 rejected_requests_and_submissions=rejected, held_posted_write_release=True,
+                read_offer_precedes_host_request=True, zero_duplicate_offer_rejected=True,
+                offer_reset_cleared=True, send_command_self_clear_assumed=False,
                 descriptor_flags='only audited 0x21', termination='assumed CMD53 byte count',
                 hardware_accessed=False, cis_or_physical_drain_verified=False)
 

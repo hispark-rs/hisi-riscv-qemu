@@ -261,4 +261,12 @@ writes, suppress completion and hold accepted posted writes until released.
 `ws53_sdio_adma_test.py`, included by `test-ws53.py`, checks22 normal transfers,
 nine DMA error cases,12 rejected requests/submissions, IRQ, guards, reset recovery
 and posted-write survival. The integration repository additionally runs the real
-Rust driver in13 host-paced CPU scenarios with no host MMIO setup.
+Rust driver in14 host-paced CPU scenarios with no host MMIO setup.
+
+The audited prepare-send sequence also delivers a bounded read offer to the
+virtual host. `read-offer-pending`, `read-offer-length` and `read-notifications`
+expose this notification before any ADMA request is submitted. A host read consumes
+the model offer; this does not infer that the device command bit self-clears.
+Zero-length and duplicate pending offers are rejected, reset clears the pending
+offer, and cancelling software observation does not retract it. No host-side CIS
+layout or electrical interrupt delivery is inferred from these abstract inputs.

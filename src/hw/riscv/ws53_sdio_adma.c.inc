@@ -130,6 +130,9 @@ static void ws53_sdio_adma_request(WS53SdioState *s)
     s->request_length = length;
     s->host_write = write;
     s->request_pending = true;
+    if (!write) {
+        s->offer_pending = false;
+    }
     g_byte_array_set_size(s->device_data, 0);
     s->regs[0x110 / 4] |= write ? 0x10 : 8;
     ws53_sdio_update(s);
@@ -157,6 +160,8 @@ static void ws53_sdio_adma_reset(WS53SdioState *s)
     /* Keep posted data/timer/epoch until that bus transaction completes. */
     s->request_length = s->transferred = s->descriptor_index = s->descriptor_left = 0;
     s->table_pointer = s->descriptor_address = 0;
+    s->offer_pending = false;
+    s->offered_length = 0;
     g_byte_array_set_size(s->device_data, 0);
 }
 static void ws53_sdio_host_data_set(Object *obj, const char *value, Error **errp)
@@ -197,6 +202,10 @@ static bool ws53_sdio_posted_get(Object *obj, Error **errp)
 {
     return WS53_SDIO(obj)->posted;
 }
+static bool ws53_sdio_offer_get(Object *obj, Error **errp)
+{
+    return WS53_SDIO(obj)->offer_pending;
+}
 static void ws53_sdio_adma_init(Object *obj)
 {
     WS53SdioState *s = WS53_SDIO(obj);
@@ -210,6 +219,9 @@ static void ws53_sdio_adma_init(Object *obj)
     object_property_add_str(obj, "device-read-data", ws53_sdio_device_data_get, NULL);
     object_property_add_bool(obj, "dma-active", ws53_sdio_dma_active_get, NULL);
     object_property_add_bool(obj, "dma-posted-write", ws53_sdio_posted_get, NULL);
+    object_property_add_bool(obj, "read-offer-pending", ws53_sdio_offer_get, NULL);
+    object_property_add_uint32_ptr(obj, "read-offer-length", &s->offered_length, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "read-notifications", &s->read_notifications, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "dma-transfers", &s->transfers, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "dma-bytes", &s->dma_bytes, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "dma-errors", &s->dma_errors, OBJ_PROP_FLAG_READ);

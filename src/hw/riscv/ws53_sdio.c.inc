@@ -20,6 +20,9 @@ struct WS53SdioState {
     uint32_t posted_address, posted_length;
     uint8_t posted_data[4];
     uint64_t epoch, posted_epoch, transfers, dma_bytes, dma_errors, posted_after_reset;
+    uint64_t read_notifications;
+    uint32_t offered_length;
+    bool offer_pending;
     bool request_pending, dma_active, host_write, posted;
     bool dma_stall, read_error, write_error, delay_posted, suppress_completion, posted_stall;
 };
@@ -110,8 +113,13 @@ static void ws53_sdio_write(void *opaque, hwaddr off, uint64_t value, unsigned s
                !((v ^ s->regs[off / 4]) & ~0x1fffffu) && s->host_clock && !s->dma_active && !s->posted) {
         s->regs[off / 4] = v;
     } else if (s->assume_adma && off == 0x104 && v == (s->regs[off / 4] | 1) &&
-               ws53_sdio_configured(s) && !s->dma_active && !s->posted) {
+               ws53_sdio_configured(s) && (s->regs[0x11c / 4] & 1) &&
+               !s->dma_active && !s->posted && !s->request_pending && !s->offer_pending &&
+               (s->regs[0x120 / 4] & 0x1fffff)) {
         s->regs[off / 4] = v;
+        s->offered_length = s->regs[0x120 / 4] & 0x1fffff;
+        s->offer_pending = true;
+        s->read_notifications++;
     } else if (off == 4 && s->host_clock && !(v & 0xff000000)) {
         s->regs[1] = v;
     } else if (off == 0x1c) {
@@ -254,6 +262,7 @@ static void ws53_sdio_reset(void *opaque)
     WS53SdioState *s = opaque;
     s->rejections = s->acknowledgements = s->resets = 0;
     s->transfers = s->dma_bytes = s->dma_errors = s->posted_after_reset = 0;
+    s->read_notifications = 0;
     s->reset_control = s->seed | 2;
     ws53_sdio_initial_state(s);
 }
