@@ -58,6 +58,7 @@ cp "$HERE/src/hw/riscv/ws53_flash_handoff.c.inc"            "$QEMU_DIR/hw/riscv/
 cp "$HERE/src/hw/riscv/ws53_cache_state.c.inc"              "$QEMU_DIR/hw/riscv/ws53_cache_state.c.inc"
 cp "$HERE/src/hw/riscv/ws53_sfc_command.c.inc"              "$QEMU_DIR/hw/riscv/ws53_sfc_command.c.inc"
 cp "$HERE/src/hw/riscv/ws53_sdio.c.inc"                     "$QEMU_DIR/hw/riscv/ws53_sdio.c.inc"
+cp "$HERE/src/hw/riscv/ws53_sdio_adma.c.inc"                "$QEMU_DIR/hw/riscv/ws53_sdio_adma.c.inc"
 cp "$HERE/src/hw/riscv/ws53_uart.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_uart.c.inc"
 cp "$HERE/src/hw/riscv/ws53_uart_reset.c.inc"             "$QEMU_DIR/hw/riscv/ws53_uart_reset.c.inc"
 cp "$HERE/src/hw/riscv/ws53_gpio.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_gpio.c.inc"

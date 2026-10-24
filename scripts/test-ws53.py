@@ -49,6 +49,7 @@ from ws53_mdma_spi_test import spi_dma_test
 from ws53_mdma_i2c_test import i2c_dma_test
 from ws53_mdma_i2s_test import i2s_dma_test
 from ws53_sdio_init_test import sdio_init_test
+from ws53_sdio_adma_test import sdio_adma_test
 
 
 def connect(path):
@@ -383,6 +384,7 @@ if __name__ == "__main__":
               "mdma_i2c": i2c_dma_test(args.qemu),
               "mdma_i2s": i2s_dma_test(args.qemu),
               "sdio_initialization": sdio_init_test(args.qemu),
+              "sdio_adma": sdio_adma_test(args.qemu),
               "hardware_verified": False}
     if args.elf:
         result["ram"] = ram_test(args.qemu, args.elf)

@@ -239,3 +239,26 @@ READY readback, and `inject 0..95` supplies raw Function1/Function0/global event
 for fault tests. They are test inputs, not SDIO commands. The `config-seed`
 property seeds opaque configuration bits; `host-message` supplies test message
 data. No reset defaults, DMA drain or full vendor controller firmware is claimed.
+
+### WS53 abstract ADMA peer (additional opt-in)
+
+Add `-global ws53-sdio.assume-adma-profile=on` to the initialization profile for
+an abstract Function1 CMD53 peer. `host-command`, `host-block-size` and bounded
+hex `host-write-data` QOM properties describe one request; `host 2` submits it.
+`device-read-data` and DMA counters expose results. Guest code supplies actual
+eight-byte descriptors and ordinary RAM payloads. Unsupported requests, widths,
+flags and registers diagnose rejection; no transfer success is synthesized.
+
+The model explicitly assumes CMD53-byte-count termination of flags0x21 chains;
+the SDK's four-byte trailing descriptor has no END flag. Each virtual beat moves
+data and completion/error status drives IRQ46. Clock loss pauses new transactions.
+Accepted posted writes may finish after masking, clock loss or peripheral reset;
+none of those actions proves drain. The profile has no CIS, CMD52, wire CRC,
+electrical timing or silicon cache-coherency qualification.
+
+Fault inputs1..6 respectively stall DMA, fail read/write bus access, delay posted
+writes, suppress completion and hold accepted posted writes until released.
+`ws53_sdio_adma_test.py`, included by `test-ws53.py`, checks22 normal transfers,
+nine DMA error cases,12 rejected requests/submissions, IRQ, guards, reset recovery
+and posted-write survival. The integration repository additionally runs the real
+Rust driver in13 host-paced CPU scenarios with no host MMIO setup.

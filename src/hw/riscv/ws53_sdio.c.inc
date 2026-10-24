@@ -1,4 +1,4 @@
-/* WS53 SDIO initialization/event profile; not a host protocol or ADMA model.
+/* WS53 SDIO initialization/events and opt-in abstract CMD53/ADMA profile.
  * Source: hisi-registers 10ef24b, original ROM init/handler and SDK clock/reset
  * patch. Explicit opt-in assumes latched child status and captured-word ACK.
  * No silicon reset values, CIS enumeration, bus timing or DMA drain claimed.
@@ -11,8 +11,17 @@ struct WS53SdioState {
     MemoryRegion mmio, reset_mmio;
     qemu_irq irq;
     uint32_t regs[0x300 / 4], seed, reset_control, global_extra;
-    bool assume_init, gate[2], host_clock, refuse_ready;
+    bool assume_init, assume_adma, gate[2], host_clock, refuse_ready;
     uint64_t rejections, acknowledgements, host_enables, resets;
+    QEMUTimer *dma_timer, *posted_timer;
+    GByteArray *host_data, *device_data;
+    uint32_t next_command, next_block_size, table_pointer, descriptor_index;
+    uint32_t request_length, transferred, descriptor_address, descriptor_left;
+    uint32_t posted_address, posted_length;
+    uint8_t posted_data[4];
+    uint64_t epoch, posted_epoch, transfers, dma_bytes, dma_errors, posted_after_reset;
+    bool request_pending, dma_active, host_write, posted;
+    bool dma_stall, read_error, write_error, delay_posted, suppress_completion, posted_stall;
 };
 static bool ws53_sdio_accessible(WS53SdioState *s)
 {
@@ -46,6 +55,7 @@ static void ws53_sdio_reject(WS53SdioState *s, bool write, hwaddr off, unsigned 
     qemu_log_mask(LOG_GUEST_ERROR, "ws53-sdio: unimplemented/unavailable %s +0x%"
                   HWADDR_PRIx " size=%u\n", write ? "write" : "read", off, size);
 }
+#include "ws53_sdio_adma.c.inc"
 static bool ws53_sdio_rw_mask(hwaddr off, uint32_t *mask)
 {
     switch (off) {
@@ -79,6 +89,9 @@ static uint64_t ws53_sdio_read(void *opaque, hwaddr off, unsigned size)
     case 0x44: return s->host_clock;
     default: break;
     }
+    if (s->assume_adma && (off == 0x104 || off == 0x120 || off == 0x254 || off == 0x258)) {
+        return s->regs[off / 4];
+    }
 reject:
     ws53_sdio_reject(s, false, off, size);
     return 0;
@@ -90,7 +103,16 @@ static void ws53_sdio_write(void *opaque, hwaddr off, uint64_t value, unsigned s
     if (!ws53_sdio_accessible(s) || size != 4 || (off & 3)) {
         goto reject;
     }
-    if (off == 4 && s->host_clock && !(v & 0xff000000)) {
+    if (s->assume_adma && off == 0x40) {
+        ws53_sdio_adma_submit(s, v);
+        return;
+    } else if (s->assume_adma && off == 0x120 &&
+               !((v ^ s->regs[off / 4]) & ~0x1fffffu) && s->host_clock && !s->dma_active && !s->posted) {
+        s->regs[off / 4] = v;
+    } else if (s->assume_adma && off == 0x104 && v == (s->regs[off / 4] | 1) &&
+               ws53_sdio_configured(s) && !s->dma_active && !s->posted) {
+        s->regs[off / 4] = v;
+    } else if (off == 4 && s->host_clock && !(v & 0xff000000)) {
         s->regs[1] = v;
     } else if (off == 0x1c) {
         s->global_extra &= ~v;
@@ -137,8 +159,11 @@ static void ws53_sdio_initial_state(WS53SdioState *s)
     s->regs[0x114 / 4] &= ~0x3fffu;
     s->regs[0x30 / 4] &= ~1u;
     s->regs[0x11c / 4] &= ~1u;
+    s->regs[0x104 / 4] = s->seed & ~1u;
+    s->regs[0x120 / 4] = s->seed & 0xffe00000;
     s->global_extra = 0;
     s->host_enables = 0;
+    ws53_sdio_adma_reset(s);
     ws53_sdio_update(s);
 }
 static uint64_t ws53_sdio_reset_read(void *opaque, hwaddr off, unsigned size)
@@ -174,6 +199,7 @@ static void ws53_sdio_gate(void *opaque, int n, int level)
 {
     WS53SdioState *s = opaque;
     s->gate[n] = level;
+    ws53_sdio_adma_schedule(s);
     ws53_sdio_update(s);
 }
 static void ws53_sdio_host(void *opaque, int n, int level)
@@ -181,7 +207,9 @@ static void ws53_sdio_host(void *opaque, int n, int level)
     WS53SdioState *s = opaque;
     if (n == 0) {
         s->host_clock = level;
-    } else if (level) {
+    } else if (n == 2 && level) {
+        ws53_sdio_adma_request(s);
+    } else if (n == 1 && level) {
         if (!ws53_sdio_configured(s)) {
             ws53_sdio_reject(s, true, 0x2000, 4);
             return;
@@ -189,12 +217,22 @@ static void ws53_sdio_host(void *opaque, int n, int level)
         s->host_enables++;
         s->regs[0x110 / 4] |= 1 << 13;
     }
+    ws53_sdio_adma_schedule(s);
     ws53_sdio_update(s);
 }
 static void ws53_sdio_fault(void *opaque, int n, int level)
 {
     WS53SdioState *s = opaque;
-    s->refuse_ready = level;
+    switch (n) {
+    case 0: s->refuse_ready = level; break;
+    case 1: s->dma_stall = level; break;
+    case 2: s->read_error = level; break;
+    case 3: s->write_error = level; break;
+    case 4: s->delay_posted = level; break;
+    case 5: s->suppress_completion = level; break;
+    case 6: s->posted_stall = level; break;
+    }
+    ws53_sdio_adma_schedule(s);
 }
 /* Explicit injected observations for error/IRQ tests; not an SDIO host command
  * parser. Message data is supplied separately as a QOM test input. */
@@ -215,20 +253,41 @@ static void ws53_sdio_reset(void *opaque)
 {
     WS53SdioState *s = opaque;
     s->rejections = s->acknowledgements = s->resets = 0;
+    s->transfers = s->dma_bytes = s->dma_errors = s->posted_after_reset = 0;
     s->reset_control = s->seed | 2;
     ws53_sdio_initial_state(s);
 }
 static void ws53_sdio_realize(DeviceState *dev, Error **errp)
 {
     WS53SdioState *s = WS53_SDIO(dev);
-    if (s->assume_init) {
+    if (s->assume_adma && !s->assume_init) {
+        error_setg(errp, "ws53-sdio: ADMA profile requires explicit initialization profile");
+        return;
+    }
+    if (s->assume_adma) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "ws53-sdio: assumed CMD53-length-delimited ADMA/latched-status/ACK profile; no CIS, electrical or drain qualification\n");
+    } else if (s->assume_init) {
         qemu_log_mask(LOG_GUEST_ERROR,
             "ws53-sdio: assumed initialization/latched-status/ACK profile; no CIS, ADMA or host protocol\n");
     }
     qemu_register_reset(ws53_sdio_reset, s);
 }
+static void ws53_sdio_unrealize(DeviceState *dev)
+{
+    qemu_unregister_reset(ws53_sdio_reset, WS53_SDIO(dev));
+}
+static void ws53_sdio_finalize(Object *obj)
+{
+    WS53SdioState *s = WS53_SDIO(obj);
+    timer_free(s->dma_timer);
+    timer_free(s->posted_timer);
+    g_byte_array_unref(s->host_data);
+    g_byte_array_unref(s->device_data);
+}
 static const Property ws53_sdio_properties[] = {
     DEFINE_PROP_BOOL("assume-init-profile", WS53SdioState, assume_init, false),
+    DEFINE_PROP_BOOL("assume-adma-profile", WS53SdioState, assume_adma, false),
     DEFINE_PROP_UINT32("config-seed", WS53SdioState, seed, 0),
 };
 static void ws53_sdio_init(Object *obj)
@@ -239,9 +298,10 @@ static void ws53_sdio_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->reset_mmio);
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
+    ws53_sdio_adma_init(obj);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_sdio_gate, "gate", 2);
-    qdev_init_gpio_in_named(DEVICE(obj), ws53_sdio_host, "host", 2);
-    qdev_init_gpio_in_named(DEVICE(obj), ws53_sdio_fault, "fault", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_sdio_host, "host", 3);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_sdio_fault, "fault", 7);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_sdio_inject, "inject", 96);
     object_property_add_uint32_ptr(obj, "host-message", &s->regs[0x128 / 4], OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint64_ptr(obj, "rejections", &s->rejections, OBJ_PROP_FLAG_READ);
@@ -253,9 +313,11 @@ static void ws53_sdio_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     dc->realize = ws53_sdio_realize;
+    dc->unrealize = ws53_sdio_unrealize;
     device_class_set_props(dc, ws53_sdio_properties);
 }
 static const TypeInfo ws53_sdio_type = {
     .name = TYPE_WS53_SDIO, .parent = TYPE_SYS_BUS_DEVICE, .instance_size = sizeof(WS53SdioState),
     .instance_init = ws53_sdio_init, .class_init = ws53_sdio_class_init,
+    .instance_finalize = ws53_sdio_finalize,
 };
