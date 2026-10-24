@@ -43,6 +43,7 @@
 #include "ws53_adc.c.inc"
 #include "ws53_global_clken.c.inc"
 #include "ws53_mdma.c.inc"
+#include "ws53_sfc_command.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -239,6 +240,18 @@ static void ws53_init(MachineState *machine)
     uint64_t entry = 0x28000;
     ws63_register_custom_csrs();
     ws53_cache_state_init(s);
+    DeviceState *sfc = qdev_new(TYPE_WS53_SFC_COMMAND);
+    object_property_add_child(OBJECT(machine), "sfc-command", OBJECT(sfc));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(sfc), &error_fatal);
+    if (s->flashboot_handoff && WS53_SFC_COMMAND(sfc)->assume_profile) {
+        error_report("ws53: SFC synthetic command profile and flashboot-handoff are mutually exclusive");
+        exit(1);
+    }
+    sysbus_mmio_map(SYS_BUS_DEVICE(sfc), 0, 0x53000000);
+    if (WS53_SFC_COMMAND(sfc)->assume_profile) {
+        /* Explicit rejection window, never a second silently divergent NOR. */
+        sysbus_mmio_map(SYS_BUS_DEVICE(sfc), 1, 0x400000);
+    }
     ws63_make_ram(sys, &s->itcm, "ws53.acore.itcm", 0x20000, 0x10000);
     if (s->flashboot_handoff) {
         ws53_flash_handoff_init(s, sys);
@@ -574,6 +587,7 @@ static void ws53_register_types(void)
     type_register_static(&ws53_tsensor_type);
     type_register_static(&ws53_trng_type);
     type_register_static(&ws53_efuse_type);
+    type_register_static(&ws53_sfc_type);
     type_register_static(&ws53_type);
 }
 type_init(ws53_register_types)
