@@ -217,3 +217,25 @@ The integration `tx-async-pad` fixture adds real async write/flush cancellation
 and checks that queued RX survives TX activity through the digital pad peer.
 Exact interrupt latency, arbitrary flow control and physical clock loss are
 not qualified by the model.
+
+## WS53 SDIO initialization and event profile
+
+`-global ws53-sdio.assume-init-profile=on` opts into source-profile configuration,
+host-clock readiness, Function1 enable, latched child status, captured-word ACK,
+IRQ46 masking and initialization-state reset. These reset/ACK behaviors are
+explicit functional assumptions, not silicon qualification. CIS, host command
+parsing, voltage switching and ADMA/data-transfer registers are unsupported and
+diagnose access; no transfer success is synthesized.
+
+The SDK patch uses word accesses to both M_CLKEN0/1. Shared clock models now
+retain upper bits and provide SDIO device/AHB gates while preserving existing
+halfword users. `ws53_sdio_init_test.py` checks four configuration seeds, IRQ/ACK
+races, host enable ordering, gate retention, reset/reinitialization and18 rejected
+accesses. It is included by `test-ws53.py`. The I2C/ADC invalid-width cases now use
+byte accesses: a word access to M_CLKEN1 is supported by audited SDK evidence.
+
+Virtual inputs `/machine/sdio host 0/1` supply clock/enable, `fault 0` refuses
+READY readback, and `inject 0..95` supplies raw Function1/Function0/global events
+for fault tests. They are test inputs, not SDIO commands. The `config-seed`
+property seeds opaque configuration bits; `host-message` supplies test message
+data. No reset defaults, DMA drain or full vendor controller firmware is claimed.

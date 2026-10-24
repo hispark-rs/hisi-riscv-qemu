@@ -44,6 +44,7 @@
 #include "ws53_global_clken.c.inc"
 #include "ws53_mdma.c.inc"
 #include "ws53_sfc_command.c.inc"
+#include "ws53_sdio.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -423,6 +424,14 @@ static void ws53_init(MachineState *machine)
     sysbus_mmio_map(SYS_BUS_DEVICE(mclken0), 0, 0x52000040);
     qdev_connect_gpio_out_named(mclken0, "gate", 0, qdev_get_gpio_in_named(pwm, "gate", 0));
     qdev_connect_gpio_out_named(mclken0, "gate", 1, qdev_get_gpio_in_named(i2s, "gate", 0));
+    DeviceState *sdio = qdev_new(TYPE_WS53_SDIO);
+    object_property_add_child(OBJECT(machine), "sdio", OBJECT(sdio));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(sdio), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(sdio), 0, 0x52060000);
+    sysbus_mmio_map(SYS_BUS_DEVICE(sdio), 1, 0x570000c8);
+    sysbus_connect_irq(SYS_BUS_DEVICE(sdio), 0, qdev_get_gpio_in(intc, 46));
+    qdev_connect_gpio_out_named(mclken0, "gate", 2, qdev_get_gpio_in_named(sdio, "gate", 0));
+    qdev_connect_gpio_out_named(mclken1, "gate", 4, qdev_get_gpio_in_named(sdio, "gate", 1));
     /* Do not route NMI through the ordinary local interrupt controller. CPU
      * NMI semantics are pending; the device diagnoses any asserted output. */
     DeviceState *pinctrl = qdev_new(TYPE_WS53_PINCTRL);
@@ -590,6 +599,7 @@ static void ws53_register_types(void)
     type_register_static(&ws53_trng_type);
     type_register_static(&ws53_efuse_type);
     type_register_static(&ws53_sfc_type);
+    type_register_static(&ws53_sdio_type);
     type_register_static(&ws53_type);
 }
 type_init(ws53_register_types)
