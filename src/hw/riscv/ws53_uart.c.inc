@@ -26,6 +26,7 @@ struct WS53UartState {
      * levels and byte lane adaptation are assumptions, not silicon evidence. */
     bool dma_profile, clock_on, tx_stall, tx_active, tx_halt;
     bool div_l_read_requires_enable;
+    bool tx_irq_latched, tx_irq_ready;
     bool soft_reset_asserted;
     uint8_t tx[WS53_UART_DEPTH], tx_shift;
     unsigned tx_head, tx_count;
@@ -77,6 +78,25 @@ static uint32_t ws53_uart_errors(WS53UartState *s)
     return result;
 }
 
+/* UART2 observation: IIR=2 acknowledges the TX request in both PTIM modes.
+ * An empty FIFO re-notifies after IER disable/enable. PTIM uses the configured
+ * SDK threshold; only the inherited2-char threshold has physical evidence.
+ * Other instances share the IP model, not physical TX IRQ qualification. */
+static unsigned ws53_uart_tx_threshold(WS53UartState *s)
+{
+    static const unsigned thresholds[] = {0, 2, 16, 32};
+    return (s->ier & 0x10) && (s->fifo & 0x10) ? thresholds[s->fifo & 3] : 0;
+}
+
+static void ws53_uart_tx_irq_update(WS53UartState *s)
+{
+    bool enabled = s->dma_profile && !s->soft_reset_asserted && (s->ier & 8);
+    bool ready = enabled && s->tx_count <= ws53_uart_tx_threshold(s);
+    if (!enabled) { s->tx_irq_latched = false; }
+    else if (ready && !s->tx_irq_ready) { s->tx_irq_latched = true; }
+    s->tx_irq_ready = ready;
+}
+
 static unsigned ws53_uart_irq_id(WS53UartState *s)
 {
     static const unsigned thresholds[] = {1, 16, 32, 62};
@@ -90,11 +110,13 @@ static unsigned ws53_uart_irq_id(WS53UartState *s)
     if ((s->ier & 4) && s->timed_out && s->count) {
         return 12;
     }
+    if ((s->ier & 8) && s->tx_irq_latched) { return 2; }
     return 1;
 }
 
 static void ws53_uart_irq_update(WS53UartState *s)
 {
+    ws53_uart_tx_irq_update(s);
     qemu_set_irq(s->irq, !s->soft_reset_asserted && ws53_uart_irq_id(s) != 1);
     bool enabled = !s->soft_reset_asserted && s->dma_profile && s->clock_on && (s->fifo & 0x10);
     qemu_set_irq(s->dma_request[0], enabled && s->tx_count < WS53_UART_DEPTH);
@@ -242,6 +264,7 @@ static bool ws53_uart_tx_enqueue(WS53UartState *s, uint8_t value)
     }
     if (s->tx_count >= ws53_uart_capacity(s)) { return false; }
     s->tx[(s->tx_head + s->tx_count++) % WS53_UART_DEPTH] = value;
+    s->tx_irq_latched = s->tx_irq_ready = false;
     ws53_uart_tx_resume(s); ws53_uart_irq_update(s); return true;
 }
 
@@ -284,7 +307,14 @@ static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
         return 0;
     }
     switch (off) {
-    case 0x00: return ws53_uart_irq_id(s) | (s->fifo & 0x10);
+    case 0x00: {
+        unsigned id = ws53_uart_irq_id(s);
+        if (id == 2) {
+            s->tx_irq_latched = false;
+            ws53_uart_irq_update(s);
+        }
+        return id | (s->fifo & 0x10);
+    }
     case 0x04: {
         uint8_t result = 0;
         if (s->count) {
@@ -303,11 +333,19 @@ static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
         return s->div_l_read_requires_enable && !(s->control & 1) ? 0 : s->div_l;
     case 0x14: return s->div_fra;
     case 0x18: return s->ier;
+    case 0x1c: {
+        static const unsigned thresholds[] = {1, 16, 32, 62};
+        unsigned threshold = s->fifo & 0x10 ? thresholds[(s->fifo >> 2) & 3] : 1;
+        return (ws53_uart_errors(s) ? 32 : 0) | (s->count >= threshold ? 16 : 0) |
+               (s->timed_out && s->count ? 8 : 0) | (s->tx_irq_latched ? 4 : 0);
+    }
     case 0x28: return s->far;
     case 0x2c: return s->modem;
     case 0x34: {
+        bool thre = (s->ier & 0x10) && (s->fifo & 0x10) ?
+                    s->tx_count == ws53_uart_capacity(s) : !s->tx_count;
         uint32_t tx = !s->dma_profile ? 0xc0 :
-                      ((!s->tx_count ? 0x40 : 0) | (!s->tx_count && !s->tx_active ? 0x80 : 0));
+                      ((thre ? 0x40 : 0) | (!s->tx_count && !s->tx_active ? 0x80 : 0));
         uint32_t result = tx | (s->count ? 0x20 : 0) | ws53_uart_errors(s);
         if (s->count) {
             s->errors[s->head] = 0;
@@ -375,8 +413,8 @@ static void ws53_uart_write(void *opaque, hwaddr off, uint64_t value, unsigned s
     case 0x10: s->div_l = value & 0xff; ws53_uart_rx_activity(s); return;
     case 0x14: s->div_fra = value & 0x3f; ws53_uart_rx_activity(s); return;
     case 0x18:
-        if (value & ~5u) {
-            break; /* TX/modem IRQ and programmable THRE remain unsupported. */
+        if (value & ~(s->dma_profile ? 0x1du : 5u)) {
+            break; /* TX requires timed FIFO profile; modem remains unsupported. */
         }
         s->ier = value;
         ws53_uart_irq_update(s);
@@ -512,6 +550,7 @@ static void ws53_uart_reset(void *opaque)
     }
     s->tx_head = s->tx_count = 0;
     s->tx_active = s->tx_halt = false; s->transmitted = 0;
+    s->tx_irq_latched = s->tx_irq_ready = false;
     s->head = s->count = 0;
     s->overrun = s->timed_out = false;
     s->ier = s->far = s->modem = s->scratch = s->div_h = 0;
@@ -542,6 +581,7 @@ static void ws53_uart_soft_reset_n(void *opaque, int n, int level)
         ws53_uart_pad_rx_abort(s);
         s->tx_head = s->tx_count = s->head = s->count = 0;
         s->tx_active = s->tx_halt = s->overrun = s->timed_out = false;
+        s->tx_irq_latched = s->tx_irq_ready = false;
         s->control = s->div_h = s->div_l = s->div_fra = 0;
         s->ier = s->far = s->modem = s->scratch = s->fifo = 0;
         s->baud = 0x7f;

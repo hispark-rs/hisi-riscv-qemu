@@ -17,6 +17,7 @@ from ws53_pinctrl_test import pinctrl_test
 from ws53_nmi_test import nmi_test
 from ws53_wdt_test import wdt_test
 from ws53_uart_config_test import uart_config_test
+from ws53_uart_tx_irq_test import uart_tx_irq_test
 from ws53_uart_reset_test import uart_reset_test
 from ws53_uart_l0_reset_test import uart_l0_reset_test
 from ws53_uart_pads_test import uart_pads_test
@@ -339,6 +340,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     result = {"model": model_test(args.qemu), "unsupported": unsupported_test(args.qemu),
               "uart": uart_test(args.qemu), "uart_config": uart_config_test(args.qemu),
+              "uart_tx_irq": uart_tx_irq_test(args.qemu),
               "uart_l0_reset": uart_l0_reset_test(args.qemu),
               "uart_pads": uart_pads_test(args.qemu),
               "uart_rx_pads": uart_rx_pads_test(args.qemu),

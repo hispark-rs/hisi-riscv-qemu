@@ -192,3 +192,21 @@ HAL仍完整写入32位请求，不做基于读回值的RMW。计时仍采用既
 假设，不能把低4位读回推断为实际16tick量化。未写过LOAD时的模型复位零值仍是
 确定性测试初值，没有实板POR证据。主工程两路TIMER async RAM测试同时观察该
 读回和中断取消；没有模拟低功耗或更改时钟后的延时补偿。
+
+### WS53 UART TX IRQ / PTIM
+
+The opt-in `assume-dma-profile` timed FIFO now models TX IRQ2 as a latched
+notification: reading IIR2 acknowledges it; disabling/enabling TX IRQ rearms
+an already-ready FIFO. PTIM0 uses empty FIFO, PTIM1 uses the configured
+0/2/16/32-byte threshold. With PTIM and FIFO enabled, LSR.THRE_S reports
+FIFO full, not empty; TX_EMPTY_S separately waits for the serializer.
+`scripts/ws53_uart_tx_irq_test.py`, included by `test-ws53.py`, tests24
+port/mode/threshold combinations, read-clear/rearm, stalls and reset.
+UART2's inherited threshold2 and14 sample rows match three same-ELF physical
+runs (`hisi-registers/evidence/ws53-uart-tx-irq-hil.json`). UART0/1 IRQ, other
+thresholds and INTR_STATUS raw RX conditions remain source/model assumptions.
+The default immediate-TX profile still rejects TX IRQ configuration.
+The integration `tx-async-pad` fixture adds real async write/flush cancellation
+and checks that queued RX survives TX activity through the digital pad peer.
+Exact interrupt latency, arbitrary flow control and physical clock loss are
+not qualified by the model.
