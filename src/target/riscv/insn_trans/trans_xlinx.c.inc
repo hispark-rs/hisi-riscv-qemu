@@ -316,18 +316,20 @@ static bool trans_xlinx_lli(DisasContext *ctx, int rd, uint32_t imm32)
  * Compressed byte/half load (lbu/lhu, funct3=001) and store (sb/sh, funct3=101),
  * occupying the unused C.FLD/C.FSD (D-float) compressed slots. bit1: 0 byte / 1 half.
  * rd'/rs2' = bits[4:2], rs1' = bits[9:7] (both x8..x15), unsigned, imm in bytes.
- * imm[4:0] = {bit11, bit10, bit6, bit5, bit12}.
+ * Byte: imm[4:0] = {bit11, bit10, bit6, bit5, bit12}.
+ * Half: imm[5:1] = {bit12, bit11, bit10, bit6, bit5}, imm[0] = 0.
+ * The shared bit12 encodes byte offset 1 for byte accesses but 32 for halfwords.
  */
 static bool trans_xlinx_cls(DisasContext *ctx, uint16_t insn, bool is_store)
 {
     int rd = 8 + ((insn >> 2) & 0x7);
     int rs1 = 8 + ((insn >> 7) & 0x7);
-    int imm = ((insn >> 12) & 0x1)
+    bool half = (insn >> 1) & 0x1;
+    int imm = (((insn >> 12) & 0x1) << (half ? 5 : 0))
             | (((insn >> 5) & 0x1) << 1)
             | (((insn >> 6) & 0x1) << 2)
             | (((insn >> 10) & 0x1) << 3)
             | (((insn >> 11) & 0x1) << 4);
-    bool half = (insn >> 1) & 0x1;
     MemOp memop = half ? MO_TEUW : MO_UB;
     TCGv addr = get_address(ctx, rs1, imm);
 

@@ -38,6 +38,7 @@ from ws53_tsensor_test import tsensor_test
 from ws53_trng_test import trng_test
 from ws53_efuse_test import efuse_test
 from ws53_branch_immediate_test import run as branch_immediate_test
+from ws53_compressed_memory_test import run as compressed_memory_test
 from ws53_priority_test import run as priority_test
 from ws53_i2s_test import i2s_test
 from ws53_adc_test import adc_test
@@ -370,6 +371,7 @@ if __name__ == "__main__":
               "trng": trng_test(args.qemu),
               "efuse_read": efuse_test(args.qemu),
               "branch_immediate": branch_immediate_test(args.qemu),
+              "compressed_memory": compressed_memory_test(args.qemu),
               "priority": priority_test(args.qemu),
               "i2s": i2s_test(args.qemu),
               "adc_calibration": adc_test(args.qemu),

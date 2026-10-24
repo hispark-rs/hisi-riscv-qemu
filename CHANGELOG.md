@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Decode the high offset bit of xlinx compressed `lhu`/`sh` as byte offset 32.
+  The old byte-access interpretation used offset 1, corrupting WS53 SDIO ROM
+  counters at offsets 32..44. Byte loads/stores retain their original encoding.
+  An SDK-free 8192-case regression covers all compressed registers and offsets;
+  its complete encoding corpus can also be regenerated with the vendor assembler.
+
 ## [0.4.9] - 2026-06-27
 
 On-silicon HIL bring-up surfaced six peripheral-model divergences (issues #2–#7,
