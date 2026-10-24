@@ -54,6 +54,12 @@ jobs:
           uv run --script scripts/ws53_sfc_cpu_test.py --qemu ./qemu/build/qemu-system-riscv32 \
             > artifacts/ws53-sfc/cpu.json 2> artifacts/ws53-sfc/cpu.stderr.log
 
+      - name: WS53 SFC configured snapshot and TCG read-only contracts
+        run: |
+          mkdir -p artifacts/ws53-sfc
+          uv run --script scripts/ws53_sfc_snapshot_test.py --qemu ./qemu/build/qemu-system-riscv32 \
+            --output artifacts/ws53-sfc/snapshot > artifacts/ws53-sfc/snapshot.stdout.log 2> artifacts/ws53-sfc/snapshot.stderr.log
+
       - name: WS53 SFC startup and immutable-profile guards
         run: |
           mkdir -p artifacts/ws53-sfc

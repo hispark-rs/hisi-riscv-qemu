@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #include "qemu/bswap.h"
+#include "qemu/cutils.h"
 #define TYPE_WS53_SFC_COMMAND "ws53-sfc-command"
 OBJECT_DECLARE_SIMPLE_TYPE(WS53SfcCommandState, WS53_SFC_COMMAND)
 #define WS53_SFC_NOR_SIZE (4u * 1024 * 1024)
@@ -15,7 +16,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(WS53SfcCommandState, WS53_SFC_COMMAND)
 
 struct WS53SfcCommandState {
     SysBusDevice parent_obj;
-    MemoryRegion mmio, xip_rejected;
+    MemoryRegion mmio, xip_rejected, clock_observation;
     QEMUTimer *command_timer, *peer_timer;
     uint8_t *array;
     uint32_t config, instruction, address;
@@ -25,10 +26,18 @@ struct WS53SfcCommandState {
     uint8_t peer_opcode, peer_data[64];
     uint32_t peer_address, peer_length;
     bool assume_profile, controller_stall, peer_stall, power_cycle_level;
+    bool configured_handoff;
+    char *snapshot_global, *snapshot_dma, *snapshot_clock;
+    char *snapshot_status3;
+    bool has_status3;
+    uint8_t status3;
+    uint32_t initial_global, initial_dma, initial_clock;
+    uint32_t global_config, dma_control, clock_state;
     bool peer_busy, peer_wel, volatile_enable, peer_nonvolatile;
     uint8_t sr1_config, sr1_live, sr2, nv_sr1, nv_sr2;
     int64_t command_remaining, peer_remaining;
     uint64_t commands_started, commands_completed, rejections;
+    uint64_t mutating_commands_started;
     uint64_t peer_operations, peer_commits, power_cycles;
 };
 
@@ -114,6 +123,7 @@ static void ws53_sfc_command_complete(void *opaque)
         break;
     case 0x05: s->data[0] = s->sr1_live; break;
     case 0x35: s->data[0] = s->sr2; break;
+    case 0x15: s->data[0] = s->status3; break;
     case 0x06: s->peer_wel = true; s->volatile_enable = false; break;
     case 0x04: s->peer_wel = false; s->volatile_enable = false; break;
     case 0x50: s->volatile_enable = true; s->peer_wel = false; break;
@@ -151,11 +161,22 @@ static const char *ws53_sfc_validate(WS53SfcCommandState *s, uint32_t config)
     bool read = config & (1u << 8), data = config & (1u << 7);
     bool address = config & 8;
     uint32_t length = ((config >> 9) & 63) + 1;
+    if (s->configured_handoff) {
+        /* Admission checks, NOT proof of physical clock, ownership or drain.
+         * DMA is not modeled: a supplied busy indication cannot self-clear. */
+        unsigned source = (s->clock_state >> 1) & 7;
+        if (s->dma_control & 1) { return "snapshot-dma-busy-unqualified"; }
+        if (!(s->clock_state & 1)) { return "snapshot-clock-disabled"; }
+        if (source != 0 && source != 6) { return "snapshot-clock-source-unsupported"; }
+        if (s->global_config & 1) { return "snapshot-spi-mode-unsupported"; }
+        if (s->global_config & 4) { return "snapshot-address-mode-unsupported"; }
+    }
     if (!(config & 2)) { return "unsupported-chip-select"; }
     if (config & ((7u << 17) | (7u << 4))) {
         return "unsupported-interface-or-dummy";
     }
-    if (s->peer_busy && op != 0x05 && op != 0x35) {
+    if (s->peer_busy && op != 0x05 && op != 0x35 &&
+        !(op == 0x15 && s->has_status3)) {
         return "nor-busy";
     }
     switch (op) {
@@ -166,6 +187,12 @@ static const char *ws53_sfc_validate(WS53SfcCommandState *s, uint32_t config)
         return NULL;
     case 0x05:
     case 0x35:
+        if (!read || !data || address || length != 1) {
+            return "invalid-status-read-shape";
+        }
+        return NULL;
+    case 0x15:
+        if (!s->has_status3) { return "unsupported-opcode"; }
         if (!read || !data || address || length != 1) {
             return "invalid-status-read-shape";
         }
@@ -225,6 +252,12 @@ static MemTxResult ws53_sfc_read(void *opaque, hwaddr off, uint64_t *value,
                          "unsupported-register";
     if (s->assume_profile && size == 4 && !(off & 3)) {
         switch (off) {
+        case 0x100:
+            if (s->configured_handoff) { *value = s->global_config; return MEMTX_OK; }
+            break;
+        case 0x240:
+            if (s->configured_handoff) { *value = s->dma_control; return MEMTX_OK; }
+            break;
         case 0x300: *value = s->config; return MEMTX_OK;
         case 0x308: *value = s->instruction; return MEMTX_OK;
         case 0x30c: *value = s->address; return MEMTX_OK;
@@ -258,6 +291,11 @@ static MemTxResult ws53_sfc_write(void *opaque, hwaddr off, uint64_t value,
             s->command_length = (value & 0x80) ? ((value >> 9) & 63) + 1 : 0;
             memcpy(s->command_data, s->data, sizeof(s->command_data));
             s->commands_started++;
+            if (s->instruction == 0x06 || s->instruction == 0x04 ||
+                s->instruction == 0x50 || s->instruction == 0x01 ||
+                s->instruction == 0x02 || s->instruction == 0x20) {
+                s->mutating_commands_started++;
+            }
             s->command_remaining = WS53_SFC_CMD_NS;
         }
         s->config = value;
@@ -280,6 +318,39 @@ static MemTxResult ws53_sfc_write(void *opaque, hwaddr off, uint64_t value,
 rejected:
     return ws53_sfc_reject(s, "write", off, value, size, reason);
 }
+
+/* RDL 92a3d20: same-address halfword/word views of M_CRG+0x570.
+ * Upper bits are opaque supplied values, not invented reserved/reset zeros.
+ * No writes, even same-value writes: no safe switching protocol is modeled. */
+static MemTxResult ws53_sfc_clock_read(void *opaque, hwaddr off,
+                                      uint64_t *value, unsigned size,
+                                      MemTxAttrs attrs)
+{
+    WS53SfcCommandState *s = opaque;
+    *value = UINT64_MAX;
+    if (s->assume_profile && s->configured_handoff && !off &&
+        (size == 2 || size == 4)) {
+        *value = size == 2 ? s->clock_state & 0xffff : s->clock_state;
+        return MEMTX_OK;
+    }
+    return ws53_sfc_reject(s, "clock-read", off, 0, size,
+                          !s->configured_handoff ? "snapshot-disabled" :
+                          "unsupported-access-width");
+}
+static MemTxResult ws53_sfc_clock_write(void *opaque, hwaddr off,
+                                       uint64_t value, unsigned size,
+                                       MemTxAttrs attrs)
+{
+    return ws53_sfc_reject(opaque, "clock-write", off, value, size,
+                          "clock-writes-not-modeled");
+}
+static const MemoryRegionOps ws53_sfc_clock_ops = {
+    .read_with_attrs = ws53_sfc_clock_read,
+    .write_with_attrs = ws53_sfc_clock_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+};
 
 static MemTxResult ws53_sfc_xip_read(void *opaque, hwaddr off, uint64_t *value,
                                     unsigned size, MemTxAttrs attrs)
@@ -317,6 +388,12 @@ static void ws53_sfc_controller_reset(void *opaque)
     ws53_sfc_abort_command(s);
     s->config = s->instruction = s->address = 0;
     memset(s->data, 0, sizeof(s->data));
+    /* Selected synthetic startup snapshot is replayed after system_reset.
+     * This is not measured MCU POR/retention. A busy DMA snapshot stays busy;
+     * neither reset nor observation claims to cancel/drain an unknown master. */
+    s->global_config = s->initial_global;
+    s->dma_control = s->initial_dma;
+    s->clock_state = s->initial_clock;
     /* Controller reset does NOT reset the external peer or cancel its work. */
 }
 static void ws53_sfc_controller_stall(void *opaque, int n, int level)
@@ -366,19 +443,82 @@ static char *ws53_sfc_get_digest(Object *obj, Error **errp)
     WS53SfcCommandState *s = WS53_SFC_COMMAND(obj);
     return g_compute_checksum_for_data(G_CHECKSUM_SHA256, s->array, WS53_SFC_NOR_SIZE);
 }
+static bool ws53_sfc_parse_snapshot(const char *name, const char *text,
+                                    uint32_t *result, Error **errp)
+{
+    uint64_t value;
+    if (!text || !g_ascii_isdigit(text[0]) ||
+        qemu_strtou64(text, NULL, 0, &value) || value > UINT32_MAX) {
+        error_setg(errp, "ws53-sfc-command: %s requires an explicit unsigned 32-bit raw snapshot", name);
+        return false;
+    }
+    *result = value;
+    return true;
+}
 static void ws53_sfc_realize(DeviceState *dev, Error **errp)
 {
     WS53SfcCommandState *s = WS53_SFC_COMMAND(dev);
+    if (s->snapshot_status3) {
+        uint32_t status3;
+        if (!s->assume_profile) {
+            error_setg(errp, "ws53-sfc-command: snapshot-status3 requires assume-profile");
+            return;
+        }
+        if (!ws53_sfc_parse_snapshot("snapshot-status3", s->snapshot_status3,
+                                     &status3, errp)) {
+            return;
+        }
+        if (status3 > UINT8_MAX) {
+            error_setg(errp, "ws53-sfc-command: snapshot-status3 exceeds unsigned 8-bit raw status");
+            return;
+        }
+        s->status3 = status3;
+        s->has_status3 = true;
+    }
+    if (s->configured_handoff) {
+        if (!s->assume_profile) {
+            error_setg(errp, "ws53-sfc-command: configured-handoff requires assume-profile");
+            return;
+        }
+        if (!ws53_sfc_parse_snapshot("snapshot-global", s->snapshot_global,
+                                     &s->initial_global, errp) ||
+            !ws53_sfc_parse_snapshot("snapshot-dma", s->snapshot_dma,
+                                     &s->initial_dma, errp) ||
+            !ws53_sfc_parse_snapshot("snapshot-clock", s->snapshot_clock,
+                                     &s->initial_clock, errp)) {
+            return;
+        }
+    } else if (s->snapshot_global || s->snapshot_dma || s->snapshot_clock) {
+        error_setg(errp, "ws53-sfc-command: raw snapshots require configured-handoff");
+        return;
+    }
     memset(s->array, 0xff, WS53_SFC_NOR_SIZE);
     if (s->assume_profile) {
         qemu_log_mask(LOG_GUEST_ERROR,
             "ws53-sfc-command: assumed synthetic NOR4MiB ID7f5301 page256 sector4096 "
             "command10us program200us erase1ms status100us; no silicon/NV/drain qualification\n");
     }
+    if (s->configured_handoff) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "ws53-sfc-command: assumed configured snapshot global=0x%08x dma=0x%08x clock=0x%08x; "
+            "read-only observation, reset replays snapshot; no POR/clock-frequency/ownership/drain qualification\n",
+            s->initial_global, s->initial_dma, s->initial_clock);
+    }
+    if (s->has_status3) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "ws53-sfc-command: assumed immutable synthetic STATUS3=0x%02x; "
+            "read15 only, retained across controller reset and peer power cycle; no silicon/NV bit semantics\n",
+            s->status3);
+    }
     qemu_register_reset(ws53_sfc_controller_reset, s);
 }
 static const Property ws53_sfc_properties[] = {
     DEFINE_PROP_BOOL("assume-profile", WS53SfcCommandState, assume_profile, false),
+    DEFINE_PROP_BOOL("configured-handoff", WS53SfcCommandState, configured_handoff, false),
+    DEFINE_PROP_STRING("snapshot-global", WS53SfcCommandState, snapshot_global),
+    DEFINE_PROP_STRING("snapshot-dma", WS53SfcCommandState, snapshot_dma),
+    DEFINE_PROP_STRING("snapshot-clock", WS53SfcCommandState, snapshot_clock),
+    DEFINE_PROP_STRING("snapshot-status3", WS53SfcCommandState, snapshot_status3),
 };
 static void ws53_sfc_unrealize(DeviceState *dev)
 {
@@ -405,11 +545,15 @@ static void ws53_sfc_init(Object *obj)
                          "ws53-sfc-XIP-unsupported", WS53_SFC_NOR_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->xip_rejected);
+    memory_region_init_io(&s->clock_observation, obj, &ws53_sfc_clock_ops, s,
+                         "ws53-sfc-clock-observation", 4);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->clock_observation);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_sfc_controller_stall, "controller-stall", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_sfc_peer_stall, "peer-stall", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_sfc_power_cycle, "peer-power-cycle", 1);
     object_property_add_uint64_ptr(obj, "commands-started", &s->commands_started, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "commands-completed", &s->commands_completed, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "mutating-commands-started", &s->mutating_commands_started, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "rejections", &s->rejections, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "peer-operations", &s->peer_operations, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "peer-commits", &s->peer_commits, OBJ_PROP_FLAG_READ);

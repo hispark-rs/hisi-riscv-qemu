@@ -33,12 +33,77 @@ BUS_CONFIG、BUS_DMA、FAPC、AES、IRQ、软复位及其他未实现寄存器�
 特别是遗留 `0x120/124/128/12c/130`，固定 WS53 SDK 没有相应来源；没有推测应用核
 SFC IRQ 路由。这里也不提供 BUS_DMA_START 的“恒为零”占位。
 
+### 可选的 configured snapshot 只读观察
+
+普通命令 profile 的上述拒绝范围保持不变。另有显式合成启动状态，可供未来
+RAM 中的只读命令客户端检查前提；这不是实板 FlashBoot 所有权交接证明：
+
+```text
+-M ws53 -global ws53-sfc-command.assume-profile=on \
+  -global ws53-sfc-command.configured-handoff=on \
+  -global ws53-sfc-command.snapshot-global=0x0 \
+  -global ws53-sfc-command.snapshot-dma=0x0 \
+  -global ws53-sfc-command.snapshot-clock=0xd
+```
+
+三个原始32位值必须全部显式提供，缺失、负数、尾随字符或溢出均拒绝启动；关闭
+`configured-handoff` 时不得提供这些值。所有选项只能在 realize 前设置，运行中
+通过 QMP 设置同值也拒绝。示例的零和 `0xd` 是人为测试输入，不是芯片复位值。
+本 profile 仍要求 `assume-profile`，仍与 `flashboot-handoff` 互斥，不提供 XIP。
+
+| 地址 | 观察范围 |
+| --- | --- |
+| `0x53000100` GLOBAL_CONFIG | 仅32位对齐读，原始32位全部保留 |
+| `0x53000240` BUS_DMA_CTRL | 仅32位对齐读，原始32位全部保留 |
+| `0x52000570` XIP_SFC_CLOCK | 同址16/32位读；半字是字的低16位 |
+
+这些读取不清位、不执行初始化、不创建 DMA 事务。配置写（包括同值、半字 RMW）
+全部返回 `MEMTX_ERROR`；DMA其他寄存器、IRQ、BUS映射、FAPC/AES继续拒绝。
+时钟窗口仅占4字节，不覆盖相邻 `0x52000574` 的独立 QSPI 时钟模型。错误宽度及
+偏移在各窗口内明确拒绝；跨多个外设窗口的总线访问不是一个原子配置事务。
+
+提交 CMD_START 时检查：DMA_START bit0 不得为1，时钟 ENABLE bit0 必须为1，
+SOURCE_CONFIG bits3:1 只能是0或6，GLOBAL_CONFIG 的 mode bit0 和
+flash_addr_mode bit2 必须为0。mode编码1（SDK枚举Mode3）和四字节地址在本
+合成通路中未支持。失败不改变命令、数据、NOR或使能状态。其余快照位仅供原样
+观察；WP、rd_delay、sample_test不提供真实写保护或采样时序效果的资格。
+0和6是SDK源码出现的配置编码，**没有据此计算物理频率**；命令10µs仍是独立假设。
+
+`system_reset` 重放所选快照，同时沿用原控制器取消未提交命令、外部NOR保留已
+提交工作的规则。重放是合成启动场景，不是硅POR/retention；DMA_START=1始终保持
+忙，不会因复位或读取变0，也不声称已取消或排空任何RAM master。读取快照成功、
+CMD_START=0、DMA_START=0均不证明资源独占、无并发XIP、WIP清零或cache/drain。
+
+模型原有NOR写能力保留，新增只读QOM计数 `mutating-commands-started` 统计被接收的
+06/04/50/01/02/20。只读CPU测试发9f/05/35/03（显式提供SR3时另发15）并检查该计数为0、NOR数组摘要和
+运行态/NV/WEL全部不变。它是独立TCG客户端，不能冒充尚未运行的Rust HAL验证。
+默认15/SR3继续明确拒绝。仅当另行显式提供startup属性
+`-global ws53-sfc-command.snapshot-status3=0xa7` 时才允许无地址、读方向、长度1的
+15命令，返回该原始u8；它只依赖 `assume-profile`，不要求configured快照。缺失不
+补零，负数/溢出/畸形值拒绝，运行后不能更改。0/0xa7/0xff都是可选合成输入，不
+解释任何位为具体器件功能。这个只读常量跨controller reset和合成peer power-cycle
+保留；它没有可写NV副本，不宣称真实SR3的复位或持久化格式。NOR WIP期间可以读，
+但15返回值不被解释为WIP，不替代05。
+
+布局来源为 `hisi-registers` 提交 `92a3d202e70e305426c18af07158731e7e95e921`
+及固定SDK `clock_recover.c:137–147`、`flashboot_ws53/startup/main.c:89–97`。
+它们只提供使能/编码和混合访问宽度；没有 ready、drain、频率或安全切频协议。
+
+```bash
+uv run --script scripts/ws53_sfc_snapshot_test.py --qemu ./qemu/build/qemu-system-riscv32 --output /tmp/ws53-sfc-snapshot-new
+```
+
+该测试包含启动缺项/畸形输入、QMP运行中变更、未知高位保留、两个访问视图、全部
+未支持source编码、CMD与NOR WIP区分、两轮复位及真正TCG的cause5/7、mepc、mtval、
+rd/内存哨兵和有界命令轮询。软件通过不改变既有候选镜像或正式CI构建资格。
+
 ## 命令和数据效果
 
 | opcode | 形状 | 合成对端行为 |
 | --- | --- | --- |
 | 0x9f | 读 3 字节、无地址 | 返回固定字节 `7f 53 01`，不是实板 JEDEC ID |
 | 0x05 / 0x35 | 读 1 字节、无地址 | SR1（含 WIP/WEL）/SR2；读不清状态 |
+| 0x15（仅显式seed） | 读 1 字节、无地址 | 返回 `snapshot-status3` 原始u8，不解释位语义；未提供则拒绝 |
 | 0x06 / 0x04 | 写方向、无数据/地址 | 设置/清除 WEL，同时取消 volatile-enable |
 | 0x50 | 写方向、无数据/地址 | 设置 volatile-enable，清 WEL |
 | 0x01 | 写 2 字节、无地址 | 需要 WEL 或 volatile-enable；提交状态更新 |
@@ -48,7 +113,7 @@ SFC IRQ 路由。这里也不提供 BUS_DMA_START 的“恒为零”占位。
 
 数组初始全 FF，页为 256 字节、扇区为 4 KiB。跨页编程、不对齐擦除、越界、
 缺少使能、未知 opcode 和不匹配命令形状都原子拒绝，不清 WEL、不改部分字节。
-NOR 忙时只允许 0x05/0x35。读取可跨页，但不能越过 4 MiB 边界。
+NOR 忙时只允许 0x05/0x35及已显式配置的0x15。读取可跨页，但不能越过 4 MiB 边界。
 
 0x01 仅允许 SR1 的 `0x1c` 位和 SR2 的 `0x02` 位。**这些是合成语义**：
 SR1 BP 非零保护整个数组；SR2 bit1 仅储存，不使能 Quad。其他状态位、锁定、CMP、

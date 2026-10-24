@@ -248,6 +248,8 @@ static void ws53_init(MachineState *machine)
         exit(1);
     }
     sysbus_mmio_map(SYS_BUS_DEVICE(sfc), 0, 0x53000000);
+    /* SFC halfword/word observation is separate from QSPI clock at +0x574. */
+    sysbus_mmio_map(SYS_BUS_DEVICE(sfc), 2, 0x52000570);
     if (WS53_SFC_COMMAND(sfc)->assume_profile) {
         /* Explicit rejection window, never a second silently divergent NOR. */
         sysbus_mmio_map(SYS_BUS_DEVICE(sfc), 1, 0x400000);
