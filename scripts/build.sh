@@ -106,8 +106,11 @@ done
 #    Wi-Fi/Ethernet MAC model (needs libslirp-dev installed).
 if [ ! -f "$QEMU_DIR/build/build.ninja" ]; then
     echo "==> configuring (riscv32-softmmu only, slirp on)"
+    # DTC overrides Meson's global werror setting. Keep the declared
+    # --disable-werror policy for this fallback too (new GCC/glibc headers
+    # diagnose its older memchr const conversion).
     (cd "$QEMU_DIR" && ./configure --target-list=riscv32-softmmu \
-        --disable-werror --disable-docs --enable-slirp)
+        --disable-werror --disable-docs --enable-slirp -Ddtc:werror=false)
 fi
 
 # 6. build the emulator, then the WS63 qtest binary (ninja picks up the
