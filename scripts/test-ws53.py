@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from ws53_gpio_test import gpio_test
 from ws53_flash_handoff_test import handoff_test
+from ws53_cache_state_test import cache_state_test
+from ws53_rom_trap_test import rom_trap_test
 from ws53_gpio_ram_test import gpio_ram_test
 from ws53_pinctrl_test import pinctrl_test
 from ws53_nmi_test import nmi_test
@@ -341,6 +343,8 @@ if __name__ == "__main__":
     parser.add_argument("--elf-all", type=Path, help="RAM test built with all UART and GPIO features")
     args = parser.parse_args()
     result = {"flashboot_handoff": handoff_test(args.qemu),
+              "cache_state": cache_state_test(args.qemu),
+              "rom_trap_scope": rom_trap_test(args.qemu),
               "model": model_test(args.qemu), "unsupported": unsupported_test(args.qemu),
               "uart": uart_test(args.qemu), "uart_config": uart_config_test(args.qemu),
               "uart_tx_irq": uart_tx_irq_test(args.qemu),

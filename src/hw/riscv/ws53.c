@@ -69,9 +69,13 @@ struct WS53MachineState {
     WS53Mclken1State *mclken1;
     WS53TimerChannel timers[2];
     bool gpio_direct, flashboot_handoff;
+    bool cache_observed;
+    uint32_t cache_icctl, cache_dcctl, cache_memattrl;
+    uint64_t cache_rejections, cache_epoch_rejections;
 };
 
 #include "ws53_flash_handoff.c.inc"
+#include "ws53_cache_state.c.inc"
 
 static void ws53_timer_irq(WS53TimerChannel *c)
 {
@@ -212,6 +216,7 @@ static void ws53_reset(void *opaque)
 {
     WS53MachineState *s = opaque;
     cpu_reset(CPU(&s->cpu));
+    ws53_cache_state_reset(s);
     if (s->flashboot_handoff) {
         ws53_flash_handoff_reset(s);
     }
@@ -233,6 +238,7 @@ static void ws53_init(MachineState *machine)
     MemoryRegion *sys = get_system_memory();
     uint64_t entry = 0x28000;
     ws63_register_custom_csrs();
+    ws53_cache_state_init(s);
     ws63_make_ram(sys, &s->itcm, "ws53.acore.itcm", 0x20000, 0x10000);
     if (s->flashboot_handoff) {
         ws53_flash_handoff_init(s, sys);
@@ -466,6 +472,8 @@ static void ws53_init(MachineState *machine)
         exit(1);
     }
     object_initialize_child(OBJECT(machine), "cpu", &s->cpu, machine->cpu_type);
+    /* BS21 ROM addresses overlap this machine's ITCM; retain real exceptions. */
+    s->cpu.hisi_legacy_rom_disabled = true;
     qdev_prop_set_uint64(DEVICE(&s->cpu), "resetvec", entry);
     s->cpu.env.mhartid = 0;
     qdev_realize(DEVICE(&s->cpu), NULL, &error_fatal);
@@ -517,6 +525,7 @@ static void ws53_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
     mc->max_cpus = 1;
     mc->default_cpu_type = TYPE_RISCV_CPU_WS63;
     mc->default_ram_size = 0;
+    ws53_cache_state_class_init(oc);
     object_class_property_add_bool(oc, "gpio-direct", ws53_get_gpio_direct, ws53_set_gpio_direct);
     object_class_property_set_description(oc, "gpio-direct",
         "Bypass pad routing for isolated GPIO register-contract tests only");
