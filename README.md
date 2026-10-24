@@ -146,6 +146,13 @@ AG1/AG2 mode1，其余 mode0；不是芯片复位默认值。用于主工程的
 覆盖逐位数据/停止位、双pad输出、复用切换、内部回环隔离、暂停、复位、争用
 及不支持配置；已接入 `test-ws53.py`。原有 H1/H0/L0 复位和UART DMA模型独立。
 
+### WS53 FlashBoot 交接与引脚记录
+
+新增可选 `flashboot-handoff=on`，用非零 RAM 初值测试真实应用 ELF 的模式1
+内存切换、data/bss初始化及外设接管。它不是完整厂商启动链仿真。
+`ws53-pinctrl.pad-trace` 可导出带虚拟时间的数字状态，供与逻辑分析仪对照。
+配置、测试和限制见 [交接模型说明](docs/reference/ws53-flash-handoff.md)。
+
 ### WS53 UART RX 数字输入模型
 
 `ws53-uart.assume-pad-rx=on` 与 `ws53-pinctrl.assume-uart-rx=on` 显式启用

@@ -54,6 +54,7 @@ cp "$HERE/src/hw/riscv/bs22.c"                            "$QEMU_DIR/hw/riscv/bs
 cp "$HERE/src/hw/riscv/bs20.c"                            "$QEMU_DIR/hw/riscv/bs20.c"
 cp "$HERE/src/hw/riscv/bs21e.c"                           "$QEMU_DIR/hw/riscv/bs21e.c"
 cp "$HERE/src/hw/riscv/ws53.c"                            "$QEMU_DIR/hw/riscv/ws53.c"
+cp "$HERE/src/hw/riscv/ws53_flash_handoff.c.inc"            "$QEMU_DIR/hw/riscv/ws53_flash_handoff.c.inc"
 cp "$HERE/src/hw/riscv/ws53_uart.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_uart.c.inc"
 cp "$HERE/src/hw/riscv/ws53_uart_reset.c.inc"             "$QEMU_DIR/hw/riscv/ws53_uart_reset.c.inc"
 cp "$HERE/src/hw/riscv/ws53_gpio.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_gpio.c.inc"

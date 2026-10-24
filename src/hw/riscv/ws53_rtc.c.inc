@@ -13,7 +13,7 @@ struct WS53RtcState {
     uint64_t counter_hz;
     uint32_t ack_delay_ns;
     qemu_irq irq;
-    uint32_t load, control, latched, fraction;
+    uint32_t load, load_high, control, latched, fraction;
     uint64_t remaining;
     int64_t last_ns;
     bool pending, valid, requested, clock_on, stall_snapshot;
@@ -107,6 +107,9 @@ static uint64_t ws53_rtc_read(void *opaque, hwaddr off, unsigned size)
         ws53_rtc_sync(s);
         switch (off) {
         case 0: return s->load;
+        /* Preload storage is observable even when the timer is stopped.
+         * Only zero-high (32-bit) counting is implemented below. */
+        case 4: return s->load_high;
         case 8:
             if (!s->valid) { break; }
             return s->latched;
@@ -136,6 +139,10 @@ static void ws53_rtc_write(void *opaque, hwaddr off, uint64_t value, unsigned si
         s->load = v;
         return;
     }
+    if (off == 4 && !(s->control & 1)) {
+        s->load_high = v;
+        return;
+    }
     if (off == 0x14 && v == 1) {
         ws53_rtc_sync(s);
         if (s->pending && s->ack_delay_ns) {
@@ -149,6 +156,7 @@ static void ws53_rtc_write(void *opaque, hwaddr off, uint64_t value, unsigned si
     }
     /* RSTFSM timing is unknown. CNT_LOCK is RO and may be copied by RMW. */
     if (off != 0x10 || (v & ~0x6fu)) { goto invalid; }
+    if ((v & 1) && s->load_high != 0) { goto invalid; }
     if ((s->control & 1) && (v & 1) && ((s->control ^ v) & 6)) { goto invalid; }
     if (!ws53_rtc_profile(s)) { return; }
     ws53_rtc_sync(s);
@@ -211,7 +219,7 @@ static void ws53_rtc_reset(void *opaque)
     WS53RtcState *s = opaque;
     timer_del(s->timer);
     timer_del(s->ack_timer);
-    s->load = s->control = s->latched = s->fraction = 0;
+    s->load = s->load_high = s->control = s->latched = s->fraction = 0;
     s->remaining = 0;
     s->pending = s->valid = s->requested = s->request_readback = false;
     s->last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);

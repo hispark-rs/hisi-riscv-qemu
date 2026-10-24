@@ -142,6 +142,46 @@ def rtc_test(qemu):
             assert a[0](0x18) == 0 and b[0](0x18) == 1
         assert diagnostics[0].splitlines() == [NOTICE] * 2, diagnostics
 
+    # LOAD_HIGH is readable storage, not a 64-bit counter implementation.
+    # Nonzero-high starts must fail explicitly instead of silently truncating.
+    high_rejections = []
+    with running(qemu, False, profile()) as (command, irq, reset, diagnostics):
+        command('irq_intercept_in /machine/intc')
+        for ch in (0, 1):
+            read, write, sample, start, step, _ = access(command, ch)
+            other = access(command, 1-ch)[0]
+            reset()
+            assert read(4) == other(4) == 0
+            for high in (1, 0x80000000, 0xffffffff):
+                write(0x10, 8)
+                write(0, 3)
+                write(4, high)
+                assert read(4) == high and other(4) == 0
+                write(0x10, 9)
+                high_rejections.append('ws53-rtc: unimplemented write +0x10 value=0x9 size=4')
+                step(ns(8))
+                assert read(0x10) == 8 and read(0x18) == 0
+                assert not irq.get(49+ch, False)
+                assert read(0) == 3 and read(4) == high
+            write(4, 0)
+            start(100)
+            assert read(4) == 0 and sample() == 100
+            write(4, 1)  # Cannot change the preload while the timer is enabled.
+            high_rejections.append('ws53-rtc: unimplemented write +0x4 value=0x1 size=4')
+            assert read(4) == 0 and sample() == 100
+            step(ns(101))
+            assert read(0x18) == 1 and not read(0x10) & 1
+            write(0x14, 1)
+            write(4, 0x12345678)
+            assert read(4) == 0x12345678
+            reset()
+            assert read(4) == other(4) == read(0x18) == 0
+            start(0)
+            step(ns(1))
+            assert read(0x18) == 1  # Reset/recovery still counts the low word.
+    assert [line for line in diagnostics[0].splitlines() if line != NOTICE] == high_rejections
+    assert diagnostics[0].splitlines().count(NOTICE) == 2
+
     rejected = 0
     with running(qemu, False, profile()) as (command, _, _, diagnostics):
         for ch, base in enumerate(BASES):
@@ -150,7 +190,7 @@ def rtc_test(qemu):
             value = sample()
             operations = [f'{op} {base+off:#x}' for op, off in
                 (('readb', 0), ('readw', 0), ('readq', 0), ('readl', 1),
-                 ('readl', 4), ('readl', 12), ('readl', 20))]
+                 ('readl', 12), ('readl', 20))]
             operations += [f'{op} {base+off:#x} {value:#x}' for op, off, value in
                 (('writeb', 0, 1), ('writew', 0, 1), ('writeq', 0, 1), ('writel', 1, 1),
                  ('writel', 0, 1), ('writel', 4, 1), ('writel', 8, 1), ('writel', 12, 1),
@@ -195,6 +235,10 @@ def rtc_test(qemu):
             'delayed_ack_profile': {'clock_hz':32000,'delay_ns':32000,'reset_cancels_pending':True},
             'assume_timing_required': True, 'clock_hz': 32768, 'command_readback_profiles': 2,
             'modes_tested': [0, 1, 2, 3], 'invalid_accesses_diagnosed': rejected,
+            'load_high': {'storage_bits': 32, 'counter_bits': 32,
+                          'nonzero_start_rejections': 6, 'active_write_rejections': 2,
+                          'reset_zero_and_low_word_recovery': True,
+                          'channels_isolated': True},
             'checks': ['zero/max count', 'latched not live words', 'masked raw pending',
                        'IRQ unmask/EOI', 'stop/restart', 'free-run wraps to u32 max',
                        'fractional clock pause', 'snapshot stall/recovery', 'channel isolation',

@@ -48,6 +48,11 @@ def uart_dma_test(qemu):
         b = Bus(cmd); cmd('irq_intercept_in /machine/intc')
         for port in range(2):
             u = Uart(b, port)
+            assert u.read(0x60) == 0xd04
+            u.fault('no-dma-capability', True)
+            assert u.read(0x60) == 0x504
+            u.fault('no-dma-capability', False)
+            assert u.read(0x60) == 0xd04
             for ch in range(8):
                 for receive in (False, True):
                     reset(); b.write(0x1c, 1); u.write(0x2c, 2)

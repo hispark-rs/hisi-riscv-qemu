@@ -40,6 +40,8 @@ struct WS53PinctrlState {
     SysBusDevice parent_obj;
     WS53PinRegion regions[3];
     uint8_t mode[48], config[48];
+    CharBackend pad_trace;
+    uint8_t traced_state[48];
     bool external_level[48], external_drive[48], gpio_out[48], gpio_oe[48];
     bool delivered[48];
     bool pwm0_level, pwm0_drive;
@@ -143,6 +145,18 @@ static void ws53_pad_update(WS53PinctrlState *s, const WS53PadDesc *d)
     bool level = driving ? driven_level :
                  s->external_drive[n] ? s->external_level[n] : pull == 1;
     bool input = gpio && (s->config[n] & 4) && level;
+    uint8_t state = level | (driving << 1) | (floating << 2) | (conflict << 3);
+    if (state != s->traced_state[n]) {
+        s->traced_state[n] = state;
+        if (qemu_chr_fe_backend_connected(&s->pad_trace)) {
+            /* Digital model transitions, not voltage or electrical timing.
+             * CSV: virtual_ns,SDK_pin,level,driving,floating,contention. */
+            char row[128];
+            int len = snprintf(row, sizeof(row), "%" PRId64 ",%u,%u,%u,%u,%u\n",
+                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), n, level, driving, floating, conflict);
+            qemu_chr_fe_write_all(&s->pad_trace, (const uint8_t *)row, len);
+        }
+    }
     qemu_set_irq(s->level[n], level);
     qemu_set_irq(s->drive[n], driving);
     qemu_set_irq(s->floating[n], floating);
@@ -305,6 +319,7 @@ static void ws53_pinctrl_reset(void *opaque)
 {
     WS53PinctrlState *s = opaque;
     memset(s->mode, 0, sizeof(s->mode));
+    memset(s->traced_state, 0xff, sizeof(s->traced_state));
     for (unsigned port = 0; port < 3; port++) {
         s->uart_rx_selected[port] = -1;
         s->uart_rx_ambiguous[port] = false;
@@ -362,6 +377,7 @@ static void ws53_pinctrl_init(Object *obj)
     qemu_register_reset(ws53_pinctrl_reset, s);
 }
 static const Property ws53_pinctrl_properties[] = {
+    DEFINE_PROP_CHR("pad-trace", WS53PinctrlState, pad_trace),
     DEFINE_PROP_BOOL("assume-uart-tx", WS53PinctrlState, uart_tx_profile, false),
     DEFINE_PROP_BOOL("assume-uart-rx", WS53PinctrlState, uart_rx_profile, false),
     DEFINE_PROP_BOOL("uart-console-profile", WS53PinctrlState, uart_console_profile, false),

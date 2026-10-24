@@ -277,7 +277,16 @@ static RISCVException ws63_loci_read(CPURISCVState *env, int csrno,
     case WS63_CSR_LOCIPD1: *val = (uint32_t)env->ws63_locipd[1]; break;
     case WS63_CSR_LOCIPD2: *val = (uint32_t)(env->ws63_locipd[1] >> 32); break;
     default:
-        *val = g_ws63_intc ? g_ws63_intc->loci[csrno - WS63_LOCI_CSR_BASE] : 0;
+        /* Read the same resettable CPU state used for priority arbitration.
+         * A zero-filled device shadow made the first CSR read/modify/write
+         * silently clear priorities of adjacent IRQs after CPU reset. */
+        if (csrno >= 0xBC0 && csrno <= 0xBCF) {
+            *val = env->ws63_locipri[csrno - 0xBC0];
+        } else if (csrno == 0xBFE) {
+            *val = env->ws63_prithd;
+        } else {
+            *val = g_ws63_intc ? g_ws63_intc->loci[csrno - WS63_LOCI_CSR_BASE] : 0;
+        }
         break;
     }
     return RISCV_EXCP_NONE;

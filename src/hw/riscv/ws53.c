@@ -1,6 +1,7 @@
 /* WS53 acore MCU_MODE_1 RAM takeover profile.
  * Evidence: fbb_ws53 163d9150, acore/platform_core.h, timer_porting.c,
- * hal_timer_v150_regs_op.h. No flash boot or control-core emulation.
+ * hal_timer_v150_regs_op.h. Optional observed FlashBoot handoff, not ROM or
+ * vendor firmware emulation. No control-core emulation.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #include "qemu/osdep.h"
@@ -12,6 +13,7 @@
 #include "hw/loader.h"
 #include "hw/sysbus.h"
 #include "hw/irq.h"
+#include "hw/qdev-core.h"
 #include "hw/qdev-properties.h"
 #include "hw/qdev-properties-system.h"
 #include "chardev/char.h"
@@ -53,17 +55,23 @@ typedef struct WS53TimerChannel {
     QEMUTimer *timer;
     qemu_irq irq;
     uint32_t load, control, latched;
-    bool pending, load_written;
-    int64_t start;
+    bool pending, load_written, stalled;
+    int64_t start, paused_at, remaining_ns;
 } WS53TimerChannel;
 
 struct WS53MachineState {
     MachineState parent_obj;
     RISCVCPU cpu;
     MemoryRegion itcm, dtcm, timer_mmio;
+    MemoryRegion flash, dtcm_bank[7], dtcm_blocked, memory_config[3], memory_view[3];
+    uint32_t bram_share, dtcm_share;
+    WS53WdtState *wdt;
+    WS53Mclken1State *mclken1;
     WS53TimerChannel timers[2];
-    bool gpio_direct;
+    bool gpio_direct, flashboot_handoff;
 };
+
+#include "ws53_flash_handoff.c.inc"
 
 static void ws53_timer_irq(WS53TimerChannel *c)
 {
@@ -74,8 +82,39 @@ static void ws53_timer_arm(WS53TimerChannel *c)
 {
     c->start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     uint64_t ticks = MAX(c->load, 1);
-    timer_mod(c->timer, c->start + (ticks * 1000000000ULL +
-                                  WS53_TIMER_HZ - 1) / WS53_TIMER_HZ);
+    c->remaining_ns = (ticks * 1000000000ULL +
+                       WS53_TIMER_HZ - 1) / WS53_TIMER_HZ;
+    if (c->stalled) {
+        c->paused_at = c->start;
+    } else {
+        timer_mod(c->timer, c->start + c->remaining_ns);
+    }
+}
+
+/* QEMU-only fault input, not a silicon clock-register or low-power model.
+ * Freeze the exact virtual-time phase and expiry deadline. Control/LOAD,
+ * snapshots, pending IRQs and the other channel remain independently usable.
+ * Resume the remaining interval, without replaying missed expiries. */
+static void ws53_timer_set_stalled(WS53TimerChannel *c, bool value)
+{
+    if (c->stalled == value) {
+        return;
+    }
+    c->stalled = value;
+    if (!c->timer) {
+        return; /* Machine property supplied before board initialization. */
+    }
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (value) {
+        c->paused_at = now;
+        if (timer_pending(c->timer)) {
+            c->remaining_ns = MAX(timer_expire_time_ns(c->timer) - now, 0);
+            timer_del(c->timer);
+        }
+    } else if (c->control & 1) {
+        c->start += now - c->paused_at;
+        timer_mod(c->timer, now + c->remaining_ns);
+    }
 }
 
 static void ws53_timer_expire(void *opaque)
@@ -96,7 +135,9 @@ static uint32_t ws53_timer_count(WS53TimerChannel *c)
     if (!(c->control & 1)) {
         return 0;
     }
-    uint64_t elapsed = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - c->start;
+    int64_t now = c->stalled ? c->paused_at :
+                              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint64_t elapsed = now - c->start;
     uint64_t ticks = elapsed * WS53_TIMER_HZ / 1000000000ULL;
     return ticks >= c->load ? 0 : c->load - ticks;
 }
@@ -171,12 +212,17 @@ static void ws53_reset(void *opaque)
 {
     WS53MachineState *s = opaque;
     cpu_reset(CPU(&s->cpu));
+    if (s->flashboot_handoff) {
+        ws53_flash_handoff_reset(s);
+    }
     for (unsigned i = 0; i < 2; i++) {
         WS53TimerChannel *c = &s->timers[i];
         timer_del(c->timer);
         /* Deterministic model initialization, not measured silicon resets. */
         c->load = c->control = c->latched = 0;
         c->pending = c->load_written = false;
+        c->start = c->paused_at = c->remaining_ns = 0;
+        /* External fault inputs persist, but cannot resurrect old work. */
         ws53_timer_irq(c);
     }
 }
@@ -188,8 +234,12 @@ static void ws53_init(MachineState *machine)
     uint64_t entry = 0x28000;
     ws63_register_custom_csrs();
     ws63_make_ram(sys, &s->itcm, "ws53.acore.itcm", 0x20000, 0x10000);
-    ws63_make_ram(sys, &s->dtcm, "ws53.acore.dtcm", 0x20010000, 0x50000);
-    /* No ROM, flash, shared-memory or catch-all unimplemented-device regions. */
+    if (s->flashboot_handoff) {
+        ws53_flash_handoff_init(s, sys);
+    } else {
+        ws63_make_ram(sys, &s->dtcm, "ws53.acore.dtcm", 0x20010000, 0x50000);
+    }
+    /* No BootROM, control-core or catch-all unimplemented-device regions. */
     DeviceState *intc = qdev_new(TYPE_WS63_INTC);
     /* A-board PWM_CFG retains pending after its initial load flag is ACKed
      * while LOCIEN72 is masked. Other sources need independent evidence. */
@@ -231,6 +281,7 @@ static void ws53_init(MachineState *machine)
     sysbus_connect_irq(SYS_BUS_DEVICE(spi), 0, qdev_get_gpio_in(intc, 65));
     sysbus_connect_irq(SYS_BUS_DEVICE(spi), 1, qdev_get_gpio_in(intc, 43));
     DeviceState *mclken1 = qdev_new(TYPE_WS53_MCLKEN1);
+    s->mclken1 = WS53_MCLKEN1(mclken1);
     object_property_add_child(OBJECT(machine), "mclken1", OBJECT(mclken1));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(mclken1), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(mclken1), 0, 0x52000044);
@@ -314,8 +365,14 @@ static void ws53_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(nmi), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(nmi), 0, 0x52000700);
     DeviceState *wdt = qdev_new(TYPE_WS53_WDT);
+    s->wdt = WS53_WDT(wdt);
     object_property_add_child(OBJECT(machine), "wdt", OBJECT(wdt));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(wdt), &error_fatal);
+    if (s->flashboot_handoff && !s->wdt->assume_timing) {
+        error_report("ws53: flashboot-handoff requires explicit "
+                     "-global ws53-wdt.assume-timing=on (assumed timing)");
+        exit(1);
+    }
     sysbus_mmio_map(SYS_BUS_DEVICE(wdt), 0, 0x5702b000);
     sysbus_connect_irq(SYS_BUS_DEVICE(wdt), 0,
                        qdev_get_gpio_in_named(nmi, "source", 1));
@@ -401,7 +458,11 @@ static void ws53_init(MachineState *machine)
     if (machine->kernel_filename &&
         load_elf(machine->kernel_filename, NULL, NULL, NULL, &entry, NULL,
                  NULL, NULL, 0, EM_RISCV, 0, 0) <= 0) {
-        error_report("ws53: cannot load RAM ELF %s", machine->kernel_filename);
+        error_report("ws53: cannot load ELF %s", machine->kernel_filename);
+        exit(1);
+    }
+    if (s->flashboot_handoff && machine->kernel_filename && entry != 0x45d300) {
+        error_report("ws53: flashboot-handoff requires application entry 0x45d300");
         exit(1);
     }
     object_initialize_child(OBJECT(machine), "cpu", &s->cpu, machine->cpu_type);
@@ -420,6 +481,34 @@ static void ws53_set_gpio_direct(Object *obj, bool value, Error **errp)
 {
     WS53_MACHINE(obj)->gpio_direct = value;
 }
+static bool ws53_get_flashboot_handoff(Object *obj, Error **errp)
+{
+    return WS53_MACHINE(obj)->flashboot_handoff;
+}
+static void ws53_set_flashboot_handoff(Object *obj, bool value, Error **errp)
+{
+    /* This choice constructs different memory regions in ws53_init().  Like
+     * machine preconfiguration, it cannot be changed after board creation. */
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp, "ws53: flashboot-handoff is a startup-only property");
+        return;
+    }
+    WS53_MACHINE(obj)->flashboot_handoff = value;
+}
+
+#define WS53_TIMER_STALL_PROPERTY(index) \
+static bool ws53_get_timer##index##_stall(Object *obj, Error **errp) \
+{ \
+    return WS53_MACHINE(obj)->timers[index].stalled; \
+} \
+static void ws53_set_timer##index##_stall(Object *obj, bool value, Error **errp) \
+{ \
+    ws53_timer_set_stalled(&WS53_MACHINE(obj)->timers[index], value); \
+}
+WS53_TIMER_STALL_PROPERTY(0)
+WS53_TIMER_STALL_PROPERTY(1)
+#undef WS53_TIMER_STALL_PROPERTY
+
 static void ws53_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -431,6 +520,21 @@ static void ws53_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
     object_class_property_add_bool(oc, "gpio-direct", ws53_get_gpio_direct, ws53_set_gpio_direct);
     object_class_property_set_description(oc, "gpio-direct",
         "Bypass pad routing for isolated GPIO register-contract tests only");
+    object_class_property_add_bool(oc, "flashboot-handoff",
+        ws53_get_flashboot_handoff, ws53_set_flashboot_handoff);
+    object_class_property_set_description(oc, "flashboot-handoff",
+        "Observed vendor application-entry profile with poisoned RAM; no ROM, "
+        "image authentication, Flash programming or cold-boot emulation");
+    object_class_property_add_bool(oc, "timer0-stall",
+        ws53_get_timer0_stall, ws53_set_timer0_stall);
+    object_class_property_add_bool(oc, "timer1-stall",
+        ws53_get_timer1_stall, ws53_set_timer1_stall);
+    object_class_property_set_description(oc, "timer0-stall",
+        "QEMU-only TIMER0 count/expiry pause, default off; resume remaining "
+        "interval; fault persists across reset, old timer state does not");
+    object_class_property_set_description(oc, "timer1-stall",
+        "QEMU-only TIMER1 count/expiry pause, default off; resume remaining "
+        "interval; fault persists across reset, old timer state does not");
 }
 
 static const TypeInfo ws53_type = {

@@ -28,6 +28,8 @@ struct WS53UartState {
     bool div_l_read_requires_enable;
     bool tx_irq_latched, tx_irq_ready;
     bool soft_reset_asserted;
+    /* Test-only missing-capability input; not a writable silicon register. */
+    bool no_dma_capability;
     uint8_t tx[WS53_UART_DEPTH], tx_shift;
     unsigned tx_head, tx_count;
     bool pad_profile, pad_frame;
@@ -294,6 +296,11 @@ static void ws53_uart_tx_gate(void *opaque, int n, int level)
     ws53_uart_tx_resume(s); ws53_uart_irq_update(s);
 }
 
+static void ws53_uart_no_dma_capability(void *opaque, int n, int level)
+{
+    WS53_UART(opaque)->no_dma_capability = !!level;
+}
+
 static void ws53_uart_tx_stall(void *opaque, int n, int level)
 {
     ws53_uart_tx_gate(opaque, 1, level);
@@ -367,7 +374,7 @@ static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
     /* Read-only silicon identity, observed on all three A-board instances.
      * APB width advertises 16 bits although CPU accesses use SDK 32-bit slots.
      * This does not claim a CTS/RTS model or proven DMA byte-lane adaptation. */
-    case 0x60: return 0xd04;
+    case 0x60: return s->no_dma_capability ? 0x504 : 0xd04;
     }
     qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: unimplemented read +0x%" HWADDR_PRIx "\n", off);
     return 0;
@@ -659,6 +666,8 @@ static void ws53_uart_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(obj), &s->peer_drive, "peer-rx-drive", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_tx_gate, "clock", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_tx_stall, "tx-stall", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_no_dma_capability,
+                            "no-dma-capability", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_soft_reset_n, "soft-reset-n", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_pad_rx_level, "pad-rx-level", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_pad_rx_enable, "pad-rx-enable", 1);
