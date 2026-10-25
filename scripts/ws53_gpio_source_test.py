@@ -26,7 +26,7 @@ from ws53_flash_handoff_test import NOTICE as WDT_NOTICE
 
 PROFILE = ('-global', 'ws53-gpio.assume-source-control=on')
 FLASH = ('-machine', 'flashboot-handoff=on', '-global', 'ws53-wdt.assume-timing=on')
-NOTICES = [f'ws53-gpio: opaque SW_CTL observation enabled (width={width}); '
+NOTICES = [f'qemu-system-riscv32: ws53-gpio: opaque SW_CTL observation enabled (width={width}); '
            'selector encoding and silicon reset are not modeled' for _,width,_ in BANKS]
 BASE, SOURCE = 0x5700c000, 0x5700c008
 LINE, PEER = 1 << 17, 1 << 16
@@ -102,8 +102,8 @@ def observations(qemu, out):
                 cancel_ack_selected_line=True,disabled_transition_not_queued=True,
                 masked_edge_delivered_on_unmask=True,irq=34,ccore_held_zero=True))
         lines=diagnostics[0].splitlines()
-        assert sorted(lines)==sorted([*NOTICES,WDT_NOTICE]),lines
         (out/f'profile-{value:08x}.stderr').write_text(diagnostics[0])
+        assert sorted(lines)==sorted([*NOTICES,WDT_NOTICE]),lines
     return cases
 
 
