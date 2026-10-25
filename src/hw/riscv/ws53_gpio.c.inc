@@ -3,6 +3,8 @@
  * Bank-level digital signals only: no pad mux, analog voltage or debounce timing.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
+#include "qapi/visitor.h"
+
 #define TYPE_WS53_GPIO "ws53-gpio"
 OBJECT_DECLARE_SIMPLE_TYPE(WS53GpioState, WS53_GPIO)
 
@@ -12,6 +14,8 @@ struct WS53GpioState {
     qemu_irq irq, output[32], output_enable[32];
     uint32_t width, valid;
     uint32_t input, latch, oen, enable, mask, type, polarity, dedge, edges;
+    bool assume_source_control;
+    uint32_t source_control_initial, source_control_observed;
 };
 
 static uint32_t ws53_gpio_raw(WS53GpioState *s)
@@ -104,11 +108,62 @@ unsupported:
     qemu_log_mask(LOG_GUEST_ERROR, "ws53-gpio: unimplemented write +0x%" HWADDR_PRIx " value=0x%" PRIx64 "\n", off, value);
 }
 
+/* SDK calls this register RW. Only its observation is implemented here:
+ * neither selector encodings nor silicon reset values are established.
+ * Refuse a missing profile and all guest writes, including writing zero.
+ * MEMTX_ERROR is a model diagnostic, not a prediction of hardware bus faults. */
+static MemTxResult ws53_gpio_read_with_attrs(void *opaque, hwaddr off,
+                                            uint64_t *value, unsigned size,
+                                            MemTxAttrs attrs)
+{
+    WS53GpioState *s = opaque;
+    if (size != 4 || (off & 3)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "ws53-gpio: unsupported read width/alignment +0x%" HWADDR_PRIx " size=%u\n", off, size);
+        *value = 0;
+        return MEMTX_ERROR;
+    }
+    if (off == 0x08) {
+        if (!s->assume_source_control) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                "ws53-gpio: unimplemented read +0x8 without explicit SW_CTL observation profile\n");
+            *value = 0;
+            return MEMTX_ERROR;
+        }
+        *value = s->source_control_observed;
+        return MEMTX_OK;
+    }
+    *value = ws53_gpio_read(opaque, off, size);
+    return MEMTX_OK;
+}
+
+static MemTxResult ws53_gpio_write_with_attrs(void *opaque, hwaddr off,
+                                             uint64_t value, unsigned size,
+                                             MemTxAttrs attrs)
+{
+    if (size != 4 || (off & 3)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "ws53-gpio: unsupported write width/alignment +0x%" HWADDR_PRIx " size=%u\n", off, size);
+        return MEMTX_ERROR;
+    }
+    if (off == 0x08) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "ws53-gpio: unimplemented write +0x8 value=0x%" PRIx64
+            " (SW_CTL selector writes are outside the observation-only model)\n", value);
+        return MEMTX_ERROR;
+    }
+    ws53_gpio_write(opaque, off, value, size);
+    return MEMTX_OK;
+}
+
 static const MemoryRegionOps ws53_gpio_ops = {
-    .read = ws53_gpio_read, .write = ws53_gpio_write,
+    .read_with_attrs = ws53_gpio_read_with_attrs,
+    .write_with_attrs = ws53_gpio_write_with_attrs,
     .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid = { .min_access_size = 4, .max_access_size = 4 },
-    .impl = { .min_access_size = 4, .max_access_size = 4 },
+    /* Deliver the whole unsupported transaction to the diagnostic callbacks:
+     * a 64-bit write must not split into SW_CTL plus GPIO_INT_EN. */
+    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
 };
 
 static void ws53_gpio_reset(void *opaque)
@@ -118,6 +173,9 @@ static void ws53_gpio_reset(void *opaque)
      * pin levels; reset must not pretend that the attached device disappeared. */
     s->latch = s->enable = s->type = s->polarity = s->dedge = s->edges = 0;
     s->oen = s->mask = s->valid;
+    /* Reset restores the configured observation, not a silicon default.
+     * A transient host-only source-change injection must not survive reset. */
+    s->source_control_observed = s->source_control_initial;
     ws53_gpio_update(s);
 }
 
@@ -128,13 +186,47 @@ static void ws53_gpio_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "ws53-gpio: invalid bank width %u", s->width);
         return;
     }
+    if (!s->assume_source_control && s->source_control_initial != 0) {
+        error_setg(errp, "ws53-gpio: source-control-value requires assume-source-control=on");
+        return;
+    }
+    if (s->assume_source_control) {
+        error_report("ws53-gpio: opaque SW_CTL observation enabled (width=%u); "
+                     "selector encoding and silicon reset are not modeled", s->width);
+    }
     s->valid = s->width == 32 ? UINT32_MAX : (1u << s->width) - 1;
     qemu_register_reset(ws53_gpio_reset, s);
 }
 
 static const Property ws53_gpio_properties[] = {
     DEFINE_PROP_UINT32("width", WS53GpioState, width, 32),
+    DEFINE_PROP_BOOL("assume-source-control", WS53GpioState, assume_source_control, false),
+    DEFINE_PROP_UINT32("source-control-value", WS53GpioState, source_control_initial, 0),
 };
+
+static void ws53_gpio_source_get(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    uint32_t value = WS53_GPIO(obj)->source_control_observed;
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void ws53_gpio_source_set(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    WS53GpioState *s = WS53_GPIO(obj);
+    uint32_t value;
+    if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    if (!s->assume_source_control) {
+        error_setg(errp, "ws53-gpio: source injection requires assume-source-control=on");
+        return;
+    }
+    /* Explicit model-only stimulus. It does not select a hardware source or
+     * touch latch, direction, input level, pending edges or IRQ delivery. */
+    s->source_control_observed = value;
+}
 
 static void ws53_gpio_init(Object *obj)
 {
@@ -145,6 +237,10 @@ static void ws53_gpio_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), ws53_gpio_input, "pin", 32);
     qdev_init_gpio_out_named(DEVICE(obj), s->output, "out", 32);
     qdev_init_gpio_out_named(DEVICE(obj), s->output_enable, "output-enable", 32);
+    object_property_add(obj, "source-control-observation", "uint32",
+                        ws53_gpio_source_get, ws53_gpio_source_set, NULL, NULL);
+    object_property_set_description(obj, "source-control-observation",
+        "Model-only opaque SW_CTL change input; requires explicit profile; reset restores source-control-value");
 }
 
 static void ws53_gpio_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
