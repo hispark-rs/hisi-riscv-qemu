@@ -38,6 +38,7 @@
 #include "ws53_tsensor.c.inc"
 #include "ws53_trng.c.inc"
 #include "ws53_hash.c.inc"
+#include "ws53_km.c.inc"
 #include "ws53_efuse.c.inc"
 #include "ws53_i2s.c.inc"
 #include "ws53_mclken0.c.inc"
@@ -285,6 +286,11 @@ static void ws53_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(hash), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(hash), 0, 0x52010000);
     sysbus_connect_irq(SYS_BUS_DEVICE(hash), 0, qdev_get_gpio_in(intc, 59));
+    DeviceState *km = qdev_new(TYPE_WS53_KM);
+    object_property_add_child(OBJECT(machine), "km", OBJECT(km));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(km), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(km), 0, 0x52022000);
+    sysbus_connect_irq(SYS_BUS_DEVICE(km), 0, qdev_get_gpio_in(intc, 61));
     DeviceState *efuse = qdev_new(TYPE_WS53_EFUSE);
     object_property_add_child(OBJECT(machine), "efuse", OBJECT(efuse));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(efuse), &error_fatal);
@@ -604,6 +610,7 @@ static void ws53_register_types(void)
     type_register_static(&ws53_tsensor_type);
     type_register_static(&ws53_trng_type);
     type_register_static(&ws53_hash_type);
+    type_register_static(&ws53_km_type);
     type_register_static(&ws53_efuse_type);
     type_register_static(&ws53_sfc_type);
     type_register_static(&ws53_sdio_type);

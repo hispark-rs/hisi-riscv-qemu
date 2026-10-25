@@ -19,6 +19,7 @@
   - [WS53 FlashBoot 交接模型](reference/ws53-flash-handoff.md)
   - [WS53 缓存 CSR 状态与拒绝范围](reference/ws53-cache-state.md)
   - [WS53 SFC 命令引擎与合成 NOR](reference/ws53-sfc-command.md)
+  - [WS53 KM 密钥槽与明文装载模型](reference/ws53-km.md)
   - [外设建模矩阵](reference/peripheral-matrix.md)
   - [xlinx 自定义 ISA](reference/xlinx-isa.md)
   - [掩膜 ROM 桩目录](reference/rom-stubs.md)

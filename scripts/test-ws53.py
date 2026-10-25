@@ -51,6 +51,7 @@ from ws53_mdma_i2s_test import i2s_dma_test
 from ws53_sdio_init_test import sdio_init_test
 from ws53_sdio_adma_test import sdio_adma_test
 from ws53_hash_test import hash_test
+from ws53_km_test import km_test
 
 
 def connect(path):
@@ -387,6 +388,7 @@ if __name__ == "__main__":
               "sdio_initialization": sdio_init_test(args.qemu),
               "sdio_adma": sdio_adma_test(args.qemu),
               "hash": hash_test(args.qemu),
+              "km": km_test(args.qemu),
               "hardware_verified": False}
     if args.elf:
         result["ram"] = ram_test(args.qemu, args.elf)

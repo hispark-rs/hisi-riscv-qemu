@@ -273,6 +273,14 @@ layout or electrical interrupt delivery is inferred from these abstract inputs.
 
 ## WS53 SPACC/HASH assumed profile
 
+The separate [WS53 KM clear-key loader model](docs/reference/ws53-km.md) uses
+`-global ws53-km.assume-profile=on`. It copies actual synthetic key words into
+8 cipher/2 HMAC slots and models claims, bounded completion/flush, clock/reset
+and faults; it does not perform encryption or establish silicon key erasure.
+The integration repository's `ws53-km-model` fixture exercises the production
+Rust HAL in 357 CPU scenarios. Neither this profile nor the HASH profile below
+establishes real cross-core ownership or Flash qualification.
+
 `-global ws53-hash.assume-profile=on` enables two REE channels at `0x52010000`
 with shared IRQ59. The register layout and state/descriptor encoding follow
 hisi-registers `2e271c8` and SDK `163d9150`. Owner claiming, selected-bit ACK,
