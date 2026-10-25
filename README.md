@@ -270,3 +270,46 @@ the model offer; this does not infer that the device command bit self-clears.
 Zero-length and duplicate pending offers are rejected, reset clears the pending
 offer, and cancelling software observation does not retract it. No host-side CIS
 layout or electrical interrupt delivery is inferred from these abstract inputs.
+
+## WS53 SPACC/HASH assumed profile
+
+`-global ws53-hash.assume-profile=on` enables two REE channels at `0x52010000`
+with shared IRQ59. The register layout and state/descriptor encoding follow
+hisi-registers `2e271c8` and SDK `163d9150`. Owner claiming, selected-bit ACK,
+clear/reset behavior, the two-entry ring, coherent mode-1 DTCM DMA and virtual
+delays are explicit assumptions. The default device rejects accesses; unsupported
+SYMC/PKE, HMAC/keyslots, widths and registers also diagnose rejection.
+
+The compression implementation computes SHA-1/224/256/384/512 and SM3 from the
+supplied state and complete blocks; it neither installs an implicit IV nor adds
+padding. Algorithms follow [FIPS 180-4](https://nvlpubs.nist.gov/nistpubs/fips/nist.fips.180-4.pdf)
+and the [SM3 description and vectors](https://datatracker.ietf.org/doc/html/draft-sca-cfrg-sm3-01)
+(the latter is an expired Internet-Draft, not an IETF standard). SHA-1 is a legacy
+compatibility option. This model is not a cryptographic validation certificate.
+
+```sh
+uv run --script scripts/ws53_hash_compression_test.py
+uv run --script scripts/ws53_hash_test.py --qemu ./qemu/build/qemu-system-riscv32
+```
+
+The native compression test compares 1,866 digests against Python/OpenSSL,
+1,854 split-block executions, 72 changed-IV chaining cases and 274 rejected
+inputs under an undefined-behavior trap sanitizer. The QEMU test is also part of
+`test-ws53.py`: 288 digests, 12 split-ring transfers, concurrent channels, IRQ59
+masking/ACK, reset, clock/fault recovery and rejected MMIO/configurations.
+
+`/machine/hash clock 0` controls the virtual peripheral clock. `fault` inputs
+`(channel - 1) * 8 + index` use indices 0..7 for clear stall, DMA stall, bus error,
+completion suppression, claim refusal, ownership loss, ACK refusal and holding
+an accepted read. QOM counters expose descriptors, bytes read, completions,
+pending/late reads and rejections; `inject-{tee,ree}-{cause,status}` supplies raw
+read-only error-register snapshots. No undocumented error-clear command or bus
+error bit is invented.
+
+An accepted read may finish after reset, clear or clock loss. Epoch checks keep
+old reads from updating a new channel; returned data waits for clock restoration
+before compression. Neither completion nor stopping observation proves physical
+drain. The integration repository's `examples/ws53-hash-model` runs the production
+Rust HAL in 198 CPU scenarios with only mailbox host writes and explicit fault
+inputs. None of these tests qualifies real cross-core ownership, security state,
+cache coherence, precise timing, Flash startup or board behavior.

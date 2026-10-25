@@ -33,6 +33,9 @@ jobs:
 
       - uses: astral-sh/setup-uv@v7
 
+      - name: WS53 HASH compression and padding-independent state tests
+        run: uv run --script scripts/ws53_hash_compression_test.py
+
       - name: WS53 RAM-profile timer model contracts
         run: uv run --script scripts/test-ws53.py --qemu ./qemu/build/qemu-system-riscv32
 
