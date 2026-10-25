@@ -11,7 +11,7 @@ enum { KM_LOAD_STALL, KM_REJECT_CLAIM, KM_LOSE_OWNER, KM_ACK_STUCK,
        KM_FLUSH_STALL, KM_FLUSH_TIMEOUT, KM_FLUSH_FAIL, KM_KEEP_OWNER,
        KM_FAULT_COUNT };
 typedef struct WS53KmSlot {
-    uint8_t owner, valid, engine, size;
+    uint8_t owner, valid, engine, size, usage;
     uint8_t key[128];
 } WS53KmSlot;
 struct WS53KmState {
@@ -25,7 +25,7 @@ struct WS53KmState {
     uint32_t command[2], flush[2], selector, loader_error, controller_error;
     uint32_t fault_after_submissions;
     uint8_t staging_mask, pending_bytes[16], pending_slot, pending_block;
-    uint8_t pending_engine, pending_size, flush_slot, flush_owner;
+    uint8_t pending_engine, pending_size, pending_usage, flush_slot, flush_owner;
     bool loading, flushing;
     uint64_t submitted, completed, released, rejections, reads, writes;
 };
@@ -75,6 +75,7 @@ static void ws53_km_load_tick(void *opaque)
         slot->valid |= 1u << s->pending_block;
         slot->engine = s->pending_engine;
         slot->size = s->pending_size;
+        slot->usage = s->pending_usage;
         s->completed++;
         s->raw |= 1u << 14;
     }
@@ -112,6 +113,7 @@ static void ws53_km_submit(WS53KmState *s, uint32_t value)
     }
     s->pending_slot = slot; s->pending_block = block;
     s->pending_engine = engine; s->pending_size = size;
+    s->pending_usage = (s->config >> 16) & 3;
     for (unsigned i = 0; i < 4; i++) { stl_le_p(s->pending_bytes + 4 * i, s->data[i]); }
     s->staging_mask = 0; s->control = value; s->loading = true; s->submitted++;
     ws53_km_schedule(s);

@@ -81,6 +81,8 @@ cp "$HERE/src/hw/riscv/ws53_tsensor.c.inc"                "$QEMU_DIR/hw/riscv/ws
 cp "$HERE/src/hw/riscv/ws53_trng.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_trng.c.inc"
 cp "$HERE/src/hw/riscv/ws53_hash.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_hash.c.inc"
 cp "$HERE/src/hw/riscv/ws53_km.c.inc"                      "$QEMU_DIR/hw/riscv/ws53_km.c.inc"
+cp "$HERE/src/hw/riscv/ws53_symc.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_symc.c.inc"
+cp "$HERE/src/hw/riscv/ws53_symc_block.h"                  "$QEMU_DIR/hw/riscv/ws53_symc_block.h"
 cp "$HERE/src/hw/riscv/ws53_hash_compress.h"               "$QEMU_DIR/hw/riscv/ws53_hash_compress.h"
 cp "$HERE/src/hw/riscv/ws53_efuse.c.inc"                  "$QEMU_DIR/hw/riscv/ws53_efuse.c.inc"
 cp "$HERE/src/target/riscv/insn_trans/trans_xlinx.c.inc" "$QEMU_DIR/target/riscv/insn_trans/trans_xlinx.c.inc"

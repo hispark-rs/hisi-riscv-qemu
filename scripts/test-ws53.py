@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = ["gmssl==3.2.2", "pycryptodomex==3.23.0"]
 # ///
 """Boot-free WS53 timer qtest and optional RAM UART/IRQ integration smoke."""
 import argparse
@@ -52,6 +52,8 @@ from ws53_sdio_init_test import sdio_init_test
 from ws53_sdio_adma_test import sdio_adma_test
 from ws53_hash_test import hash_test
 from ws53_km_test import km_test
+from ws53_symc_test import symc_test
+from ws53_symc_contract_test import contract_test as symc_contract_test
 
 
 def connect(path):
@@ -389,6 +391,8 @@ if __name__ == "__main__":
               "sdio_adma": sdio_adma_test(args.qemu),
               "hash": hash_test(args.qemu),
               "km": km_test(args.qemu),
+              "symc": symc_test(args.qemu),
+              "symc_contract": symc_contract_test(args.qemu),
               "hardware_verified": False}
     if args.elf:
         result["ram"] = ram_test(args.qemu, args.elf)

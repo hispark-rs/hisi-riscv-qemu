@@ -25,6 +25,8 @@ struct WS53HashState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
     qemu_irq irq;
+    WS53SymcState *symc;
+    bool symc_irq;
     WS53HashChannel channels[2];
     bool assume_profile, clock_on;
     uint32_t lock, irq_global, irq_enable, done, clear_done;
@@ -33,8 +35,12 @@ struct WS53HashState {
 };
 static void ws53_hash_irq(WS53HashState *s)
 {
-    qemu_set_irq(s->irq, s->assume_profile && s->clock_on &&
-                 (s->irq_global & 1) && (s->done & s->irq_enable & 6));
+    qemu_set_irq(s->irq, s->clock_on && (s->irq_global & 1) &&
+        ((s->assume_profile && (s->done & s->irq_enable & 6)) || s->symc_irq));
+}
+static void ws53_hash_symc_irq(void *opaque, int n, int level)
+{
+    WS53HashState *s = opaque; s->symc_irq = level; ws53_hash_irq(s);
 }
 static void ws53_hash_reject(WS53HashState *s, const char *operation, hwaddr off)
 {
@@ -175,6 +181,9 @@ static void ws53_hash_submit(WS53HashChannel *c, uint32_t value)
 static uint64_t ws53_hash_read(void *opaque, hwaddr off, unsigned size)
 {
     WS53HashState *s = opaque;
+    if (s->symc && ws53_symc_handles(off)) { return ws53_symc_read(s->symc, off, size); }
+    if (off == 4 && size == 4 && s->clock_on &&
+        (s->assume_profile || (s->symc && s->symc->assume_profile))) { return s->irq_global; }
     if (size != 4 || (off & 3) || !s->assume_profile || !s->clock_on) { goto invalid; }
     switch (off) {
     case 4: return s->irq_global;
@@ -210,6 +219,11 @@ static void ws53_hash_write(void *opaque, hwaddr off, uint64_t value, unsigned s
 {
     WS53HashState *s = opaque;
     uint32_t v = value;
+    if (s->symc && ws53_symc_handles(off)) { ws53_symc_write(s->symc, off, v, size); return; }
+    if (off == 4 && size == 4 && s->clock_on &&
+        (s->assume_profile || (s->symc && s->symc->assume_profile))) {
+        s->irq_global = v; ws53_hash_irq(s); return;
+    }
     if (size != 4 || (off & 3) || !s->assume_profile || !s->clock_on) { goto invalid; }
     if (off == 4) { s->irq_global = v; ws53_hash_irq(s); return; }
     if (off == 0x8604) { s->irq_enable = v; ws53_hash_irq(s); return; }
@@ -327,6 +341,7 @@ static void ws53_hash_init(Object *obj)
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_hash_clock, "clock", 1);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_hash_fault, "fault", 2 * HASH_FAULT_COUNT);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_hash_symc_irq, "symc", 1);
     for (unsigned i = 0; i < 2; i++) {
         WS53HashChannel *c = &s->channels[i]; c->parent = s; c->number = i + 1;
         c->clear_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_hash_clear_tick, c);

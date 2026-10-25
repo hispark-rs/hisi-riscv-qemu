@@ -286,7 +286,9 @@ with shared IRQ59. The register layout and state/descriptor encoding follow
 hisi-registers `2e271c8` and SDK `163d9150`. Owner claiming, selected-bit ACK,
 clear/reset behavior, the two-entry ring, coherent mode-1 DTCM DMA and virtual
 delays are explicit assumptions. The default device rejects accesses; unsupported
-SYMC/PKE, HMAC/keyslots, widths and registers also diagnose rejection.
+PKE, HMAC/keyslots, widths and registers also diagnose rejection. The separate
+[SYMC profile](docs/reference/ws53-symc.md) must be explicitly enabled for cipher
+channels; HASH and SYMC share the MMIO window and the combined IRQ59 line.
 
 The compression implementation computes SHA-1/224/256/384/512 and SM3 from the
 supplied state and complete blocks; it neither installs an implicit IV nor adds

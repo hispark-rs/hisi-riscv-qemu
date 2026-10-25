@@ -39,6 +39,7 @@
 - [掩膜 ROM 桩目录](reference/rom-stubs.md) —— 已仿真的 ROM 函数与设备桩清单。
 - [运行选项](reference/run-options.md) —— `run.sh` 环境变量与 QEMU 命令行。
 - [验证覆盖范围](reference/verification.md) —— CI 门禁、C SDK fixture、Rust 冒烟、覆盖边界。
+- [WS53 SYMC 整块加密模型](reference/ws53-symc.md) —— AES/SM4、KM权限、共享IRQ和在途请求测试。
 
 ## 解释（Explanation）— 理解导向
 
