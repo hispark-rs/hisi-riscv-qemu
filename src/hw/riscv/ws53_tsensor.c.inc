@@ -12,8 +12,10 @@ struct WS53TsensorState {
     uint32_t control, configured, sum, count;
     uint16_t input_code, initial_code, result;
     bool assume_profile, running, ready, clock_on, stall, corrupt_control;
+    bool domain_released;
     int64_t remaining, deadline;
     uint64_t starts, samples, reports;
+    uint64_t blocked_reads, blocked_writes;
 };
 static void ws53_tsensor_pause(WS53TsensorState *s)
 {
@@ -24,7 +26,7 @@ static void ws53_tsensor_pause(WS53TsensorState *s)
 }
 static void ws53_tsensor_resume(WS53TsensorState *s)
 {
-    if (s->running && s->clock_on && !s->stall && !s->corrupt_control && !timer_pending(s->timer)) {
+    if (s->domain_released && s->running && s->clock_on && !s->stall && !s->corrupt_control && !timer_pending(s->timer)) {
         s->deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->remaining;
         timer_mod(s->timer, s->deadline);
     }
@@ -79,8 +81,46 @@ static void ws53_tsensor_write(void *opaque, hwaddr off, uint64_t v, unsigned si
 invalid:
     qemu_log_mask(LOG_GUEST_ERROR, "ws53-tsensor: unimplemented write +0x%" HWADDR_PRIx " value=0x%" PRIx64 " size=%u\n", off, v, size);
 }
+/* SDK 163d9150 main.c copy_to_ccore releases logic/CRG with 0x5703096c=3,
+ * while leaving CPU reset asserted. A-board 2026-10-25 confirmed that CONTROL
+ * and STATUS are unavailable at 0 and readable at 3. Held-domain accesses are
+ * deliberately represented as MEMTX_ERROR: a fail-closed simulation diagnostic,
+ * NOT a prediction of the silicon's returned data or possible debug-bus hang.
+ * Never turn this unavailable peripheral into valid CONTROL/STATUS zeroes. */
+static MemTxResult ws53_tsensor_read_with_attrs(void *opaque, hwaddr off,
+                                               uint64_t *value, unsigned size,
+                                               MemTxAttrs attrs)
+{
+    WS53TsensorState *s = opaque;
+    if (!s->domain_released) {
+        s->blocked_reads++;
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "ws53-tsensor: inaccessible control domain read +0x%" HWADDR_PRIx "\n", off);
+        *value = 0;
+        return MEMTX_ERROR;
+    }
+    *value = ws53_tsensor_read(opaque, off, size);
+    return MEMTX_OK;
+}
+
+static MemTxResult ws53_tsensor_write_with_attrs(void *opaque, hwaddr off,
+                                                uint64_t value, unsigned size,
+                                                MemTxAttrs attrs)
+{
+    WS53TsensorState *s = opaque;
+    if (!s->domain_released) {
+        s->blocked_writes++;
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "ws53-tsensor: inaccessible control domain write +0x%" HWADDR_PRIx "\n", off);
+        return MEMTX_ERROR;
+    }
+    ws53_tsensor_write(opaque, off, value, size);
+    return MEMTX_OK;
+}
+
 static const MemoryRegionOps ws53_tsensor_ops = {
-    .read=ws53_tsensor_read, .write=ws53_tsensor_write, .endianness=DEVICE_LITTLE_ENDIAN,
+    .read_with_attrs=ws53_tsensor_read_with_attrs,
+    .write_with_attrs=ws53_tsensor_write_with_attrs, .endianness=DEVICE_LITTLE_ENDIAN,
     .valid={.min_access_size=1,.max_access_size=8,.unaligned=true},
     .impl={.min_access_size=1,.max_access_size=8,.unaligned=true},
 };
@@ -109,7 +149,20 @@ static void ws53_tsensor_reset(void *opaque)
     WS53TsensorState *s = opaque; timer_del(s->timer);
     s->control = s->configured = s->sum = s->count = s->result = 0;
     s->running = s->ready = false; s->starts = s->samples = s->reports = 0;
+    s->blocked_reads = s->blocked_writes = 0;
     /* External sample code and clock/fault inputs persist across device reset. */
+}
+
+static void ws53_tsensor_set_domain(WS53TsensorState *s, bool released)
+{
+    if (s->domain_released == released) {
+        return;
+    }
+    if (!released) {
+        ws53_tsensor_reset(s); /* Cancel conversions and discard previous READY. */
+    }
+    s->domain_released = released;
+    /* Releasing the domain does not initialize or start the sampler. */
 }
 static void ws53_tsensor_realize(DeviceState *dev, Error **errp)
 {
@@ -130,6 +183,9 @@ static const Property ws53_tsensor_properties[] = {
 static void ws53_tsensor_init(Object *obj)
 {
     WS53TsensorState *s = WS53_TSENSOR(obj); s->clock_on = true;
+    /* The existing RAM takeover profile assumes an already released domain.
+     * Flash handoff overrides this from its machine-owned reset state. */
+    s->domain_released = true;
     memory_region_init_io(&s->mmio, obj, &ws53_tsensor_ops, s, TYPE_WS53_TSENSOR, 0x100);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_tsensor_tick, s);
@@ -140,6 +196,8 @@ static void ws53_tsensor_init(Object *obj)
     object_property_add_uint64_ptr(obj, "starts", &s->starts, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "samples", &s->samples, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "reports", &s->reports, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "blocked-reads", &s->blocked_reads, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "blocked-writes", &s->blocked_writes, OBJ_PROP_FLAG_READ);
 }
 static void ws53_tsensor_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {

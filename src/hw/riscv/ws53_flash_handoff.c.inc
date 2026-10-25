@@ -28,7 +28,7 @@ static uint64_t ws53_memory_read(void *opaque, hwaddr off, unsigned size)
         case 0x234: return s->bram_share;
         case 0x238: return s->dtcm_share;
         case 0x604: return 0; /* qualified MCU_MODE_1 field */
-        case 0x96c: return 0; /* control-core reset held; no release model */
+        case 0x96c: return s->ccore_reset;
         }
     }
     qemu_log_mask(LOG_GUEST_ERROR,
@@ -58,6 +58,18 @@ static void ws53_memory_write(void *opaque, hwaddr off, uint64_t v, unsigned siz
             return;
         case 0x604:
             if (v == 0) { return; }
+            break;
+        case 0x96c:
+            /* Qualified application-owned profile only: 0 holds all domains,
+             * 3 releases logic/CRG with the control CPU still held reset.
+             * SDK main.c copy_to_ccore uses these values and a 5us settle;
+             * precise hardware settle timing is not modeled. No CPU release
+             * or vendor firmware execution is implemented here. */
+            if (v == 0 || v == 3) {
+                s->ccore_reset = v;
+                ws53_tsensor_set_domain(s->tsensor, v == 3);
+                return;
+            }
             break;
         }
     }
@@ -132,6 +144,8 @@ static void ws53_flash_handoff_init(WS53MachineState *s, MemoryRegion *sys)
 
 static void ws53_flash_handoff_reset(WS53MachineState *s)
 {
+    s->ccore_reset = 0;
+    ws53_tsensor_set_domain(s->tsensor, false);
     s->bram_share = 0x3f0;
     s->dtcm_share = 0x20;
     /* Deliberate test poison, NOT a prediction of SRAM contents at reset.

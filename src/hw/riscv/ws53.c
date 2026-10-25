@@ -64,7 +64,8 @@ struct WS53MachineState {
     RISCVCPU cpu;
     MemoryRegion itcm, dtcm, timer_mmio;
     MemoryRegion flash, dtcm_bank[7], dtcm_blocked, memory_config[3], memory_view[3];
-    uint32_t bram_share, dtcm_share;
+    uint32_t bram_share, dtcm_share, ccore_reset;
+    WS53TsensorState *tsensor;
     WS53WdtState *wdt;
     WS53Mclken1State *mclken1;
     WS53TimerChannel timers[2];
@@ -252,6 +253,8 @@ static void ws53_init(MachineState *machine)
     object_property_add_child(OBJECT(machine), "tsensor", OBJECT(tsensor));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(tsensor), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(tsensor), 0, 0x59006300);
+    s->tsensor = WS53_TSENSOR(tsensor);
+    ws53_tsensor_set_domain(s->tsensor, !s->flashboot_handoff);
     DeviceState *trng = qdev_new(TYPE_WS53_TRNG);
     object_property_add_child(OBJECT(machine), "trng", OBJECT(trng));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(trng), &error_fatal);
