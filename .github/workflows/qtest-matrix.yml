@@ -90,3 +90,18 @@ jobs:
       - name: WS53 timer contracts (supported WS53 base)
         if: matrix.qemu_tag == 'v10.0.0'
         run: uv run --script scripts/test-ws53.py --qemu ./qemu/build/qemu-system-riscv32
+
+      - name: WS53 Flash control-domain access and reset contracts
+        if: matrix.qemu_tag == 'v10.0.0'
+        run: |
+          uv run --script scripts/ws53_tsensor_domain_test.py \
+            --qemu ./qemu/build/qemu-system-riscv32 \
+            --output "$RUNNER_TEMP/ws53-tsensor-domain"
+
+      - name: Retain control-domain model observations
+        if: always() && matrix.qemu_tag == 'v10.0.0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ws53-tsensor-control-domain-${{ matrix.qemu_tag }}
+          path: ${{ runner.temp }}/ws53-tsensor-domain/
+          if-no-files-found: warn
