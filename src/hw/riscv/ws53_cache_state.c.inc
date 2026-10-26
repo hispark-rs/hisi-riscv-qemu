@@ -7,10 +7,12 @@
  */
 #define WS53_CACHE_OBSERVED "observed-flash-baseline"
 #define WS53_CACHE_UNKNOWN "unknown"
+#define WS53_CACHE_INSTRUCTION "instruction-experiment"
 
 static const char *ws53_cache_profile(WS53MachineState *s)
 {
-    return s->cache_observed ? WS53_CACHE_OBSERVED : WS53_CACHE_UNKNOWN;
+    return s->cache_instruction ? WS53_CACHE_INSTRUCTION :
+           s->cache_observed ? WS53_CACHE_OBSERVED : WS53_CACHE_UNKNOWN;
 }
 
 static RISCVException ws53_cache_predicate(CPURISCVState *env, int csrno)
@@ -40,6 +42,8 @@ static RISCVException ws53_cache_reject(WS53MachineState *s, int csrno,
     return RISCV_EXCP_ILLEGAL_INST;
 }
 
+#include "ws53_instruction_cache.c.inc"
+
 static RISCVException ws53_cache_op(CPURISCVState *env, int csrno,
                                    target_ulong *ret_value,
                                    target_ulong value, target_ulong mask)
@@ -47,6 +51,15 @@ static RISCVException ws53_cache_op(CPURISCVState *env, int csrno,
     WS53MachineState *s = WS53_MACHINE(qdev_get_machine());
     uint32_t old, next;
     const char *reason;
+
+    if (s->cache_instruction) {
+        bool handled;
+        RISCVException result = ws53_icache_op(s, env, csrno, ret_value,
+                                              value, mask, &handled);
+        if (handled) {
+            return result;
+        }
+    }
 
     if (!s->cache_observed) {
         return ws53_cache_reject(s, csrno, value, mask,
@@ -109,10 +122,21 @@ static void ws53_cache_state_reset(WS53MachineState *s)
         s->cache_dcctl = 0;
         s->cache_memattrl = 0x33333333;
     }
+    if (s->cache_instruction) {
+        memset(s->cache_lines, 0, sizeof(s->cache_lines));
+        s->cache_aprefi = s->cache_icinva = 0;
+        s->cache_valid = s->cache_fetches = s->cache_hits = s->cache_fills = 0;
+        s->cache_prefetches = s->cache_invalidations = s->cache_fences = 0;
+        s->cache_debug_patch = 0;
+    }
 }
 
 static void ws53_cache_state_init(WS53MachineState *s)
 {
+    if (s->cache_instruction && !s->flashboot_handoff) {
+        error_report("ws53-cache: instruction-experiment requires flashboot-handoff=on");
+        exit(1);
+    }
     for (unsigned csrno = 0x7c0; csrno <= 0x7ff; csrno++) {
         riscv_set_csr_ops(csrno, &ws53_cache_ops);
     }
@@ -121,7 +145,11 @@ static void ws53_cache_state_init(WS53MachineState *s)
                                   &s->cache_rejections, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(OBJECT(s), "cache-csr-epoch-rejections",
                                   &s->cache_epoch_rejections, OBJ_PROP_FLAG_READ);
-    if (s->cache_observed) {
+    if (s->cache_instruction) {
+        ws53_icache_properties(s);
+        error_report("ws53-cache: instruction experiment; synthetic initial "
+                     "state, direct-mapped Flash lines, no timing/D-cache/drain proof");
+    } else if (s->cache_observed) {
         error_report("ws53-cache: observed Flash CSR profile ICCTL=6 DCCTL=0 "
                      "MEMATTRL=0x33333333; state only, no cache/coherency/drain");
     }
@@ -140,11 +168,15 @@ static void ws53_set_cache_profile(Object *obj, const char *value, Error **errp)
         error_setg(errp, "ws53: cache-state-profile is a startup-only property");
     } else if (!strcmp(value, WS53_CACHE_UNKNOWN)) {
         s->cache_observed = false;
+        s->cache_instruction = false;
     } else if (!strcmp(value, WS53_CACHE_OBSERVED)) {
         s->cache_observed = true;
+        s->cache_instruction = false;
+    } else if (!strcmp(value, WS53_CACHE_INSTRUCTION)) {
+        s->cache_observed = s->cache_instruction = true;
     } else {
         error_setg(errp, "ws53: cache-state-profile must be unknown or "
-                   WS53_CACHE_OBSERVED);
+                   WS53_CACHE_OBSERVED " or " WS53_CACHE_INSTRUCTION);
     }
 }
 
@@ -159,7 +191,8 @@ static void ws53_cache_state_class_init(ObjectClass *oc)
                                  ws53_get_cache_profile, ws53_set_cache_profile);
     object_class_property_set_description(oc, "cache-state-profile",
         "unknown (default) rejects vendor CSR access; observed-flash-baseline "
-        "admits only historical ICCTL/DCCTL/MEMATTRL state, not DMA safety");
+        "admits historical state only; instruction-experiment enables a "
+        "synthetic Flash instruction model, neither grants DMA safety");
     object_class_property_add_bool(oc, "cache-csr-tainted",
                                   ws53_get_cache_tainted, NULL);
     object_class_property_set_description(oc, "cache-csr-tainted",

@@ -1,0 +1,137 @@
+From: hispark-rs contributors
+Subject: [PATCH] target/riscv: optional per-CPU instruction visibility hooks
+
+Only WS53's explicit instruction experiment binds these callbacks. Keep normal
+translator loads for access validation/page tracking, and preserve byte-level
+instruction visibility through every 16/32/48-bit fetch and semihosting lookback.
+FENCE.I notifies the bound model before leaving its translation block.
+No default CPU or existing WS63/BS2X machine binds these hooks.
+
+diff --git a/target/riscv/cpu.h b/target/riscv/cpu.h
+--- a/target/riscv/cpu.h
++++ b/target/riscv/cpu.h
+@@ -533,6 +533,10 @@
+ 
+     /* Board policy, outside resettable env; legacy HiSilicon ROM stubs opt out. */
+     bool hisi_legacy_rom_disabled;
++
++    /* Optional board instruction-visibility model; preserved across reset. */
++    uint16_t (*hisi_insn_fetch)(CPURISCVState *, target_ulong, uint16_t);
++    void (*hisi_fence_i)(CPURISCVState *);
+ 
+     QEMUTimer *pmu_timer;
+     /* A bitmask of Available programmable counters */
+diff --git a/target/riscv/helper.h b/target/riscv/helper.h
+--- a/target/riscv/helper.h
++++ b/target/riscv/helper.h
+@@ -1,3 +1,6 @@
++/* Optional board instruction visibility, no effect when unbound. */
++DEF_HELPER_1(hisi_fence_i, void, env)
++
+ /* Exceptions */
+ DEF_HELPER_2(raise_exception, noreturn, env, i32)
+ 
+diff --git a/target/riscv/op_helper.c b/target/riscv/op_helper.c
+--- a/target/riscv/op_helper.c
++++ b/target/riscv/op_helper.c
+@@ -27,6 +27,14 @@
+ #include "exec/helper-proto.h"
+ #include "trace.h"
+ 
++void helper_hisi_fence_i(CPURISCVState *env)
++{
++    RISCVCPU *cpu = env_archcpu(env);
++    if (cpu->hisi_fence_i) {
++        cpu->hisi_fence_i(env);
++    }
++}
++
+ /* Exceptions processing helpers */
+ G_NORETURN void riscv_raise_exception(CPURISCVState *env,
+                                       RISCVException exception,
+diff --git a/target/riscv/translate.c b/target/riscv/translate.c
+--- a/target/riscv/translate.c
++++ b/target/riscv/translate.c
+@@ -1161,13 +1161,24 @@
+     return true;
+ }
+ 
++/* Preserve normal permission/fault and TB page tracking before optional
++ * board instruction visibility. Only explicitly bound CPUs use the hook. */
++static uint16_t riscv_hisi_lduw(CPURISCVState *env, DisasContext *ctx,
++                                target_ulong pc)
++{
++    RISCVCPU *cpu = RISCV_CPU(ctx->cs);
++    uint16_t backing = translator_lduw(env, &ctx->base, pc);
++    return cpu->hisi_insn_fetch ? cpu->hisi_insn_fetch(env, pc, backing) : backing;
++}
++
+ static uint32_t opcode_at(DisasContextBase *dcbase, target_ulong pc)
+ {
+     DisasContext *ctx = container_of(dcbase, DisasContext, base);
+     CPUState *cpu = ctx->cs;
+     CPURISCVState *env = cpu_env(cpu);
+ 
+-    return translator_ldl(env, &ctx->base, pc);
++    uint32_t low = riscv_hisi_lduw(env, ctx, pc);
++    return low | ((uint32_t)riscv_hisi_lduw(env, ctx, pc + 2) << 16);
+ }
+ 
+ #define SS_MMU_INDEX(ctx) (ctx->mem_idx | MMU_IDX_SS_WRITE)
+@@ -1255,7 +1266,7 @@
+     } else if (ctx->cur_insn_len == 4) {
+         uint32_t opcode32 = opcode;
+         opcode32 = deposit32(opcode32, 16, 16,
+-                             translator_lduw(env, &ctx->base,
++                             riscv_hisi_lduw(env, ctx,
+                                              ctx->base.pc_next + 2));
+         ctx->opcode = opcode32;
+ 
+@@ -1270,8 +1281,8 @@
+             return;
+         }
+     } else { /* ctx->cur_insn_len == 6: WS63 xlinx 48-bit (l.li) */
+-        uint16_t hw1 = translator_lduw(env, &ctx->base, ctx->base.pc_next + 2);
+-        uint16_t hw2 = translator_lduw(env, &ctx->base, ctx->base.pc_next + 4);
++        uint16_t hw1 = riscv_hisi_lduw(env, ctx, ctx->base.pc_next + 2);
++        uint16_t hw2 = riscv_hisi_lduw(env, ctx, ctx->base.pc_next + 4);
+         ctx->opcode = opcode | ((uint32_t)hw1 << 16);
+         if (decode_xlinx48(ctx, opcode, hw1 | ((uint32_t)hw2 << 16))) {
+             return;
+@@ -1350,7 +1361,7 @@
+ {
+     DisasContext *ctx = container_of(dcbase, DisasContext, base);
+     CPURISCVState *env = cpu_env(cpu);
+-    uint16_t opcode16 = translator_lduw(env, &ctx->base, ctx->base.pc_next);
++    uint16_t opcode16 = riscv_hisi_lduw(env, ctx, ctx->base.pc_next);
+ 
+     ctx->ol = ctx->xl;
+     decode_opc(env, ctx, opcode16);
+@@ -1383,7 +1394,7 @@
+ 
+             if (page_ofs > TARGET_PAGE_SIZE - MAX_INSN_LEN) {
+                 uint16_t next_insn =
+-                    translator_lduw(env, &ctx->base, ctx->base.pc_next);
++                    riscv_hisi_lduw(env, ctx, ctx->base.pc_next);
+                 int len = insn_len(next_insn);
+ 
+                 if (!translator_is_same_page(&ctx->base, ctx->base.pc_next + len - 1)) {
+diff --git a/target/riscv/insn_trans/trans_rvi.c.inc b/target/riscv/insn_trans/trans_rvi.c.inc
+--- a/target/riscv/insn_trans/trans_rvi.c.inc
++++ b/target/riscv/insn_trans/trans_rvi.c.inc
+@@ -955,10 +955,11 @@
+         return false;
+     }
+ 
+-    /*
+-     * FENCE_I is a no-op in QEMU,
+-     * however we need to end the translation block
+-     */
++    /* The optional board model must discard its stale instruction bytes.
++     * Unbound CPUs retain the original QEMU translation-block exit only. */
++    if (RISCV_CPU(ctx->cs)->hisi_fence_i) {
++        gen_helper_hisi_fence_i(tcg_env);
++    }
+     gen_update_pc(ctx, ctx->cur_insn_len);
+     exit_tb(ctx);
+     ctx->base.is_jmp = DISAS_NORETURN;

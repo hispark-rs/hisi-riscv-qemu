@@ -9,6 +9,7 @@
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
 #include "hw/sysbus.h"
@@ -20,7 +21,9 @@
 #include "chardev/char-fe.h"
 #include "system/system.h"
 #include "system/reset.h"
+#include "system/runstate.h"
 #include "exec/address-spaces.h"
+#include "exec/tb-flush.h"
 #include "elf.h"
 #include "hisi_riscv31.h"
 #include "ws53_uart.c.inc"
@@ -59,6 +62,13 @@ typedef struct WS53TimerChannel {
     int64_t start, paused_at, remaining_ns;
 } WS53TimerChannel;
 
+/* Deterministic functional experiment, not measured cache associativity. */
+typedef struct WS53InstructionLine {
+    uint32_t address;
+    uint8_t data[32];
+    bool valid;
+} WS53InstructionLine;
+
 struct WS53MachineState {
     MachineState parent_obj;
     RISCVCPU cpu;
@@ -69,9 +79,13 @@ struct WS53MachineState {
     WS53Mclken1State *mclken1;
     WS53TimerChannel timers[2];
     bool gpio_direct, flashboot_handoff;
-    bool cache_observed;
+    bool cache_observed, cache_instruction;
     uint32_t cache_icctl, cache_dcctl, cache_memattrl;
     uint64_t cache_rejections, cache_epoch_rejections;
+    uint32_t cache_aprefi, cache_icinva;
+    WS53InstructionLine cache_lines[1024];
+    uint64_t cache_valid, cache_fetches, cache_hits, cache_fills;
+    uint64_t cache_prefetches, cache_invalidations, cache_fences, cache_debug_patch;
 };
 
 #include "ws53_flash_handoff.c.inc"
@@ -217,6 +231,9 @@ static void ws53_reset(void *opaque)
     WS53MachineState *s = opaque;
     cpu_reset(CPU(&s->cpu));
     ws53_cache_state_reset(s);
+    if (s->cache_instruction) {
+        tb_flush(CPU(&s->cpu));
+    }
     if (s->flashboot_handoff) {
         ws53_flash_handoff_reset(s);
     }
@@ -477,6 +494,10 @@ static void ws53_init(MachineState *machine)
     qdev_prop_set_uint64(DEVICE(&s->cpu), "resetvec", entry);
     s->cpu.env.mhartid = 0;
     qdev_realize(DEVICE(&s->cpu), NULL, &error_fatal);
+    if (s->cache_instruction) {
+        s->cpu.hisi_insn_fetch = ws53_icache_fetch;
+        s->cpu.hisi_fence_i = ws53_icache_fence;
+    }
     ws63_intc_set_cpu_env(intc, &s->cpu.env);
     qemu_register_reset(ws53_reset, s);
 }

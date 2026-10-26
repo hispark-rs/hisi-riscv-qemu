@@ -150,7 +150,7 @@ def program(base, rows, observe):
 
 
 @contextmanager
-def session(qemu, machine, base, profile=None):
+def session(qemu, machine, base, profile=None, options=()):
     with tempfile.TemporaryDirectory(prefix='ws53-cache-') as temporary:
         directory = Path(temporary)
         qt, qm = directory/'qt', directory/'qm'
@@ -159,7 +159,7 @@ def session(qemu, machine, base, profile=None):
                    '-monitor', 'none', '-serial', 'null', '-nic', 'none',
                    '-device', f'loader,addr={base:#x},cpu-num=0',
                    '-qtest', f'unix:{qt},server=on,wait=off', '-qtest-log', '/dev/null',
-                   '-qmp', f'unix:{qm},server=on,wait=off', '-d', 'guest_errors']
+                   '-qmp', f'unix:{qm},server=on,wait=off', '-d', 'guest_errors', *options]
         with (directory/'stderr').open('w+b') as errors:
             process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=errors)
             diagnostics = []
@@ -308,7 +308,7 @@ def cache_state_test(qemu):
             capture_output=True, timeout=5)
         assert result.returncode == 1 and not result.stdout
         assert result.stderr.decode().splitlines() == [
-            'qemu-system-riscv32: ws53: cache-state-profile must be unknown or '+OBSERVED]
+            'qemu-system-riscv32: ws53: cache-state-profile must be unknown or '+OBSERVED+' or instruction-experiment']
     here = Path(__file__).resolve().parent
     return dict(passed=True, qemu_sha256=sha(qemu),
         source_sha256={name:sha(here/name) for name in

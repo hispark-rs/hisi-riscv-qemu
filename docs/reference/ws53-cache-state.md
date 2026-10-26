@@ -1,7 +1,9 @@
 # WS53 缓存 CSR 状态与拒绝范围
 
-此模型只检查应用读取的 CSR 状态及对未支持操作的拒绝。它没有实现数据缓存、
-指令缓存、脏行、别名、写缓冲排空或多主设备一致性，不能授予 DMA 内存安全资格。
+默认和 `observed-flash-baseline` 模型只检查应用读取的 CSR 状态及对未支持操作的拒绝，
+不实现缓存。另有显式选择的[指令缓存功能实验](ws53-instruction-cache.md)，使用
+合成初态及确定性取指策略验证指令可见性。所有 profile 都未实现数据缓存、
+脏行、别名、写缓冲排空或多主设备一致性，不能授予 DMA 内存安全资格。
 模型返回非法指令异常是为了明确拒绝未实现行为，不代表真实芯片将这些操作视为非法。
 
 ## 明确选择已知状态
@@ -86,6 +88,10 @@ uv run --script scripts/ws53_cache_state_test.py --qemu ./qemu/build/qemu-system
 CSR 和内存哨兵保持不变。每个配置重复两轮并检查复位、QMP 拒绝和精确诊断计数。
 另在 WS63、BS20、BS21、BS21E、BS22 上检查原 RAZ/WI 行为未变。
 该测试也由 `scripts/test-ws53.py` 调用。它不能替代实板缓存、Flash 冷启动或 DMA 验收。
+
+新增的 `instruction-experiment` 不是历史观测 profile；必须另行选择 Flash handoff
+及 WDT 时序假设。它允许具名的指令维护/控制操作，不影响本页列出的默认和历史
+profile拒绝边界。见[操作、假设和执行测试](ws53-instruction-cache.md)。
 
 ## 旧 ROM 拦截的机器边界
 
