@@ -91,6 +91,37 @@ struct WS53MachineState {
 #include "ws53_flash_handoff.c.inc"
 #include "ws53_cache_state.c.inc"
 
+static riscv_csr_operations ws53_mcountinhibit_original;
+
+static RISCVException ws53_mcountinhibit_predicate(CPURISCVState *env, int csrno)
+{
+    Object *machine = qdev_get_machine();
+
+    /* A-board CPU reads of CSR 0x320 trap with cause 2 at the exact CSRR.
+     * Do not inherit this CSR merely because the generic CPU has counters.
+     * Treat every encoding as an unavailable CSR, before rd/counter updates.
+     * Writes are an absence-policy consequence, not a measured write result.
+     * The operation table is process-global: keep the upstream predicate and
+     * all read/write callbacks for every CPU other than this WS53 acore. */
+    if (object_dynamic_cast(machine, TYPE_WS53_MACHINE) &&
+        env == &WS53_MACHINE(machine)->cpu.env) {
+        return RISCV_EXCP_ILLEGAL_INST;
+    }
+    return ws53_mcountinhibit_original.predicate ?
+           ws53_mcountinhibit_original.predicate(env, csrno) :
+           RISCV_EXCP_ILLEGAL_INST;
+}
+
+static void ws53_counter_csr_init(void)
+{
+    riscv_csr_operations ops;
+
+    riscv_get_csr_ops(CSR_MCOUNTINHIBIT, &ws53_mcountinhibit_original);
+    ops = ws53_mcountinhibit_original;
+    ops.predicate = ws53_mcountinhibit_predicate;
+    riscv_set_csr_ops(CSR_MCOUNTINHIBIT, &ops);
+}
+
 static void ws53_timer_irq(WS53TimerChannel *c)
 {
     qemu_set_irq(c->irq, c->pending && !(c->control & 8));
@@ -255,6 +286,7 @@ static void ws53_init(MachineState *machine)
     MemoryRegion *sys = get_system_memory();
     uint64_t entry = 0x28000;
     ws63_register_custom_csrs();
+    ws53_counter_csr_init();
     ws53_cache_state_init(s);
     ws63_make_ram(sys, &s->itcm, "ws53.acore.itcm", 0x20000, 0x10000);
     if (s->flashboot_handoff) {

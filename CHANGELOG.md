@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- WS53 application-core accesses to `mcountinhibit` (CSR `0x320`) now raise an
+  illegal-instruction exception, matching two controlled RAM observations on
+  A-board. `mcycle/mcycleh` and the other machine models retain their existing
+  callbacks. Writes are rejected as an unavailable-CSR policy; no silicon write
+  experiment is claimed. TCG regression covers exact traps, rd preservation,
+  reset, advancing counters and WS63/BS20/BS21/BS21E/BS22 compatibility.
+
 ## [0.4.9] - 2026-06-27
 
 On-silicon HIL bring-up surfaced six peripheral-model divergences (issues #2–#7,

@@ -93,6 +93,28 @@ CSR 和内存哨兵保持不变。每个配置重复两轮并检查复位、QMP 
 及 WDT 时序假设。它允许具名的指令维护/控制操作，不影响本页列出的默认和历史
 profile拒绝边界。见[操作、假设和执行测试](ws53-instruction-cache.md)。
 
+## 标准计数器 CSR 的 WS53 差异
+
+2026-10-27 A板两轮受控RAM实测，读取`mcountinhibit`（CSR `0x320`）在精确
+CSRR指令产生cause2，`mcycle`/`mcycleh`可读。因此WS53机器不再继承通用CPU的
+`mcountinhibit`能力；这一限制不依赖缓存profile，也不修改计数器本身的读写
+实现。表项在访问谓词阶段拒绝，rd和计数器不会先被改动。所有写编码也按不存在
+CSR拒绝，这是模型策略，不声称已经在真机测试这些写操作或其他WS53修订。
+
+此处是CPU实际执行结果；OpenOCD别名`unknown register`本身不是CPU能力证据。
+两轮原始状态、只读异常白名单及逻辑波形见父工程
+`docs/plan/evidence/ws53-cache-observe-2026-10-27`。本模型不因此声称精确周期、
+硬件时钟校准、缓存维护或DMA一致性已经验证。
+
+```sh
+uv run --script scripts/ws53_counter_csr_test.py --qemu ./qemu/build/qemu-system-riscv32
+```
+
+测试真实TCG执行17条访问：CSR读/写、立即数、RMW和rd=x0边界，以及前后的
+mcycle/mcycleh。默认、历史及指令实验三个WS53配置各复位两轮；WS63、BS20、
+BS21、BS21E、BS22另各两轮确认原计数器读写不变。精确检查cause/mepc/mtval、
+rd、内存哨兵和计数器继续前进，不能用替换客体指令的故障注入代替。
+
 ## 旧 ROM 拦截的机器边界
 
 旧 BS21 ROM 兼容范围 `0x10000..0x40000` 与 WS53 ITCM 重叠。v10 补丁 0010
