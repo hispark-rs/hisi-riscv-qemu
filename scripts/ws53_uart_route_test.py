@@ -55,12 +55,12 @@ def routing(qemu, out):
         cmd('irq_intercept_in /machine/intc')
         assert prop('commands') == 0 and not prop('routed') and not level()
         # Use the actual UART RX FIFO and IER path, not only a synthetic IRQ.
-        write(UART+0x28, 1); write(UART+0x40, 0x15); write(UART+0x18, 4)
+        write(UART+0x24, 0x10); write(UART+0x2c, 2); write(UART+0x18, 4)
         write(UART+4, 0x2a)
         assert read(UART+0x4c) == 1 and prop('source-pending') and not level()
         # Peers still deliver independently of the L0 routing command.
-        for base, number in ((0x52081000, 40), (0x52080000, 41)):
-            write(base+0x28, 1); write(base+0x40, 0x15); write(base+0x18, 4)
+        for base, number in ((0x52081000, 39), (0x52080000, 41)):
+            write(base+0x24, 0x10); write(base+0x2c, 2); write(base+0x18, 4)
             write(base+4, 0x53)
             assert irq.get(number, False) and read(base+0x4c) == 1
             assert read(base+4) == 0x53 and not irq.get(number, False)
@@ -200,6 +200,15 @@ def cpu_faults(qemu, out, enabled):
     check_diagnostics(stderr.decode(), len(faults), enabled)
     return dict(actual_tcg_execution=True, traps=observed, commands=commands,
                 hardware_bus_fault_semantics_verified=False)
+
+
+def uart_route_test(qemu):
+    """Include the explicit profile and legacy compatibility in the main suite."""
+    with tempfile.TemporaryDirectory(prefix='ws53-uart-route-suite-') as tmp:
+        out = Path(tmp)
+        return dict(passed=True, hardware_accessed=False, routing=routing(qemu, out),
+                    denied=denied_accesses(qemu, out),
+                    cpu=[cpu_faults(qemu, out, enabled) for enabled in (False, True)])
 
 
 def main():

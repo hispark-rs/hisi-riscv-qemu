@@ -200,6 +200,12 @@ HAL仍完整写入32位请求，不做基于读回值的RMW。计时仍采用既
 确定性测试初值，没有实板POR证据。主工程两路TIMER async RAM测试同时观察该
 读回和中断取消；没有模拟低功耗或更改时钟后的延时补偿。
 
+### WS53 UART L0 应用核 IRQ 路由
+
+新增显式命令1到 IRQ42 路由模型；默认保留既有 UART2 兼容直通行为。
+SDK 证据、未知读回/复位状态、故障注入及测试见
+[UART L0 路由说明](docs/ws53-uart-l0-route.md)。模型通过不代表真实 Flash 或冷启动通过。
+
 ### WS53 UART TX IRQ / PTIM
 
 The opt-in `assume-dma-profile` timed FIFO now models TX IRQ2 as a latched
