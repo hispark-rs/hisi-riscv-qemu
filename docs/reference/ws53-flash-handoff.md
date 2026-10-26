@@ -10,6 +10,12 @@ profile，默认关闭。依据 SDK `163d9150` 的 `dyn_mem.c`、内存配置及
 （包括重复当前值）都会拒绝；不会改变映射、RAM 内容或复位配置。切换测试
 profile 应启动另一个 QEMU 实例，不能把它用作运行时复位恢复接口。
 
+UART2专用Flash应用可另用 `-global ws53-pinctrl.assume-uart-tx=on` 和
+`-global ws53-pinctrl.uart-l0-console-profile=on`，仅预置AGPIO1/2的mode1，
+MGPIO17/18保持GPIO。此设置来自限定L0交接假设，不是硅片复位值。
+既有`uart-console-profile=on`仍同时预置H0的MGPIO17/18 mode2及L0；
+两种profile互斥，缺少TX模型亦拒绝。`system_reset`恢复各自明确选择的模型配置。
+
 - Flash 只读映射 `0x400000..0x800000`；ELF 文件内容按 LMA 装载。
 - 每次模型复位以 `0xa5` 填充应用 ITCM/DTCM，测试前必须读回确认；由 guest
   执行 data 复制和 bss 清零。此初值不是实际 SRAM 复位值。

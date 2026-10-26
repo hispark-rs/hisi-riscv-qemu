@@ -45,7 +45,7 @@ struct WS53PinctrlState {
     bool external_level[48], external_drive[48], gpio_out[48], gpio_oe[48];
     bool delivered[48];
     bool pwm0_level, pwm0_drive;
-    bool uart_tx_profile, uart_console_profile;
+    bool uart_tx_profile, uart_console_profile, uart_l0_console_profile;
     bool uart_level[3], uart_drive[3];
     uint8_t uart_byte[3];
     uint64_t uart_frame_pads[3], uart_bytes[48], uart_hash[48];
@@ -332,8 +332,11 @@ static void ws53_pinctrl_reset(void *opaque)
         s->mode[d->id] = 0;
         if (s->uart_console_profile) {
             if (d->id == 17 || d->id == 18) { s->mode[d->id] = 2; }
-            if (d->id == 33 || d->id == 34) { s->mode[d->id] = 1; }
         }
+        /* Explicit observed L0 handoff without claiming H0/MGPIO17/18.
+         * These are model startup profiles, never silicon reset values. */
+        if ((s->uart_console_profile || s->uart_l0_console_profile) &&
+            (d->id == 33 || d->id == 34)) { s->mode[d->id] = 1; }
         s->config[d->id] = 4;
         s->uart_bytes[d->id] = 0;
         s->uart_hash[d->id] = 14695981039346656037ULL;
@@ -381,10 +384,15 @@ static const Property ws53_pinctrl_properties[] = {
     DEFINE_PROP_BOOL("assume-uart-tx", WS53PinctrlState, uart_tx_profile, false),
     DEFINE_PROP_BOOL("assume-uart-rx", WS53PinctrlState, uart_rx_profile, false),
     DEFINE_PROP_BOOL("uart-console-profile", WS53PinctrlState, uart_console_profile, false),
+    DEFINE_PROP_BOOL("uart-l0-console-profile", WS53PinctrlState, uart_l0_console_profile, false),
 };
 static void ws53_pinctrl_realize(DeviceState *dev, Error **errp)
 {
     WS53PinctrlState *s = WS53_PINCTRL(dev);
+    if (s->uart_l0_console_profile && (s->uart_console_profile || !s->uart_tx_profile)) {
+        error_setg(errp, "ws53-pinctrl: L0-only console profile requires TX model and excludes legacy console profile");
+        return;
+    }
     if (s->uart_console_profile && !s->uart_tx_profile) {
         error_setg(errp, "ws53-pinctrl: UART console profile requires UART TX routing");
     }
