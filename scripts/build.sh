@@ -57,6 +57,7 @@ cp "$HERE/src/hw/riscv/ws53.c"                            "$QEMU_DIR/hw/riscv/ws
 cp "$HERE/src/hw/riscv/ws53_flash_handoff.c.inc"            "$QEMU_DIR/hw/riscv/ws53_flash_handoff.c.inc"
 cp "$HERE/src/hw/riscv/ws53_uart.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_uart.c.inc"
 cp "$HERE/src/hw/riscv/ws53_uart_reset.c.inc"             "$QEMU_DIR/hw/riscv/ws53_uart_reset.c.inc"
+cp "$HERE/src/hw/riscv/ws53_uart_route.c.inc"             "$QEMU_DIR/hw/riscv/ws53_uart_route.c.inc"
 cp "$HERE/src/hw/riscv/ws53_gpio.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_gpio.c.inc"
 cp "$HERE/src/hw/riscv/ws53_pinctrl.c.inc"                "$QEMU_DIR/hw/riscv/ws53_pinctrl.c.inc"
 cp "$HERE/src/hw/riscv/ws53_nmi.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_nmi.c.inc"

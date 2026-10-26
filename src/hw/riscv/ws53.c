@@ -25,6 +25,7 @@
 #include "hisi_riscv31.h"
 #include "ws53_uart.c.inc"
 #include "ws53_uart_reset.c.inc"
+#include "ws53_uart_route.c.inc"
 #include "ws53_gpio.c.inc"
 #include "ws53_pinctrl.c.inc"
 #include "ws53_nmi.c.inc"
@@ -341,6 +342,11 @@ static void ws53_init(MachineState *machine)
     qdev_prop_set_bit(uart_l0_reset, "l0-bank", true);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(uart_l0_reset), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(uart_l0_reset), 0, 0x570000b0);
+    DeviceState *uart_l0_route = qdev_new(TYPE_WS53_UART_L0_ROUTE);
+    object_property_add_child(OBJECT(machine), "uart-l0-route", OBJECT(uart_l0_route));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(uart_l0_route), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(uart_l0_route), 0, 0x57000048);
+    sysbus_connect_irq(SYS_BUS_DEVICE(uart_l0_route), 0, qdev_get_gpio_in(intc, 42));
     DeviceState *uarts[3];
     for (unsigned i = 0; i < 3; i++) {
         DeviceState *uart = uarts[i] = qdev_new(TYPE_WS53_UART);
@@ -352,7 +358,9 @@ static void ws53_init(MachineState *machine)
         }
         sysbus_realize_and_unref(SYS_BUS_DEVICE(uart), &error_fatal);
         sysbus_mmio_map(SYS_BUS_DEVICE(uart), 0, bases[i]);
-        sysbus_connect_irq(SYS_BUS_DEVICE(uart), 0, qdev_get_gpio_in(intc, irqs[i]));
+        sysbus_connect_irq(SYS_BUS_DEVICE(uart), 0,
+            i == 2 ? qdev_get_gpio_in_named(uart_l0_route, "source", 0) :
+                     qdev_get_gpio_in(intc, irqs[i]));
         if (i < 2) {
             qdev_connect_gpio_out_named(uart_reset, "reset-n", i,
                                        qdev_get_gpio_in_named(uart, "soft-reset-n", 0));
@@ -550,6 +558,7 @@ static void ws53_register_types(void)
 {
     type_register_static(&ws53_uart_type);
     type_register_static(&ws53_uart_reset_type);
+    type_register_static(&ws53_uart_l0_route_type);
     type_register_static(&ws53_gpio_type);
     type_register_static(&ws53_pinctrl_type);
     type_register_static(&ws53_nmi_type);
