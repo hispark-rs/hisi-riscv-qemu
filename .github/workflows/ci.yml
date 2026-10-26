@@ -56,6 +56,9 @@ jobs:
       - name: WS53 timer paused-clock fault contracts
         run: uv run --script scripts/ws53_timer_stall_test.py --qemu ./qemu/build/qemu-system-riscv32
 
+      - name: WS53 unavailable counter CSR and older-machine regression
+        run: uv run --script scripts/ws53_counter_csr_test.py --qemu ./qemu/build/qemu-system-riscv32
+
       - name: Checkout ws63-rs (firmware source)
         uses: actions/checkout@v5
         with:

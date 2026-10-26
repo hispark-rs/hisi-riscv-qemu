@@ -20,6 +20,8 @@
   - [WS53 温感控制域复位门禁](ws53-tsensor-control-domain.md)
   - [WS53 GPIO 来源寄存器观察](ws53-gpio-source-observation.md)
   - [WS53 UART L0 应用核 IRQ 路由](ws53-uart-l0-route.md)
+  - [WS53 缓存 CSR 状态与拒绝范围](reference/ws53-cache-state.md)
+  - [WS53 指令缓存功能实验](reference/ws53-instruction-cache.md)
   - [外设建模矩阵](reference/peripheral-matrix.md)
   - [xlinx 自定义 ISA](reference/xlinx-isa.md)
   - [掩膜 ROM 桩目录](reference/rom-stubs.md)

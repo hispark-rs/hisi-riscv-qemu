@@ -9,6 +9,7 @@
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
 #include "hw/sysbus.h"
@@ -20,7 +21,9 @@
 #include "chardev/char-fe.h"
 #include "system/system.h"
 #include "system/reset.h"
+#include "system/runstate.h"
 #include "exec/address-spaces.h"
+#include "exec/tb-flush.h"
 #include "elf.h"
 #include "hisi_riscv31.h"
 #include "ws53_uart.c.inc"
@@ -60,6 +63,13 @@ typedef struct WS53TimerChannel {
     int64_t start, paused_at, remaining_ns;
 } WS53TimerChannel;
 
+/* Deterministic functional experiment, not measured cache associativity. */
+typedef struct WS53InstructionLine {
+    uint32_t address;
+    uint8_t data[32];
+    bool valid;
+} WS53InstructionLine;
+
 struct WS53MachineState {
     MachineState parent_obj;
     RISCVCPU cpu;
@@ -71,9 +81,48 @@ struct WS53MachineState {
     WS53Mclken1State *mclken1;
     WS53TimerChannel timers[2];
     bool gpio_direct, flashboot_handoff;
+    bool cache_observed, cache_instruction;
+    uint32_t cache_icctl, cache_dcctl, cache_memattrl;
+    uint64_t cache_rejections, cache_epoch_rejections;
+    uint32_t cache_aprefi, cache_icinva;
+    WS53InstructionLine cache_lines[1024];
+    uint64_t cache_valid, cache_fetches, cache_hits, cache_fills;
+    uint64_t cache_prefetches, cache_invalidations, cache_fences, cache_debug_patch;
 };
 
 #include "ws53_flash_handoff.c.inc"
+#include "ws53_cache_state.c.inc"
+
+static riscv_csr_operations ws53_mcountinhibit_original;
+
+static RISCVException ws53_mcountinhibit_predicate(CPURISCVState *env, int csrno)
+{
+    Object *machine = qdev_get_machine();
+
+    /* A-board CPU reads of CSR 0x320 trap with cause 2 at the exact CSRR.
+     * Do not inherit this CSR merely because the generic CPU has counters.
+     * Treat every encoding as an unavailable CSR, before rd/counter updates.
+     * Writes are an absence-policy consequence, not a measured write result.
+     * The operation table is process-global: keep the upstream predicate and
+     * all read/write callbacks for every CPU other than this WS53 acore. */
+    if (object_dynamic_cast(machine, TYPE_WS53_MACHINE) &&
+        env == &WS53_MACHINE(machine)->cpu.env) {
+        return RISCV_EXCP_ILLEGAL_INST;
+    }
+    return ws53_mcountinhibit_original.predicate ?
+           ws53_mcountinhibit_original.predicate(env, csrno) :
+           RISCV_EXCP_ILLEGAL_INST;
+}
+
+static void ws53_counter_csr_init(void)
+{
+    riscv_csr_operations ops;
+
+    riscv_get_csr_ops(CSR_MCOUNTINHIBIT, &ws53_mcountinhibit_original);
+    ops = ws53_mcountinhibit_original;
+    ops.predicate = ws53_mcountinhibit_predicate;
+    riscv_set_csr_ops(CSR_MCOUNTINHIBIT, &ops);
+}
 
 static void ws53_timer_irq(WS53TimerChannel *c)
 {
@@ -214,6 +263,10 @@ static void ws53_reset(void *opaque)
 {
     WS53MachineState *s = opaque;
     cpu_reset(CPU(&s->cpu));
+    ws53_cache_state_reset(s);
+    if (s->cache_instruction) {
+        tb_flush(CPU(&s->cpu));
+    }
     if (s->flashboot_handoff) {
         ws53_flash_handoff_reset(s);
     }
@@ -235,6 +288,8 @@ static void ws53_init(MachineState *machine)
     MemoryRegion *sys = get_system_memory();
     uint64_t entry = 0x28000;
     ws63_register_custom_csrs();
+    ws53_counter_csr_init();
+    ws53_cache_state_init(s);
     ws63_make_ram(sys, &s->itcm, "ws53.acore.itcm", 0x20000, 0x10000);
     if (s->flashboot_handoff) {
         ws53_flash_handoff_init(s, sys);
@@ -477,9 +532,15 @@ static void ws53_init(MachineState *machine)
         exit(1);
     }
     object_initialize_child(OBJECT(machine), "cpu", &s->cpu, machine->cpu_type);
+    /* BS21 ROM addresses overlap this machine's ITCM; retain real exceptions. */
+    s->cpu.hisi_legacy_rom_disabled = true;
     qdev_prop_set_uint64(DEVICE(&s->cpu), "resetvec", entry);
     s->cpu.env.mhartid = 0;
     qdev_realize(DEVICE(&s->cpu), NULL, &error_fatal);
+    if (s->cache_instruction) {
+        s->cpu.hisi_insn_fetch = ws53_icache_fetch;
+        s->cpu.hisi_fence_i = ws53_icache_fence;
+    }
     ws63_intc_set_cpu_env(intc, &s->cpu.env);
     qemu_register_reset(ws53_reset, s);
 }
@@ -528,6 +589,7 @@ static void ws53_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
     mc->max_cpus = 1;
     mc->default_cpu_type = TYPE_RISCV_CPU_WS63;
     mc->default_ram_size = 0;
+    ws53_cache_state_class_init(oc);
     object_class_property_add_bool(oc, "gpio-direct", ws53_get_gpio_direct, ws53_set_gpio_direct);
     object_class_property_set_description(oc, "gpio-direct",
         "Bypass pad routing for isolated GPIO register-contract tests only");
