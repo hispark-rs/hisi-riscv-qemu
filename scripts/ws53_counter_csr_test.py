@@ -37,8 +37,11 @@ def run_profile(qemu, machine, base, profile=None, ws53=False):
     rows = scenarios()
     output, done, positions, regions = program(base, rows, False)
     rounds = []
+    options = ('-icount', 'shift=8,align=off,sleep=off')
+    if profile == 'instruction-experiment':
+        options += ('-global', 'ws53-wdt.assume-timing=on')
     with session(qemu, machine, base, profile,
-                 ('-icount', 'shift=8,align=off,sleep=off')) as (execute, bus, diagnostics):
+                 options) as (execute, bus, diagnostics):
         def read(address):
             return int(bus(f'readl {address:#x}')[0], 0)
         for reset_round in range(2):
@@ -88,7 +91,8 @@ def run_profile(qemu, machine, base, profile=None, ws53=False):
         expected = [NOTICE]
     elif profile == 'instruction-experiment':
         expected = ['qemu-system-riscv32: ws53-cache: instruction experiment; synthetic initial '
-                    'state, direct-mapped Flash lines, no timing/D-cache/drain proof']
+                    'state, direct-mapped Flash lines, no timing/D-cache/drain proof',
+                    'ws53-wdt: assumed timing low-byte=255 expiry=count+1 stage=reload clock=32000']
     assert diagnostics == expected, (machine, profile, diagnostics, expected)
     return dict(machine=machine, profile=profile, rounds=rounds, diagnostics=diagnostics)
 
