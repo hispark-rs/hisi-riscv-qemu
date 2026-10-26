@@ -19,6 +19,7 @@
   - [WS53 FlashBoot 交接模型](reference/ws53-flash-handoff.md)
   - [WS53 温感控制域复位门禁](ws53-tsensor-control-domain.md)
   - [WS53 GPIO 来源寄存器观察](ws53-gpio-source-observation.md)
+  - [WS53 UART L0 应用核 IRQ 路由](ws53-uart-l0-route.md)
   - [外设建模矩阵](reference/peripheral-matrix.md)
   - [xlinx 自定义 ISA](reference/xlinx-isa.md)
   - [掩膜 ROM 桩目录](reference/rom-stubs.md)
