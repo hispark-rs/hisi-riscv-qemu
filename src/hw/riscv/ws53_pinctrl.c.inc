@@ -52,8 +52,50 @@ struct WS53PinctrlState {
     bool uart_rx_profile, uart_rx_ambiguous[3];
     int uart_rx_selected[3];
     qemu_irq uart_rx_level[3], uart_rx_enable[3];
+    bool i2c_wire_profile, i2c_low[4], i2c_ready[2];
+    qemu_irq i2c_route_ready[2];
     qemu_irq gpio_in[48], level[48], drive[48], floating[48], contention[48];
 };
+
+/* SDK 163d9150 pin-function table. Signal indices: 0/1=I2C0 SCL/SDA,
+ * 2/3=I2C1 SCL/SDA. SDK47 is the canonical SGPIO2/MGPIO21 alias.
+ * Modeling SGPIO0 is not permission to repurpose physical SWDIO. */
+static int ws53_pad_i2c(unsigned id, unsigned mode)
+{
+    if ((id == 0 && mode == 2) ||
+        ((id == 13 || id == 47) && mode == 3)) { return 0; }
+    if (((id == 45 || id == 22) && mode == 3) ||
+        (id == 38 && mode == 2)) { return 1; }
+    if ((id == 8 && mode == 3) || (id == 35 && mode == 1)) { return 2; }
+    if ((id == 9 && mode == 3) || (id == 36 && mode == 1)) { return 3; }
+    return -1;
+}
+
+static void ws53_pad_i2c_route_update(WS53PinctrlState *s)
+{
+    if (!s->i2c_wire_profile) { return; }
+    unsigned count[4] = { 0 }, qualified[4] = { 0 };
+    for (unsigned i = 0; i < ARRAY_SIZE(ws53_pad_desc); i++) {
+        unsigned id = ws53_pad_desc[i].id;
+        int signal = ws53_pad_i2c(id, s->mode[id]);
+        if (signal >= 0) {
+            count[signal]++;
+            /* Explicit internal-pullup profile, not an arbitrary external
+             * resistor model. Ambiguous input selection fails closed. */
+            qualified[signal] += (s->config[id] & 4) &&
+                                 ((s->config[id] >> 3) & 3) == 1;
+        }
+    }
+    for (unsigned bus = 0; bus < 2; bus++) {
+        unsigned scl = 2 * bus, sda = scl + 1;
+        bool ready = count[scl] == 1 && count[sda] == 1 &&
+                     qualified[scl] == 1 && qualified[sda] == 1;
+        if (ready != s->i2c_ready[bus]) {
+            s->i2c_ready[bus] = ready;
+            qemu_set_irq(s->i2c_route_ready[bus], ready);
+        }
+    }
+}
 
 static int ws53_pad_uart_tx(unsigned id, unsigned mode)
 {
@@ -128,9 +170,11 @@ static void ws53_pad_update(WS53PinctrlState *s, const WS53PadDesc *d)
     bool gpio = d->bank != 255 && s->mode[n] == 0;
     bool pwm = ws53_pad_pwm0(n, s->mode[n]);
     int uart = s->uart_tx_profile ? ws53_pad_uart_tx(n, s->mode[n]) : -1;
+    int i2c = s->i2c_wire_profile ? ws53_pad_i2c(n, s->mode[n]) : -1;
     bool driving = (gpio && s->gpio_oe[n]) || (pwm && s->pwm0_drive) ||
-                   (uart >= 0 && s->uart_drive[uart]);
-    bool driven_level = uart >= 0 ? s->uart_level[uart] :
+                   (uart >= 0 && s->uart_drive[uart]) ||
+                   (i2c >= 0 && s->i2c_low[i2c]);
+    bool driven_level = i2c >= 0 ? false : uart >= 0 ? s->uart_level[uart] :
                         pwm ? s->pwm0_level : s->gpio_out[n];
     bool floating = !driving && !s->external_drive[n] && pull == 0;
     bool conflict = driving && s->external_drive[n] &&
@@ -167,6 +211,18 @@ static void ws53_pad_update(WS53PinctrlState *s, const WS53PadDesc *d)
         qemu_set_irq(s->gpio_in[n], input);
     }
     ws53_pad_uart_rx_update(s);
+    ws53_pad_i2c_route_update(s);
+}
+
+static void ws53_pad_i2c_low(void *opaque, int n, int level)
+{
+    WS53PinctrlState *s = opaque;
+    if (s->i2c_low[n] == (level != 0)) { return; }
+    s->i2c_low[n] = level != 0;
+    for (unsigned i = 0; i < ARRAY_SIZE(ws53_pad_desc); i++) {
+        const WS53PadDesc *d = &ws53_pad_desc[i];
+        if (ws53_pad_i2c(d->id, s->mode[d->id]) == n) { ws53_pad_update(s, d); }
+    }
 }
 
 static void ws53_pad_signal(WS53PinctrlState *s, bool *values, int n, int level)
@@ -299,7 +355,8 @@ static void ws53_pinctrl_write(void *opaque, hwaddr off, uint64_t value, unsigne
             if (value && !ws53_pad_pwm0(d->id, value) &&
                 !(s->uart_tx_profile && (ws53_pad_uart_tx(d->id, value) >= 0 ||
                                          ws53_pad_uart_rx_port(d->id, value) >= 0)) &&
-                !(s->uart_rx_profile && ws53_pad_uart_rx_port(d->id, value) >= 0)) {
+                !(s->uart_rx_profile && ws53_pad_uart_rx_port(d->id, value) >= 0) &&
+                !(s->i2c_wire_profile && ws53_pad_i2c(d->id, value) >= 0)) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                     "ws53-pinctrl: unimplemented alternate peripheral route pad %u mode %u\n",
                     d->id, (unsigned)value);
@@ -364,6 +421,8 @@ static void ws53_pinctrl_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_uart_level, "uart-tx-level", 3);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_uart_drive, "uart-tx-drive", 3);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_uart_frame, "uart-tx-frame", 3);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_pad_i2c_low, "i2c-low", 4);
+    qdev_init_gpio_out_named(DEVICE(obj), s->i2c_route_ready, "i2c-route-ready", 2);
     qdev_init_gpio_out_named(DEVICE(obj), s->gpio_in, "gpio-in", 48);
     qdev_init_gpio_out_named(DEVICE(obj), s->level, "level", 48);
     qdev_init_gpio_out_named(DEVICE(obj), s->drive, "drive-enable", 48);
@@ -381,6 +440,7 @@ static void ws53_pinctrl_init(Object *obj)
 }
 static const Property ws53_pinctrl_properties[] = {
     DEFINE_PROP_CHR("pad-trace", WS53PinctrlState, pad_trace),
+    DEFINE_PROP_BOOL("assume-i2c-wire", WS53PinctrlState, i2c_wire_profile, false),
     DEFINE_PROP_BOOL("assume-uart-tx", WS53PinctrlState, uart_tx_profile, false),
     DEFINE_PROP_BOOL("assume-uart-rx", WS53PinctrlState, uart_rx_profile, false),
     DEFINE_PROP_BOOL("uart-console-profile", WS53PinctrlState, uart_console_profile, false),

@@ -527,6 +527,14 @@ static void ws53_init(MachineState *machine)
     DeviceState *pinctrl = qdev_new(TYPE_WS53_PINCTRL);
     object_property_add_child(OBJECT(machine), "pinctrl", OBJECT(pinctrl));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(pinctrl), &error_fatal);
+    for (unsigned bus = 0; bus < 2; bus++) {
+        for (unsigned signal = 0; signal < 2; signal++) {
+            qdev_connect_gpio_out_named(i2c, bus ? "wire1-low" : "wire0-low", signal,
+                qdev_get_gpio_in_named(pinctrl, "i2c-low", 2 * bus + signal));
+        }
+        qdev_connect_gpio_out_named(pinctrl, "i2c-route-ready", bus,
+            qdev_get_gpio_in_named(i2c, "wire-route", bus));
+    }
     const unsigned uart_rx_peer_pads[] = { 36, 18, 34 };
     for (unsigned i = 0; i < 3; i++) {
         qdev_connect_gpio_out_named(uarts[i], "pad-tx-level", 0,
