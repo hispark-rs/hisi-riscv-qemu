@@ -8,13 +8,13 @@ import tempfile
 from ws53_gpio_test import connect
 
 
-def test(qemu, boot_systick=False):
+def test(qemu, boot_systick=False, ble_clock=False):
     with tempfile.TemporaryDirectory(prefix='sle-qtest-') as tmp:
         qt, qm = Path(tmp)/'qt', Path(tmp)/'qm'
         log = (Path(tmp)/'stderr').open('w+')
         proc = subprocess.Popen([qemu, '-M', 'ws63', '-accel', 'qtest',
             '-display', 'none', '-monitor', 'none', '-serial', 'null',
-            '-device', 'ws63-sle-research' + (',assume-boot-systick=on' if boot_systick else ''), '-qtest-log', '/dev/null',
+            '-device', 'ws63-sle-research' + (',assume-boot-systick=on' if boot_systick else '') + (',assume-ble-clock=on' if ble_clock else ''), '-qtest-log', '/dev/null',
             '-qtest', f'unix:{qt},server=on,wait=off',
             '-qmp', f'unix:{qm},server=on,wait=off'], stderr=log)
         try:
@@ -85,12 +85,25 @@ def test(qemu, boot_systick=False):
                     before=counter()
                     cmd(f'clock_step {31250 * (1<<32)}')
                     assert counter() == before + (1<<32)
+                # BLE capture profile is separate and off by default.
+                write(0x10a8,0xf8000000)
+                if ble_clock:
+                    captured=read(0x10a8)
+                    fine=read(0x10ac)
+                    assert captured & 0xf8000000 == 0x78000000
+                    assert 0<=fine<=624
+                    cmd('clock_step 625000')
+                    write(0x10a8,0xf8000000)
+                    assert read(0x10a8) == (captured & 0x78000000) | ((captured+1)&0x7ffffff)
+                    assert read(0x10ac)==fine
+                else:
+                    assert read(0x10a8)==0xf8000000
                 qmp('quit')
             proc.wait(timeout=5)
             assert proc.returncode == 0
             print(json.dumps({'passed':['masked-target','unmask-irq47',
                 'selective-ack','capture','fine-phase-model','em-widths',
-                'em-boundaries','reset-cancels-target'], 'boot_systick_profile':boot_systick, 'silicon_verified':False}))
+                'em-boundaries','reset-cancels-target','ble-profile-gating'], 'boot_systick_profile':boot_systick, 'ble_clock_profile':ble_clock, 'silicon_verified':False}))
         finally:
             if proc.poll() is None:
                 proc.terminate()
@@ -108,3 +121,4 @@ if __name__ == '__main__':
     args=parser.parse_args()
     test(args.qemu)
     test(args.qemu,True)
+    test(args.qemu,ble_clock=True)

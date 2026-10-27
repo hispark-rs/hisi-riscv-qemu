@@ -118,7 +118,7 @@ It follows virtual time, including across device reset; it does not invent
 progress on each read. A two-second real-ROM boot snapshot with this dependency
 enabled stopped at `0x109B3C hal_sfc_regs_wait_config`, within the serial-flash
 operation path (`ra=0x1095C4`). This is the next observed dependency, not proof
-of a permanent deadlock or successful SLE initialization. The existing SFC
+of a permanent deadlock or successful SLE initialization. The legacy SFC
 model does not implement general flash command data transfers.
 
 `scripts/ws63_sle_boot_probe.py` repeats bounded boot attempts and records PC,
@@ -126,3 +126,66 @@ registers, binary hashes, UART and MMIO traces. It accepts the same qemu/rom/elf
 out paths as the function probe, plus optional `--flash-dir`, `--boot-systick`
 and `--seconds` (maximum30). It does not patch firmware, advance to a fabricated
 success callback, or require a physical debug probe.
+
+## Optional SFC data profile
+
+`-global ws63-sfc.research-data=on` enables volatile command-data transfers
+against the machine's existing 8 MiB XIP RAM window. It initializes that RAM
+to erased bytes before QEMU loaders run. Host input files are never modified;
+all programming and erase operations are confined to simulated memory.
+The backing-window size is **not** a recovered flash geometry or a consequence
+of the nominal JEDEC ID. This profile is off by default and does not change
+the normal WS63/BS21 identification-only model.
+
+The command register contract is based on the WS63 SDK SFC V150 definitions:
+configuration at `0x48000300`, opcode at `+0x308`, address at `+0x30C`, sixteen
+data words at `+0x400`; length is bits14:9 plus one, read is bit8, data enable
+bit7, address enable bit3 and start bit0. The model accepts standard single-SPI
+`03` reads and `02` programs, `06/04` write-enable control, `9F` ID,
+`05/35/15` status reads, and `20/D8` sector/block erase. The command profile
+does not include DMA, dual/quad transfers or vendor-specific status writes.
+
+Immediate completion, no protection, status2/3 zero, 256-byte non-wrapping
+program operations, 4/64 KiB erase sizes and partial data-word preservation
+are explicit model conventions. Programming ANDs bytes with existing NOR
+contents. Write enable is required and cleared after program/erase. Reset
+clears controller state but retains flash. Unsupported commands/configurations,
+out-of-range accesses and page-crossing programs terminate the research run
+with a diagnostic; they are not silently acknowledged.
+
+The inherited opt-in `WS63_SFC_TRACE=1` records the first100 commands. The data
+regression test is `scripts/ws63_sfc_research_test.py --qemu BINARY`, covering
+64-byte reads, partial reads, XIP coherence, write-enable, program/erase,
+reset persistence and negative cases. It tests the declared model, not silicon.
+
+`ws63_sle_boot_probe.py --sfc-data --boot-systick ...` enables both dependencies.
+The probe checks ROM and ELF identity, records flash-input hashes and can stop
+at `--break-at ADDRESS`. Its final stack/counter reads are GDB interventions;
+the legacy TCXO model advances on reads. They are not guest execution evidence.
+A ten-second attempt with the SFC profile did not reach `bt_init`; the captured
+stack was in `hal_hash_lock` / `drv_cipher_hash_start` through TCXO delay calls.
+This identifies another startup dependency, not a permanent-deadlock proof.
+
+## BLE capture and shared queue function evidence
+
+`assume-ble-clock=on` adds a separate, opt-in capture response at `0x490010A8`:
+bit31 clears immediately, the low27 bits capture a nominal625us clock and
+bits30:27 are preserved. The low10 bits at `0x490010AC` provide a synthetic
+countdown phase. Period, phase and instantaneous completion are assumptions;
+the ROM establishes only the request/poll/read pattern and extraction widths.
+There is no autonomous BLE IRQ46 source or BLE target timer in this increment.
+
+The vendor probe now runs19 scenarios: the earlier8, seven BLE clock/queue
+counterparts, and four shared EEQ capacity cases. It verifies BLE queue init
+at `0x13418C`, head selection at `0x134286`, clock reads at `0x136516/136548`,
+and the EEQ helper at `0x139200`. BLE queue MMIO is `0x490012E0/12E4`, not the
+GLE `0x490015FC/1600` pair. Both head readers can return non-null invalid items.
+The BLE initialization case uses normal depth16 and urgent depth8, and observes
+depth-minus-one and depth-minus-four groups at `0x49000448`.
+
+The EEQ helper extracts6-bit capacity and7-bit occupancy, truncates their
+difference to8 bits, then caps it at3. Synthetic capacity12/occupancy13 returns3
+for both queues. This is executable software arithmetic; whether hardware can
+present that input, and what calling invariant prevents it, remain unknown.
+The probe now rejects mismatched ELF identity as well as mismatched ROM, since
+its GP, callback addresses and global layout are fixed to the captured build.

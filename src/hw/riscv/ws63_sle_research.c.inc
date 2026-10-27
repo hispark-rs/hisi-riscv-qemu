@@ -16,6 +16,7 @@ struct WS63SleResearch {
     char *trace_path;
     FILE *trace_file;
     bool assume_boot_systick;
+    bool assume_ble_clock;
 };
 
 /* Optional dependency shim for captured ROM rtc_read_once @0x10ae02.
@@ -88,6 +89,15 @@ static void sle_research_write(void *opaque, hwaddr off, uint64_t value,
         return;
     }
     switch (off) {
+    case 0x10a8:
+        if (s->assume_ble_clock && (value & (1u << 31))) {
+            uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+            /* Separate BLE profile: 27-bit coarse, 10-bit fine. Immediate
+             * completion, 625us coarse period and fine phase are assumptions. */
+            *word = (*word & 0x78000000) | ((now / 625000) & 0x07ffffff);
+            s->words[0x10ac / 4] = (624999 - now % 625000) / 1000;
+        }
+        break;
     case 0x1500:
         if (value & (1u << 31)) {
             uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
@@ -179,6 +189,8 @@ static const Property sle_research_properties[] = {
     DEFINE_PROP_STRING("trace-file", WS63SleResearch, trace_path),
     DEFINE_PROP_BOOL("assume-boot-systick", WS63SleResearch,
                      assume_boot_systick, false),
+    DEFINE_PROP_BOOL("assume-ble-clock", WS63SleResearch,
+                     assume_ble_clock, false),
 };
 
 static const VMStateDescription sle_research_vmstate = {

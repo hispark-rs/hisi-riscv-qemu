@@ -16,6 +16,7 @@ import tempfile
 import time
 
 ROM_SHA = '22d92fbba1a7a7333a6fc4a8e1f38b791c06ec3b495e5dc8734bfb44575f39db'
+ELF_SHA = '95920853592b1ee92ce975e311fdd478719d2b1bfbeec7096b884cf70943a4d0'
 
 
 def sha(path):
@@ -88,6 +89,7 @@ class RSP:
 
 def run(args):
     assert sha(args.rom) == ROM_SHA, 'Unsupported ROM revision'
+    assert sha(args.elf) == ELF_SHA, 'Unsupported ELF layout/GP/callback revision'
     assert b'WS63 strict ROM: illegal instruction' in Path(args.qemu).read_bytes(), (
         'Apply ws63_sle_strict_rom.py and rebuild before recording evidence')
     out = Path(args.out).resolve()
@@ -96,7 +98,13 @@ def run(args):
     cases = [('clock', 0x136576), ('fine', 0x1365a8),
              ('queue-init', 0x13fba0), ('em-offsets', 0x137c84),
              ('queue-valid', 0x13fc26), ('queue-skip', 0x13fc26),
-             ('queue-wrap', 0x13fc26), ('queue-empty', 0x13fc26)]
+             ('queue-wrap', 0x13fc26), ('queue-empty', 0x13fc26),
+             ('ble-clock', 0x136516), ('ble-fine', 0x136548),
+             ('ble-queue-init', 0x13418c), ('ble-queue-valid', 0x134286),
+             ('ble-queue-skip', 0x134286), ('ble-queue-wrap', 0x134286),
+             ('ble-queue-empty', 0x134286),
+             ('eeq-normal-room', 0x139200), ('eeq-urgent-room', 0x139200),
+             ('eeq-normal-underflow', 0x139200), ('eeq-urgent-underflow', 0x139200)]
     for name, pc in cases:
         with tempfile.TemporaryDirectory(prefix='sle-rsp-') as tmp:
             trace = out / (name + '.jsonl')
@@ -105,7 +113,8 @@ def run(args):
                        '-display', 'none', '-monitor', 'none', '-serial', 'null',
                        '-kernel', str(Path(args.elf).resolve()),
                        '-device', f'loader,file={Path(args.rom).resolve()},addr=0x100000,force-raw=on',
-                       '-device', f'ws63-sle-research,trace-file={trace}',
+                       '-device', f'ws63-sle-research,trace-file={trace}' +
+                       (',assume-ble-clock=on' if name.startswith('ble-') else ''),
                        '-gdb', f'unix:{sock},server=on,wait=off',
                        '-icount', 'shift=2']
             with (out / (name + '.stderr')).open('w') as err:
@@ -124,33 +133,56 @@ def run(args):
                     for addr, val in seeds.items():
                         g.write(addr, val, 2)
                     g.write(0x180290, 16, 1)
+                    g.write(0x18025a, 16, 1)
+                    g.write(0x18028a, 16, 1)
+                    g.write(0x18028b, 8, 1)
                     for addr in (0x490015fc, 0x49001600, 0x490010c0,
                                  0x49000274, 0x49001114, 0x49001118,
                                  0x490010c4, 0x49001130, 0x49000288,
-                                 0x49000430):
+                                 0x49000430, 0x490012e0, 0x490012e4,
+                                 0x49000448):
                         g.write(addr, 0xa5a5a5a5)
                     queue_input = None
-                    if name.startswith('queue-') and name != 'queue-init':
-                        idx = 15 if name == 'queue-wrap' else 0
-                        hardware_idx = 1 if name == 'queue-skip' else 0
+                    ble = name.startswith('ble-')
+                    base_name = name[4:] if ble else name
+                    queue_base = 0x49011020 if ble else 0x49011090
+                    queue_state = 0x182484 if ble else 0x182800
+                    queue_position = 0x490012e4 if ble else 0x49001600
+                    call_args = ()
+                    eeq_input = None
+                    if name.startswith('eeq-'):
+                        urgent = 'urgent' in name
+                        occupancy = 13 if 'underflow' in name else 10
+                        shift = 16 if urgent else 24
+                        g.write(0x49000448, 12 << shift)
+                        g.write(0x4900044c, occupancy << shift)
+                        call_args = (int(urgent),)
+                        eeq_input = {'capacity':12, 'occupancy':occupancy,
+                                     'urgent':urgent,
+                                     'within_known_invariant':occupancy <= 12}
+                    if base_name.startswith('queue-') and base_name != 'queue-init':
+                        idx = 15 if base_name == 'queue-wrap' else 0
+                        hardware_idx = 1 if base_name == 'queue-skip' else 0
                         valid_idx = {'queue-valid':0,'queue-skip':1,
-                                     'queue-wrap':0,'queue-empty':None}[name]
-                        g.write(0x182800, 0x49011090)
-                        g.write(0x182804, idx, 1)
-                        g.write(0x182805, 16, 1)
-                        g.write(0x49001600, (hardware_idx << 19) | 128)
+                                     'queue-wrap':0,'queue-empty':None}[base_name]
+                        g.write(queue_state, queue_base)
+                        g.write(queue_state+4, idx, 1)
+                        g.write(queue_state+5, 16, 1)
+                        g.write(queue_position, (hardware_idx << 19) | 128)
                         if valid_idx is not None:
-                            g.write(0x49011090 + valid_idx*8, 0x94000000)
+                            g.write(queue_base + valid_idx*8, 0x94000000)
                         queue_input = {'consumer':idx,'producer':hardware_idx,
                                        'valid_entry':valid_idx,'event_word':'0x94000000'}
                     start = trace.stat().st_size
-                    returned = g.call(pc)
+                    returned = g.call(pc, call_args)
                     stop = trace.stat().st_size
                     rows = [json.loads(x) for x in trace.read_bytes()[start:stop].splitlines()]
                     result = {'case': name, 'pc': hex(pc), 'return_a0': returned,
                               'synthetic_input_halfwords': {hex(k): hex(v) for k,v in seeds.items()},
                               'synthetic_queue_count': 16, 'synthetic_queue_input': queue_input,
                               'synthetic_mmio_seed': '0xa5a5a5a5',
+                              'synthetic_eeq_input': eeq_input,
+                              'ble_clock_profile_assumption': ble,
                               'trace_start_byte': start, 'trace_end_byte': stop,
                               'firmware_accesses': rows}
                     if name == 'queue-init':
@@ -158,18 +190,38 @@ def run(args):
                         assert g.read(0x182805, 1) == 16
                         assert g.read(0x49001600) == 0xa5a50080
                         assert g.read(0x490015fc) == ((0xa5a5a5a5 | 0x01100000))
+                    if name == 'ble-queue-init':
+                        assert g.read(queue_state) == queue_base
+                        assert g.read(queue_state+4, 1) == 0
+                        assert g.read(queue_state+5, 1) == 16
+                        assert g.read(0x490012e4) == 0xa5a50080
+                        assert g.read(0x490012e0) == (0xa5a5a5a5 | 0x01100000)
+                        expected = (0xa5a5a5a5 & ~0x3f3f7f7f) | (12<<24) | (4<<16) | (15<<8) | 7
+                        assert g.read(0x49000448) == expected
+                        result['shared_queue_config'] = hex(expected)
+                        result['synthetic_eeq_depths'] = {'normal':16,'urgent':8}
+                    if base_name in ('clock','fine'):
+                        capture = 0x490010a8 if ble else 0x49001500
+                        fine = 0x490010ac if ble else 0x49001504
+                        assert not (g.read(capture) & 0x80000000)
+                        expected = g.read(capture if base_name=='clock' else fine)
+                        expected &= (0x7ffffff if ble else 0x3fffffff) if base_name=='clock' else (1023 if ble else 127)
+                        assert returned == expected
+                    if eeq_input is not None:
+                        assert returned == min((12-occupancy)&255,3)
+                        result['interpretation'] = ('synthetic occupancy exceeds capacity; software unsigned wrap, not proof of reachable hardware overflow' if occupancy>12 else 'vendor software capacity calculation')
                     if name == 'em-offsets':
                         assert g.read(0x490014bc) == 0x1090
                         assert g.read(0x490015c0) == 0x38f4
                         assert g.read(0x49001114) == 0xa5a02340
                         assert g.read(0x49001118) == 0xa5a02380
                     if queue_input is not None:
-                        expected_idx = 1 if name == 'queue-skip' else 0
-                        assert returned == 0x49011090 + expected_idx*8
-                        assert g.read(0x182804,1) == expected_idx
+                        expected_idx = 1 if base_name == 'queue-skip' else 0
+                        assert returned == queue_base + expected_idx*8
+                        assert g.read(queue_state+4,1) == expected_idx
                         result['consumer_after'] = expected_idx
                         result['returned_slot_valid'] = bool(g.read(returned) & 0x80000000)
-                        assert result['returned_slot_valid'] == (name != 'queue-empty')
+                        assert result['returned_slot_valid'] == (base_name != 'queue-empty')
                     results.append(result)
                 finally:
                     if g:

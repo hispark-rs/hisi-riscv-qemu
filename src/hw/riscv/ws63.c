@@ -1181,6 +1181,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(WS63SfcState, WS63_SFC)
 #define WS63_SFC_SIZE       0x00001000
 #define SFC_CMD_CONFIG      0x300   /* bit0 = start (auto-clears when done) */
 #define SFC_CMD_INS         0x308   /* bits[7:0] = SPI opcode */
+#define SFC_CMD_ADDR        0x30c
 #define SFC_CMD_DATABUF0    0x400
 #define SFC_FLASH_ID_W25Q16 0x001560EF   /* Winbond (WS63 default) */
 #define SFC_FLASH_ID_GD25Q80C 0x001440C8 /* GigaDevice (BS21: FLASH_MANUFACTURER_GIGADEVICE_GD25Q80C) */
@@ -1188,6 +1189,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(WS63SfcState, WS63_SFC)
 struct WS63SfcState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
+    unsigned research_trace_count;
+    bool research_data;  /* Opt-in command-data experiment, not silicon proof. */
+    bool write_enable;
     uint32_t flash_id;  /* JEDEC ID returned for RDID (0x9F): packed cap<<16|type<<8|mfr.
                          * WS63 = W25Q16; BS21 = GD25Q80C. Set via ws63_sfc_set_flash_id(). */
     uint32_t shadow[WS63_SFC_SIZE / 4];
@@ -1198,6 +1202,105 @@ struct WS63SfcState {
 void ws63_sfc_set_flash_id(DeviceState *dev, uint32_t id)
 {
     WS63_SFC(dev)->flash_id = id;
+}
+
+/* The research profile uses the existing, volatile XIP RAM backing. It never
+ * writes a host flash image. Transfer completion is immediate; flash timing,
+ * protection and vendor-specific status behavior are not modeled. Unsupported
+ * commands fail visibly instead of pretending that firmware initialized. */
+static void ws63_sfc_research_command(WS63SfcState *s, uint32_t cfg)
+{
+    uint8_t op = s->shadow[SFC_CMD_INS / 4] & 0xff;
+    uint32_t addr = s->shadow[SFC_CMD_ADDR / 4];
+    unsigned len = ((cfg >> 9) & 63) + 1;
+    bool data = cfg & (1u << 7), read = cfg & (1u << 8);
+    bool address = cfg & (1u << 3);
+    uint8_t buf[64];
+    uint32_t erase_size = 0;
+    const char *reason = "unsupported command/configuration";
+
+    if (!g_ws63_flash || !g_ws63_flash->enabled ||
+        (cfg & ((7u << 17) | (7u << 4))) ||
+        (s->shadow[SFC_CMD_INS / 4] & ~0xffu)) {
+        goto unsupported;
+    }
+    switch (op) {
+    case 0x06: /* WREN */
+    case 0x04: /* WRDI */
+        if (data || address) {
+            goto unsupported;
+        }
+        s->write_enable = op == 0x06;
+        return;
+    case 0x9f: /* RDID */
+    case 0x05: /* Status1: modeled WEL, immediate-ready WIP. */
+    case 0x35: /* Status2/3 are assumed zero in this profile. */
+    case 0x15:
+        if (!data || !read || address ||
+            (op == 0x9f ? len > 3 : len != 1)) {
+            goto unsupported;
+        }
+        memset(buf, 0, sizeof(buf));
+        if (op == 0x9f) {
+            for (unsigned i = 0; i < len; i++) {
+                buf[i] = s->flash_id >> (8 * i);
+            }
+        } else if (op == 0x05) {
+            buf[0] = s->write_enable ? 2 : 0;
+        }
+        break;
+    case 0x03: /* Standard SPI read. */
+    case 0x02: /* Page program: only observed, non-wrapping transfers. */
+        if (!data || !address || read != (op == 0x03) ||
+            addr >= WS63_FLASH_SIZE || len > WS63_FLASH_SIZE - addr) {
+            goto unsupported;
+        }
+        cpu_physical_memory_read(WS63_FLASH_BASE + addr, buf, len);
+        if (op == 0x02) {
+            if (!s->write_enable || (addr & 255) + len > 256) {
+                reason = "program without WREN or crossing modeled page";
+                goto unsupported;
+            }
+            for (unsigned i = 0; i < len; i++) {
+                buf[i] &= s->shadow[SFC_CMD_DATABUF0 / 4 + i / 4] >>
+                          (8 * (i % 4));
+            }
+            cpu_physical_memory_write(WS63_FLASH_BASE + addr, buf, len);
+            s->write_enable = false;
+            return;
+        }
+        break;
+    case 0x20: /* Modeled 4 KiB sector erase. */
+    case 0xd8: /* Modeled 64 KiB block erase. */
+        erase_size = op == 0x20 ? 4096 : 65536;
+        if (data || !address || read || !s->write_enable ||
+            addr >= WS63_FLASH_SIZE) {
+            goto unsupported;
+        }
+        addr &= ~(erase_size - 1);
+        memset(buf, 0xff, sizeof(buf));
+        for (unsigned i = 0; i < erase_size; i += sizeof(buf)) {
+            cpu_physical_memory_write(WS63_FLASH_BASE + addr + i,
+                                      buf, sizeof(buf));
+        }
+        s->write_enable = false;
+        return;
+    default:
+        goto unsupported;
+    }
+    /* Replace only transferred bytes. Partial trailing words preserve the
+     * remainder of the scratch data buffer; this is a model convention. */
+    for (unsigned i = 0; i < len; i++) {
+        unsigned word = SFC_CMD_DATABUF0 / 4 + i / 4, shift = 8 * (i % 4);
+        s->shadow[word] = (s->shadow[word] & ~(0xffu << shift)) |
+                          ((uint32_t)buf[i] << shift);
+    }
+    return;
+
+unsupported:
+    error_report("WS63 research SFC: %s: op=%02x cfg=%08x addr=%08x",
+                 reason, op, cfg, addr);
+    exit(EXIT_FAILURE);
 }
 
 static uint64_t ws63_sfc_read(void *opaque, hwaddr off, unsigned size)
@@ -1212,7 +1315,15 @@ static void ws63_sfc_write(void *opaque, hwaddr off, uint64_t val, unsigned size
 
     if (off == SFC_CMD_CONFIG && (val & 0x1)) {
         uint8_t op = s->shadow[SFC_CMD_INS / 4] & 0xff;
-        switch (op) {
+        if (getenv("WS63_SFC_TRACE") && s->research_trace_count++ < 100) {
+            fprintf(stderr, "SFC pc=%08x cfg=%08x op=%02x addr=%08x buf=%08x\n",
+                    current_cpu ? (unsigned)RISCV_CPU(current_cpu)->env.pc : 0,
+                    (uint32_t)val, op, s->shadow[SFC_CMD_ADDR / 4],
+                    s->shadow[SFC_CMD_DATABUF0 / 4]);
+        }
+        if (s->research_data) {
+            ws63_sfc_research_command(s, val);
+        } else switch (op) {
         case 0x9f: /* RDID */
             s->shadow[SFC_CMD_DATABUF0 / 4] = s->flash_id;
             break;
@@ -1248,11 +1359,47 @@ static void ws63_sfc_instance_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
 }
 
+static void ws63_sfc_research_reset(DeviceState *dev)
+{
+    WS63SfcState *s = WS63_SFC(dev);
+    if (s->research_data) {
+        memset(s->shadow, 0, sizeof(s->shadow));
+        s->write_enable = false;
+        s->research_trace_count = 0;
+    }
+}
+
+static void ws63_sfc_realize(DeviceState *dev, Error **errp)
+{
+    WS63SfcState *s = WS63_SFC(dev);
+    if (s->research_data) {
+        if (!g_ws63_flash) {
+            error_setg(errp, "research-data requires WS63 XIP RAM backing");
+            return;
+        }
+        /* Loaders run after realize and overwrite the erased initial image. */
+        memset(memory_region_get_ram_ptr(g_ws63_flash), 0xff, WS63_FLASH_SIZE);
+    }
+}
+
+static const Property ws63_sfc_properties[] = {
+    DEFINE_PROP_BOOL("research-data", WS63SfcState, research_data, false),
+};
+
+static void ws63_sfc_class_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    dc->realize = ws63_sfc_realize;
+    device_class_set_legacy_reset(dc, ws63_sfc_research_reset);
+    device_class_set_props(dc, ws63_sfc_properties);
+}
+
 static const TypeInfo ws63_sfc_typeinfo = {
     .name          = TYPE_WS63_SFC,
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(WS63SfcState),
     .instance_init = ws63_sfc_instance_init,
+    .class_init    = ws63_sfc_class_init,
 };
 
 /* ============================================================================
