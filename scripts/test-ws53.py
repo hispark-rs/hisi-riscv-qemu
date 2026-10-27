@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = ["gmssl==3.2.2", "pycryptodomex==3.23.0"]
 # ///
 """Boot-free WS53 timer qtest and optional RAM UART/IRQ integration smoke."""
 import argparse
@@ -41,6 +41,7 @@ from ws53_tsensor_test import tsensor_test
 from ws53_trng_test import trng_test
 from ws53_efuse_test import efuse_test
 from ws53_branch_immediate_test import run as branch_immediate_test
+from ws53_compressed_memory_test import run as compressed_memory_test
 from ws53_priority_test import run as priority_test
 from ws53_i2s_test import i2s_test
 from ws53_adc_test import adc_test
@@ -50,6 +51,12 @@ from ws53_mdma_uart_test import uart_dma_test
 from ws53_mdma_spi_test import spi_dma_test
 from ws53_mdma_i2c_test import i2c_dma_test
 from ws53_mdma_i2s_test import i2s_dma_test
+from ws53_sdio_init_test import sdio_init_test
+from ws53_sdio_adma_test import sdio_adma_test
+from ws53_hash_test import hash_test
+from ws53_km_test import km_test
+from ws53_symc_test import symc_test
+from ws53_symc_contract_test import contract_test as symc_contract_test
 
 
 def connect(path):
@@ -376,6 +383,7 @@ if __name__ == "__main__":
               "trng": trng_test(args.qemu),
               "efuse_read": efuse_test(args.qemu),
               "branch_immediate": branch_immediate_test(args.qemu),
+              "compressed_memory": compressed_memory_test(args.qemu),
               "priority": priority_test(args.qemu),
               "i2s": i2s_test(args.qemu),
               "adc_calibration": adc_test(args.qemu),
@@ -385,6 +393,12 @@ if __name__ == "__main__":
               "mdma_spi": spi_dma_test(args.qemu),
               "mdma_i2c": i2c_dma_test(args.qemu),
               "mdma_i2s": i2s_dma_test(args.qemu),
+              "sdio_initialization": sdio_init_test(args.qemu),
+              "sdio_adma": sdio_adma_test(args.qemu),
+              "hash": hash_test(args.qemu),
+              "km": km_test(args.qemu),
+              "symc": symc_test(args.qemu),
+              "symc_contract": symc_contract_test(args.qemu),
               "hardware_verified": False}
     if args.elf:
         result["ram"] = ram_test(args.qemu, args.elf)

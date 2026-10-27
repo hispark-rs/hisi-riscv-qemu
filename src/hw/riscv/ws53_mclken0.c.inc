@@ -6,13 +6,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(WS53Mclken0State, WS53_MCLKEN0)
 struct WS53Mclken0State {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
-    qemu_irq gate[2];
+    qemu_irq gate[3];
     uint32_t value, initial_value;
 };
 static void ws53_mclken0_update(WS53Mclken0State *s)
 {
     qemu_set_irq(s->gate[0], !!(s->value & 0x80));
     qemu_set_irq(s->gate[1], !!(s->value & 4));
+    qemu_set_irq(s->gate[2], !!(s->value & 0x800));
 }
 static uint64_t ws53_mclken0_read(void *opaque, hwaddr off, unsigned size)
 {
@@ -25,7 +26,7 @@ static void ws53_mclken0_write(void *opaque, hwaddr off, uint64_t v, unsigned si
 {
     WS53Mclken0State *s = opaque;
     uint32_t next = size == 2 ? (s->value & 0xffff0000u) | (v & 0xffff) : v;
-    if (off || (size != 2 && size != 4) || ((next ^ s->value) & ~0x84u)) {
+    if (off || (size != 2 && size != 4) || ((next ^ s->value) & ~0x884u)) {
         qemu_log_mask(LOG_GUEST_ERROR, "ws53-mclken0: unimplemented write +0x%" HWADDR_PRIx " value=0x%" PRIx64 " size=%u\n", off, v, size);
         return;
     }
@@ -52,7 +53,7 @@ static void ws53_mclken0_init(Object *obj)
     WS53Mclken0State *s = WS53_MCLKEN0(obj);
     memory_region_init_io(&s->mmio, obj, &ws53_mclken0_ops, s, TYPE_WS53_MCLKEN0, 4);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
-    qdev_init_gpio_out_named(DEVICE(obj), s->gate, "gate", 2);
+    qdev_init_gpio_out_named(DEVICE(obj), s->gate, "gate", 3);
 }
 static void ws53_mclken0_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {

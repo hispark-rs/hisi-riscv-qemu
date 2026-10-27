@@ -105,3 +105,39 @@ jobs:
           name: ws53-tsensor-control-domain-${{ matrix.qemu_tag }}
           path: ${{ runner.temp }}/ws53-tsensor-domain/
           if-no-files-found: warn
+
+      - name: WS53 synthetic SFC command and NOR contracts
+        if: matrix.qemu_tag == 'v10.0.0'
+        run: |
+          mkdir -p artifacts/ws53-sfc
+          uv run --script scripts/ws53_sfc_contract_test.py --qemu ./qemu/build/qemu-system-riscv32 \
+            --output artifacts/ws53-sfc/contract > artifacts/ws53-sfc/contract.stdout.log 2> artifacts/ws53-sfc/contract.stderr.log
+
+      - name: WS53 SFC CPU access-fault contracts
+        if: matrix.qemu_tag == 'v10.0.0'
+        run: |
+          mkdir -p artifacts/ws53-sfc
+          uv run --script scripts/ws53_sfc_cpu_test.py --qemu ./qemu/build/qemu-system-riscv32 \
+            > artifacts/ws53-sfc/cpu.json 2> artifacts/ws53-sfc/cpu.stderr.log
+
+      - name: WS53 SFC configured snapshot and TCG read-only contracts
+        if: matrix.qemu_tag == 'v10.0.0'
+        run: |
+          mkdir -p artifacts/ws53-sfc
+          uv run --script scripts/ws53_sfc_snapshot_test.py --qemu ./qemu/build/qemu-system-riscv32 \
+            --output artifacts/ws53-sfc/snapshot > artifacts/ws53-sfc/snapshot.stdout.log 2> artifacts/ws53-sfc/snapshot.stderr.log
+
+      - name: WS53 SFC startup and immutable-profile guards
+        if: matrix.qemu_tag == 'v10.0.0'
+        run: |
+          mkdir -p artifacts/ws53-sfc
+          uv run --script scripts/ws53_sfc_profile_test.py --qemu ./qemu/build/qemu-system-riscv32 \
+            --output artifacts/ws53-sfc/profile > artifacts/ws53-sfc/profile.stdout.log 2> artifacts/ws53-sfc/profile.stderr.log
+
+      - name: Upload WS53 SFC reports and diagnostics
+        if: always() && matrix.qemu_tag == 'v10.0.0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ws53-sfc-matrix-${{ matrix.qemu_tag }}
+          path: artifacts/ws53-sfc/
+          if-no-files-found: warn

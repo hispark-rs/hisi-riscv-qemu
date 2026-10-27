@@ -41,12 +41,17 @@
 #include "ws53_spi.c.inc"
 #include "ws53_tsensor.c.inc"
 #include "ws53_trng.c.inc"
+#include "ws53_km.c.inc"
+#include "ws53_symc.c.inc"
+#include "ws53_hash.c.inc"
 #include "ws53_efuse.c.inc"
 #include "ws53_i2s.c.inc"
 #include "ws53_mclken0.c.inc"
 #include "ws53_adc.c.inc"
 #include "ws53_global_clken.c.inc"
 #include "ws53_mdma.c.inc"
+#include "ws53_sfc_command.c.inc"
+#include "ws53_sdio.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -290,6 +295,20 @@ static void ws53_init(MachineState *machine)
     ws63_register_custom_csrs();
     ws53_counter_csr_init();
     ws53_cache_state_init(s);
+    DeviceState *sfc = qdev_new(TYPE_WS53_SFC_COMMAND);
+    object_property_add_child(OBJECT(machine), "sfc-command", OBJECT(sfc));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(sfc), &error_fatal);
+    if (s->flashboot_handoff && WS53_SFC_COMMAND(sfc)->assume_profile) {
+        error_report("ws53: SFC synthetic command profile and flashboot-handoff are mutually exclusive");
+        exit(1);
+    }
+    sysbus_mmio_map(SYS_BUS_DEVICE(sfc), 0, 0x53000000);
+    /* SFC halfword/word observation is separate from QSPI clock at +0x574. */
+    sysbus_mmio_map(SYS_BUS_DEVICE(sfc), 2, 0x52000570);
+    if (WS53_SFC_COMMAND(sfc)->assume_profile) {
+        /* Explicit rejection window, never a second silently divergent NOR. */
+        sysbus_mmio_map(SYS_BUS_DEVICE(sfc), 1, 0x400000);
+    }
     ws63_make_ram(sys, &s->itcm, "ws53.acore.itcm", 0x20000, 0x10000);
     if (s->flashboot_handoff) {
         ws53_flash_handoff_init(s, sys);
@@ -316,6 +335,22 @@ static void ws53_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(trng), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(trng), 0, 0x52024000);
     sysbus_mmio_map(SYS_BUS_DEVICE(trng), 1, 0x52001600);
+    DeviceState *km = qdev_new(TYPE_WS53_KM);
+    object_property_add_child(OBJECT(machine), "km", OBJECT(km));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(km), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(km), 0, 0x52022000);
+    sysbus_connect_irq(SYS_BUS_DEVICE(km), 0, qdev_get_gpio_in(intc, 61));
+    DeviceState *symc = qdev_new(TYPE_WS53_SYMC);
+    object_property_add_child(OBJECT(machine), "symc", OBJECT(symc));
+    WS53_SYMC(symc)->km = WS53_KM(km);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(symc), &error_fatal);
+    DeviceState *hash = qdev_new(TYPE_WS53_HASH);
+    object_property_add_child(OBJECT(machine), "hash", OBJECT(hash));
+    WS53_HASH(hash)->symc = WS53_SYMC(symc);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(hash), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(hash), 0, 0x52010000);
+    sysbus_connect_irq(SYS_BUS_DEVICE(symc), 0, qdev_get_gpio_in_named(hash, "symc", 0));
+    sysbus_connect_irq(SYS_BUS_DEVICE(hash), 0, qdev_get_gpio_in(intc, 59));
     DeviceState *efuse = qdev_new(TYPE_WS53_EFUSE);
     object_property_add_child(OBJECT(machine), "efuse", OBJECT(efuse));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(efuse), &error_fatal);
@@ -468,6 +503,14 @@ static void ws53_init(MachineState *machine)
     sysbus_mmio_map(SYS_BUS_DEVICE(mclken0), 0, 0x52000040);
     qdev_connect_gpio_out_named(mclken0, "gate", 0, qdev_get_gpio_in_named(pwm, "gate", 0));
     qdev_connect_gpio_out_named(mclken0, "gate", 1, qdev_get_gpio_in_named(i2s, "gate", 0));
+    DeviceState *sdio = qdev_new(TYPE_WS53_SDIO);
+    object_property_add_child(OBJECT(machine), "sdio", OBJECT(sdio));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(sdio), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(sdio), 0, 0x52060000);
+    sysbus_mmio_map(SYS_BUS_DEVICE(sdio), 1, 0x570000c8);
+    sysbus_connect_irq(SYS_BUS_DEVICE(sdio), 0, qdev_get_gpio_in(intc, 46));
+    qdev_connect_gpio_out_named(mclken0, "gate", 2, qdev_get_gpio_in_named(sdio, "gate", 0));
+    qdev_connect_gpio_out_named(mclken1, "gate", 4, qdev_get_gpio_in_named(sdio, "gate", 1));
     /* Do not route NMI through the ordinary local interrupt controller. CPU
      * NMI semantics are pending; the device diagnoses any asserted output. */
     DeviceState *pinctrl = qdev_new(TYPE_WS53_PINCTRL);
@@ -638,7 +681,12 @@ static void ws53_register_types(void)
     type_register_static(&ws53_spi_type);
     type_register_static(&ws53_tsensor_type);
     type_register_static(&ws53_trng_type);
+    type_register_static(&ws53_hash_type);
+    type_register_static(&ws53_km_type);
+    type_register_static(&ws53_symc_type);
     type_register_static(&ws53_efuse_type);
+    type_register_static(&ws53_sfc_type);
+    type_register_static(&ws53_sdio_type);
     type_register_static(&ws53_type);
 }
 type_init(ws53_register_types)

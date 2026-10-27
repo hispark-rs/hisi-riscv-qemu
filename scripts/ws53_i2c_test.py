@@ -203,7 +203,9 @@ def i2c_test(qemu):
                 f'writel {b.base+0xc4:#x} 0', f'writel {b.base+0xa0:#x} 1',
                 f'writel {b.base+0xb0:#x} 0x8000', f'writel {b.base+0x50:#x} 8',
                 f'writel {b.base+0x10:#x} 0x51', f'writel {b.base+0x14:#x} 1',
-                'readl 0x52000044', 'writel 0x52000044 0', 'writew 0x52000044 0',
+                # SDIO's SDK patch establishes word access to this shared slot.
+                # Byte access remains invalid; zero still corrupts inherited bits.
+                'readb 0x52000044', 'writel 0x52000044 0', 'writew 0x52000044 0',
             ):
                 cmd(text); invalid_count += 1
             assert b.read(0x10) == 0x50 and b.read(0xa0) == 0 and b.read(0x50) == 0

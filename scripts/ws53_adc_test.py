@@ -137,7 +137,7 @@ def adc_test(qemu):
                     'writel 0x5208a02c 2','writel 0x5208a034 2','writel 0x5208a088 1',
                     'writel 0x5208a0f4 0','writel 0x5208a01c 1','readl 0x5208a004',
                     'readw 0x52000054','writel 0x52000054 0x2001', 'readl 0x52000548',
-                    'writew 0x52000548 0x1001', 'writel 0x52000044 0x15']
+                    'writew 0x52000548 0x1001', 'writeb 0x52000044 0x15']
         for command in commands: cmd(command)
         b.prepare(0); b.start(0); b.write(0x2c,1); commands.append('active reconfigure')
         b.step(100000); assert b.status(0) == 1
