@@ -35,7 +35,7 @@ typedef struct WS53I2cChannel {
 struct WS53I2cState {
     SysBusDevice parent_obj;
     WS53I2cChannel channel[2];
-    bool assume_profile, assume_dma, warned, wire_profile;
+    bool assume_profile, assume_dma, warned, wire_profile, wire_peer;
 };
 static void ws53_i2c_wire_release(WS53I2cChannel *c)
 {
@@ -126,7 +126,9 @@ static void ws53_i2c_wire_begin(WS53I2cChannel *c, uint16_t cmd,
 {
     bool read = cmd & 0x100, ten = c->regs[0] & 16;
     unsigned target = c->regs[0x10 / 4] & 0x3ff;
-    bool address_ack = !c->nack_address && target == (ten ? 0x250 : 0x50);
+    bool peer = c->owner->wire_peer && !c->nack_address;
+    bool address_ack = peer && target == (ten ? 0x250 : 0x50);
+    bool header_ack = ten ? peer && (target & 0x300) == 0x200 : address_ack;
     bool new_address = !c->active || (cmd & 0x400);
     bool aborted = new_address && !address_ack;
     c->wire_len = c->wire_pos = 0;
@@ -142,10 +144,10 @@ static void ws53_i2c_wire_begin(WS53I2cChannel *c, uint16_t cmd,
         ws53_i2c_wire_start(c, c->active, low, high);
         uint8_t header = ten ? 0xf0 | ((target >> 7) & 6) |
             (read && c->active ? 1 : 0) : (target << 1) | read;
-        ws53_i2c_wire_byte(c, header, address_ack, false, low, high);
-        if (ten && address_ack && !(read && c->active)) {
-            ws53_i2c_wire_byte(c, target, true, false, low, high);
-            if (read) {
+        ws53_i2c_wire_byte(c, header, header_ack, false, low, high);
+        if (ten && header_ack && !(read && c->active)) {
+            ws53_i2c_wire_byte(c, target, address_ack, false, low, high);
+            if (read && address_ack) {
                 ws53_i2c_wire_start(c, true, low, high);
                 ws53_i2c_wire_byte(c, header | 1, true, false, low, high);
             }
@@ -217,8 +219,14 @@ static void ws53_i2c_tick(void *opaque)
     if (c->arbitration) { ws53_i2c_abort(c, 0, 1 << 12); return; }
     if (!c->active || (cmd & 0x400)) {
         bool ten = c->regs[0] & 16;
-        if (c->nack_address || (c->regs[0x10 / 4] & 0x3ff) != (ten ? 0x250 : 0x50)) {
-            ws53_i2c_abort(c, 0, ten ? 2 : 1); return;
+        unsigned target = c->regs[0x10 / 4] & 0x3ff;
+        bool absent = c->nack_address || (c->owner->wire_profile && !c->owner->wire_peer);
+        if (absent || target != (ten ? 0x250 : 0x50)) {
+            unsigned detail = ten ? 2 : 1;
+            if (c->owner->wire_profile && ten && !absent && (target & 0x300) == 0x200) {
+                detail = 4; /* Prefix ACK, second address byte NACK. */
+            }
+            ws53_i2c_abort(c, 0, detail); return;
         }
         if (c->active && !(c->regs[0] & 32)) {
             ws53_i2c_abort(c, 0, 1 << 10); return;
@@ -442,6 +450,7 @@ static void ws53_i2c_realize(DeviceState *dev, Error **errp)
 static const Property ws53_i2c_properties[] = {
     DEFINE_PROP_BOOL("assume-profile", WS53I2cState, assume_profile, false),
     DEFINE_PROP_BOOL("assume-wire-profile", WS53I2cState, wire_profile, false),
+    DEFINE_PROP_BOOL("wire-peer-connected", WS53I2cState, wire_peer, true),
 };
 static void ws53_i2c_init(Object *obj)
 {
