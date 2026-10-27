@@ -248,3 +248,26 @@ retains list membership; fetch unlinks and clears next. These are software
 contracts only: there is no hardware IRQ producer, actual RF completion or
 unmatched RX-descriptor cleanup in this fixture. Reconstructed code uses its
 own ABI through a QEMU-only bridge, not the vendor SDK structure ABI.
+
+
+### RX descriptor release probes
+
+`ws63_rx_release_probe.py` uses the same explicit input and replacement options.
+It calls real BLE/GLE descriptor-free ROM functions for 22 cases: both protocols,
+all 16-buffer group boundaries, invalid IDs 64/255, and bit15 unset. The fixture
+checks the whole synthetic descriptor pool plus adjacent sentinels, the one
+32-bit release command when applicable, and an unchanged software RX cursor.
+It uses original executable relocations for the disabled-logging path.
+
+The actual software order is halfword+2 read, byte+34 read, shared buffer command,
+halfword+2 re-read, bit15 clear. Buffer commands write bit16+(id modulo16) to
+`0x490004AC + 4*(id/16)` for IDs 0..63. No register RMW is performed. The model
+records the write but does not implement a physical buffer-owner transition.
+For invalid IDs the ROM sends no command and still clears bit15. The replacement
+intentionally rejects those 4 fixtures and retains the descriptor; this is
+reported separately from the 18 matching outcomes, not hidden as equivalence.
+The unset-bit case retains memory in both; the new API exposes a status error.
+
+This suite proves neither actual packet reception nor silicon ownership,
+access attributes, readback or command-effect timing. All raw results stay in
+local evidence; this repository contains only the source harness and guidance.
