@@ -57,6 +57,7 @@ from ws53_hash_test import hash_test
 from ws53_km_test import km_test
 from ws53_symc_test import symc_test
 from ws53_symc_contract_test import contract_test as symc_contract_test
+from ws53_ipc_test import run as ipc_test
 
 
 def connect(path):
@@ -399,6 +400,7 @@ if __name__ == "__main__":
               "km": km_test(args.qemu),
               "symc": symc_test(args.qemu),
               "symc_contract": symc_contract_test(args.qemu),
+              "ipc": ipc_test(args.qemu),
               "hardware_verified": False}
     if args.elf:
         result["ram"] = ram_test(args.qemu, args.elf)

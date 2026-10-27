@@ -68,6 +68,7 @@ cp "$HERE/src/hw/riscv/ws53_pinctrl.c.inc"                "$QEMU_DIR/hw/riscv/ws
 cp "$HERE/src/hw/riscv/ws53_nmi.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_nmi.c.inc"
 cp "$HERE/src/hw/riscv/ws53_wdt.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_wdt.c.inc"
 cp "$HERE/src/hw/riscv/ws53_tcxo.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_tcxo.c.inc"
+cp "$HERE/src/hw/riscv/ws53_ipc.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_ipc.c.inc"
 cp "$HERE/src/hw/riscv/ws53_rtc.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_rtc.c.inc"
 cp "$HERE/src/hw/riscv/ws53_pwm.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_pwm.c.inc"
 cp "$HERE/src/hw/riscv/ws53_i2s.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_i2s.c.inc"

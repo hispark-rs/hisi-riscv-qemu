@@ -34,6 +34,7 @@
 #include "ws53_nmi.c.inc"
 #include "ws53_wdt.c.inc"
 #include "ws53_tcxo.c.inc"
+#include "ws53_ipc.c.inc"
 #include "ws53_rtc.c.inc"
 #include "ws53_pwm.c.inc"
 #include "ws53_i2c.c.inc"
@@ -324,6 +325,12 @@ static void ws53_init(MachineState *machine)
     ws63_intc_reassert_on_clear(intc, 58);
     object_property_add_child(OBJECT(machine), "intc", OBJECT(intc));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(intc), &error_fatal);
+    DeviceState *ipc = qdev_new(TYPE_WS53_IPC);
+    object_property_add_child(OBJECT(machine), "ipc", OBJECT(ipc));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(ipc), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(ipc), 0, 0x52000020);
+    sysbus_connect_irq(SYS_BUS_DEVICE(ipc), 0, qdev_get_gpio_in(intc, 26));
+    sysbus_connect_irq(SYS_BUS_DEVICE(ipc), 1, qdev_get_gpio_in(intc, 27));
     DeviceState *tsensor = qdev_new(TYPE_WS53_TSENSOR);
     object_property_add_child(OBJECT(machine), "tsensor", OBJECT(tsensor));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(tsensor), &error_fatal);
@@ -669,6 +676,7 @@ static void ws53_register_types(void)
     type_register_static(&ws53_nmi_type);
     type_register_static(&ws53_wdt_type);
     type_register_static(&ws53_tcxo_type);
+    type_register_static(&ws53_ipc_type);
     type_register_static(&ws53_rtc_type);
     type_register_static(&ws53_pwm_type);
     type_register_static(&ws53_i2s_type);

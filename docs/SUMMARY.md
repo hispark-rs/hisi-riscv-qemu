@@ -38,3 +38,4 @@
   - [Rust 工具链是否需要 xlinx](explanation/rust-toolchain-xlinx.md)
   - [BS21 连接性仿真可行性](explanation/bs21-connectivity-feasibility.md)
   - [BS21 厂商固件运行现状](explanation/bs21-vendor-firmware.md)
+    - [WS53 IPC doorbells](reference/ws53-ipc.md)

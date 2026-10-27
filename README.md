@@ -329,3 +329,7 @@ drain. The integration repository's `examples/ws53-hash-model` runs the producti
 Rust HAL in 198 CPU scenarios with only mailbox host writes and explicit fault
 inputs. None of these tests qualifies real cross-core ownership, security state,
 cache coherence, precise timing, Flash startup or board behavior.
+
+WS53 also has an explicit [IPC doorbell profile](docs/reference/ws53-ipc.md):
+two peer-driven notifications/IRQs, patched halfword sends and ACK readback.
+It does not simulate the vendor peer's shared-ring or ownership protocol.
