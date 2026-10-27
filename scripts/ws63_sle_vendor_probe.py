@@ -39,6 +39,9 @@ class RSP:
     def request(self, text):
         payload = text.encode()
         self.sock.sendall(b'$' + payload + b'#' + f'{sum(payload) & 255:02x}'.encode())
+        return self.receive()
+
+    def receive(self):
         while True:
             ch = self.sock.recv(1)
             if ch == b'$':
@@ -91,7 +94,9 @@ def run(args):
     out.mkdir(parents=True, exist_ok=True)
     results = []
     cases = [('clock', 0x136576), ('fine', 0x1365a8),
-             ('queue-init', 0x13fba0), ('em-offsets', 0x137c84)]
+             ('queue-init', 0x13fba0), ('em-offsets', 0x137c84),
+             ('queue-valid', 0x13fc26), ('queue-skip', 0x13fc26),
+             ('queue-wrap', 0x13fc26), ('queue-empty', 0x13fc26)]
     for name, pc in cases:
         with tempfile.TemporaryDirectory(prefix='sle-rsp-') as tmp:
             trace = out / (name + '.jsonl')
@@ -124,13 +129,27 @@ def run(args):
                                  0x490010c4, 0x49001130, 0x49000288,
                                  0x49000430):
                         g.write(addr, 0xa5a5a5a5)
+                    queue_input = None
+                    if name.startswith('queue-') and name != 'queue-init':
+                        idx = 15 if name == 'queue-wrap' else 0
+                        hardware_idx = 1 if name == 'queue-skip' else 0
+                        valid_idx = {'queue-valid':0,'queue-skip':1,
+                                     'queue-wrap':0,'queue-empty':None}[name]
+                        g.write(0x182800, 0x49011090)
+                        g.write(0x182804, idx, 1)
+                        g.write(0x182805, 16, 1)
+                        g.write(0x49001600, (hardware_idx << 19) | 128)
+                        if valid_idx is not None:
+                            g.write(0x49011090 + valid_idx*8, 0x94000000)
+                        queue_input = {'consumer':idx,'producer':hardware_idx,
+                                       'valid_entry':valid_idx,'event_word':'0x94000000'}
                     start = trace.stat().st_size
                     returned = g.call(pc)
                     stop = trace.stat().st_size
                     rows = [json.loads(x) for x in trace.read_bytes()[start:stop].splitlines()]
                     result = {'case': name, 'pc': hex(pc), 'return_a0': returned,
                               'synthetic_input_halfwords': {hex(k): hex(v) for k,v in seeds.items()},
-                              'synthetic_queue_count': 16,
+                              'synthetic_queue_count': 16, 'synthetic_queue_input': queue_input,
                               'synthetic_mmio_seed': '0xa5a5a5a5',
                               'trace_start_byte': start, 'trace_end_byte': stop,
                               'firmware_accesses': rows}
@@ -144,6 +163,13 @@ def run(args):
                         assert g.read(0x490015c0) == 0x38f4
                         assert g.read(0x49001114) == 0xa5a02340
                         assert g.read(0x49001118) == 0xa5a02380
+                    if queue_input is not None:
+                        expected_idx = 1 if name == 'queue-skip' else 0
+                        assert returned == 0x49011090 + expected_idx*8
+                        assert g.read(0x182804,1) == expected_idx
+                        result['consumer_after'] = expected_idx
+                        result['returned_slot_valid'] = bool(g.read(returned) & 0x80000000)
+                        assert result['returned_slot_valid'] == (name != 'queue-empty')
                     results.append(result)
                 finally:
                     if g:

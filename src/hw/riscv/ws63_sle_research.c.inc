@@ -3,17 +3,34 @@
  * Firmware evidence and assumptions: docs/reference/ws63-sle-research.md.
  * No radio, fabricated packets, successful connections, or PHY emulation.
  */
+#include "migration/vmstate.h"
 #define TYPE_WS63_SLE_RESEARCH "ws63-sle-research"
 OBJECT_DECLARE_SIMPLE_TYPE(WS63SleResearch, WS63_SLE_RESEARCH)
 struct WS63SleResearch {
     SysBusDevice parent_obj;
-    MemoryRegion mmio, em;
+    MemoryRegion mmio, em, boot_systick;
     uint32_t words[0x10000 / 4];
     uint32_t tick_ns;
     QEMUTimer *target_timer;
     qemu_irq irq;
     char *trace_path;
     FILE *trace_file;
+    bool assume_boot_systick;
+};
+
+/* Optional dependency shim for captured ROM rtc_read_once @0x10ae02.
+ * ROM reads low32 at 0x4000501c, high16 at 0x40005018. 32 kHz is
+ * a chosen nominal profile, not a clock-tree or power-state simulation. */
+static uint64_t sle_boot_systick_read(void *opaque, hwaddr off, unsigned size)
+{
+    uint64_t ticks = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 31250;
+    return off == 4 ? (uint32_t)ticks : ((ticks >> 32) & 0xffff);
+}
+
+static const MemoryRegionOps sle_boot_systick_ops = {
+    .read = sle_boot_systick_read,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
 };
 
 static void sle_research_trace(WS63SleResearch *s, char op, hwaddr off,
@@ -149,11 +166,24 @@ static void sle_research_realize(DeviceState *dev, Error **errp)
                                         &s->em, 1);
     s->irq = qdev_get_gpio_in(DEVICE(intc), 47);
     s->target_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sle_research_target, s);
+    if (s->assume_boot_systick) {
+        memory_region_init_io(&s->boot_systick, OBJECT(s), &sle_boot_systick_ops,
+                              s, "ws63.sle-research.boot-systick", 8);
+        memory_region_add_subregion_overlap(get_system_memory(), 0x40005018,
+                                            &s->boot_systick, 1);
+    }
 }
 
 static const Property sle_research_properties[] = {
     DEFINE_PROP_UINT32("coarse-tick-ns", WS63SleResearch, tick_ns, 125000),
     DEFINE_PROP_STRING("trace-file", WS63SleResearch, trace_path),
+    DEFINE_PROP_BOOL("assume-boot-systick", WS63SleResearch,
+                     assume_boot_systick, false),
+};
+
+static const VMStateDescription sle_research_vmstate = {
+    .name = TYPE_WS63_SLE_RESEARCH,
+    .unmigratable = true,
 };
 
 static void sle_research_class_init(ObjectClass *oc, void *data)
@@ -161,6 +191,7 @@ static void sle_research_class_init(ObjectClass *oc, void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
     dc->user_creatable = true;
     dc->hotpluggable = false;
+    dc->vmsd = &sle_research_vmstate;
     dc->realize = sle_research_realize;
     device_class_set_legacy_reset(dc, sle_research_reset);
     device_class_set_props(dc, sle_research_properties);

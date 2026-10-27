@@ -1,6 +1,7 @@
 # WS63 SLE/GLE software-contract research model
 
-This is an opt-in, incomplete experiment on QEMU 10.0.0. It is **not a working
+This is an opt-in, incomplete experiment tested on QEMU 10.0.0. Other QEMU
+versions have not been qualified for this device. It is **not a working
 SLE radio or an official register specification**. Existing WS63 runs keep the
 old behavior unless `-device ws63-sle-research` is provided.
 
@@ -27,7 +28,8 @@ All reset zeros are deterministic **model initial conditions**, not recovered
 chip reset values. Capture timing, coarse/fine phase, target scheduling, ACK
 behavior and IRQ routing must ultimately be compared with hardware. No radio,
 SED execution engine, EEQ consumer, encryption engine, PHY, packet success,
-advertising, connection, IOB or IMB success is fabricated. EM is real guest RAM,
+advertising, connection, IOB or IMB success is fabricated. Migration and hotplug
+are unsupported. EM is real guest RAM,
 but its contents are only modified by guest software or the test harness.
 
 `trace-file=PATH` writes JSONL MMIO accesses with virtual nanoseconds, guest PC,
@@ -61,7 +63,8 @@ that script again. Missing boot-ROM code is not covered by this guard.
 The supported ROM SHA-256 is
 `22d92fbba1a7a7333a6fc4a8e1f38b791c06ec3b495e5dc8734bfb44575f39db`.
 The initial function experiment uses the locally captured r2 diagnostic ELF
-SHA-256 recorded in its results. No firmware or proprietary SDK is added to
+SHA-256 `95920853592b1ee92ce975e311fdd478719d2b1bfbeec7096b884cf70943a4d0`.
+No firmware or proprietary SDK is added to
 this repository. ROM function addresses are revision-specific. The test uses
 synthetic stack, queue layout, memory offsets and scratch-register seeds; it
 does **not** establish that boot initialization produced that state.
@@ -76,6 +79,12 @@ Four genuine ROM functions returned under TCG with real instruction bytes:
   `0x49001600`, preserving upper16. Initializes consumer pointer/index/depth.
 * `0x137C84 em_offset_init`: distinct synthetic layout offsets propagate to
   the expected MMIO registers. RMW masks are directly visible in the trace.
+
+Four further cases run `0x13FC26 gle_isr_get_cur_isr_queue_head` with synthetic
+queue entries: valid current item, skip invalid item, wrap slot15 to slot0, and
+empty queue. The empty case returns a **non-NULL pointer to an invalid slot**
+when consumer equals producer. Callers must test bit31, not just the pointer.
+This is a firmware algorithm observation, not a simulated RF reception.
 
 `em_offset_init` and the matching ELF symbols also identify the following
 shared BLE configurations. They must not be relabeled SLE-only registers:
@@ -101,3 +110,19 @@ that particular stub path but reaches an unmodeled `0x40005018/1C` counter poll.
 The SDK identifies this range as **SYSTICK**, not TRNG. Full boot and SLE
 bring-up are therefore not yet passing. Function experiments isolate those
 dependencies without claiming to have solved them.
+
+The optional `assume-boot-systick=on` supplies a nominal32kHz counter at
+`0x4000501C` (low32) / `0x40005018` (high16), matching ROM `rtc_read_once` at
+`0x10AE02`. It is off by default, not a replacement for the clock/power tree.
+It follows virtual time, including across device reset; it does not invent
+progress on each read. A two-second real-ROM boot snapshot with this dependency
+enabled stopped at `0x109B3C hal_sfc_regs_wait_config`, within the serial-flash
+operation path (`ra=0x1095C4`). This is the next observed dependency, not proof
+of a permanent deadlock or successful SLE initialization. The existing SFC
+model does not implement general flash command data transfers.
+
+`scripts/ws63_sle_boot_probe.py` repeats bounded boot attempts and records PC,
+registers, binary hashes, UART and MMIO traces. It accepts the same qemu/rom/elf/
+out paths as the function probe, plus optional `--flash-dir`, `--boot-systick`
+and `--seconds` (maximum30). It does not patch firmware, advance to a fabricated
+success callback, or require a physical debug probe.

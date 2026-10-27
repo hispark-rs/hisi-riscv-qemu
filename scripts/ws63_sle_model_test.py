@@ -8,13 +8,13 @@ import tempfile
 from ws53_gpio_test import connect
 
 
-def test(qemu):
+def test(qemu, boot_systick=False):
     with tempfile.TemporaryDirectory(prefix='sle-qtest-') as tmp:
         qt, qm = Path(tmp)/'qt', Path(tmp)/'qm'
         log = (Path(tmp)/'stderr').open('w+')
         proc = subprocess.Popen([qemu, '-M', 'ws63', '-accel', 'qtest',
             '-display', 'none', '-monitor', 'none', '-serial', 'null',
-            '-device', 'ws63-sle-research', '-qtest-log', '/dev/null',
+            '-device', 'ws63-sle-research' + (',assume-boot-systick=on' if boot_systick else ''), '-qtest-log', '/dev/null',
             '-qtest', f'unix:{qt},server=on,wait=off',
             '-qmp', f'unix:{qm},server=on,wait=off'], stderr=log)
         try:
@@ -77,12 +77,20 @@ def test(qemu):
                 assert read(0x1414) == read(0x1410) == 0
                 assert not irq.get(47,False)
                 assert int(cmd('readl 0x49010000')[0],0) == 0
+                counter = lambda: (int(cmd('readl 0x40005018')[0],0)<<32) | int(cmd('readl 0x4000501c')[0],0)
+                before=counter()
+                cmd('clock_step 1000000000')
+                assert counter() == before + (32000 if boot_systick else 0)
+                if boot_systick:
+                    before=counter()
+                    cmd(f'clock_step {31250 * (1<<32)}')
+                    assert counter() == before + (1<<32)
                 qmp('quit')
             proc.wait(timeout=5)
             assert proc.returncode == 0
             print(json.dumps({'passed':['masked-target','unmask-irq47',
                 'selective-ack','capture','fine-phase-model','em-widths',
-                'em-boundaries','reset-cancels-target'], 'silicon_verified':False}))
+                'em-boundaries','reset-cancels-target'], 'boot_systick_profile':boot_systick, 'silicon_verified':False}))
         finally:
             if proc.poll() is None:
                 proc.terminate()
@@ -97,4 +105,6 @@ def test(qemu):
 if __name__ == '__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--qemu',required=True)
-    test(parser.parse_args().qemu)
+    args=parser.parse_args()
+    test(args.qemu)
+    test(args.qemu,True)

@@ -223,3 +223,10 @@ The integration `tx-async-pad` fixture adds real async write/flush cancellation
 and checks that queued RX survives TX activity through the digital pad peer.
 Exact interrupt latency, arbitrary flow control and physical clock loss are
 not qualified by the model.
+
+### WS63 SLE/GLE 研究模型
+
+新增显式启用的 `ws63-sle-research` 设备及原厂 ROM 函数执行工具，覆盖 EM 内存、
+时钟捕获和调度中断的最小软件接口。默认不启用，没有空口、建链或 IOB 成功仿真。
+证据、模型假设、运行方法及整机启动阻塞见
+[研究说明](docs/reference/ws63-sle-research.md)。
