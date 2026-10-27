@@ -1,12 +1,14 @@
-/* Shared M_CLKEN1 provider: one address, independent I2C0/1 and SPI0 gates.
- * TIMER/UART bits are inherited from the explicit RAM boot profile.
+/* Shared M_CLKEN1 provider: I2C0/1, SPI0, ADC, SDIO and UART1/H0 gates.
+ * UART1 bit4 is backed by SDK clock_recover.h and bounded A-board TX captures.
+ * UART0/UART2 clock identities and stopped-clock MMIO remain unqualified.
+ * TIMER bit0 is inherited from the explicit RAM boot profile.
  * SPDX-License-Identifier: GPL-2.0-or-later */
 #define TYPE_WS53_MCLKEN1 "ws53-mclken1"
 OBJECT_DECLARE_SIMPLE_TYPE(WS53Mclken1State, WS53_MCLKEN1)
 struct WS53Mclken1State {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
-    qemu_irq gate[5];
+    qemu_irq gate[6];
     uint32_t value, initial_value;
 };
 static void ws53_mclken1_update(WS53Mclken1State *s)
@@ -16,6 +18,7 @@ static void ws53_mclken1_update(WS53Mclken1State *s)
     qemu_set_irq(s->gate[2], !!(s->value & 0x800));
     qemu_set_irq(s->gate[3], !!(s->value & 4));
     qemu_set_irq(s->gate[4], !!(s->value & 2));
+    qemu_set_irq(s->gate[5], !!(s->value & 0x10));
 }
 static uint64_t ws53_mclken1_read(void *opaque, hwaddr off, unsigned size)
 {
@@ -28,7 +31,7 @@ static void ws53_mclken1_write(void *opaque, hwaddr off, uint64_t v, unsigned si
 {
     WS53Mclken1State *s = opaque;
     uint32_t next = size == 2 ? (s->value & 0xffff0000u) | (v & 0xffff) : v;
-    if (off || (size != 2 && size != 4) || ((next ^ s->value) & ~0x8c6u)) {
+    if (off || (size != 2 && size != 4) || ((next ^ s->value) & ~0x8d6u)) {
         qemu_log_mask(LOG_GUEST_ERROR, "ws53-mclken1: unimplemented write value=0x%" PRIx64 " size=%u\n", v, size);
         return;
     }
@@ -52,7 +55,7 @@ static void ws53_mclken1_init(Object *obj)
     WS53Mclken1State *s = WS53_MCLKEN1(obj);
     memory_region_init_io(&s->mmio, obj, &ws53_mclken1_ops, s, TYPE_WS53_MCLKEN1, 4);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
-    qdev_init_gpio_out_named(DEVICE(obj), s->gate, "gate", 5);
+    qdev_init_gpio_out_named(DEVICE(obj), s->gate, "gate", 6);
 }
 static const Property ws53_mclken1_properties[] = {
     DEFINE_PROP_UINT32("initial-value", WS53Mclken1State, initial_value, 0x11),

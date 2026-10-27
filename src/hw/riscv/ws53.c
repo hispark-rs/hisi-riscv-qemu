@@ -455,6 +455,10 @@ static void ws53_init(MachineState *machine)
         }
         sysbus_realize_and_unref(SYS_BUS_DEVICE(uart), &error_fatal);
         sysbus_mmio_map(SYS_BUS_DEVICE(uart), 0, bases[i]);
+        if (i == 1) {
+            qdev_connect_gpio_out_named(mclken1, "gate", 5,
+                                       qdev_get_gpio_in_named(uart, "clock", 0));
+        }
         sysbus_connect_irq(SYS_BUS_DEVICE(uart), 0,
             i == 2 ? qdev_get_gpio_in_named(uart_l0_route, "source", 0) :
                      qdev_get_gpio_in(intc, irqs[i]));
