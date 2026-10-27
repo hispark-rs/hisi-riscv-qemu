@@ -295,3 +295,31 @@ capture GLE clock, callback sees VALID, release preserves other word bits and
 the second word, and the next entry is traversed without a fresh producer read.
 Nonzero-status retry/start fallback, asynchronous arrivals, real EEQ callbacks
 and OS delivery remain outside this original-code runtime suite.
+
+
+### Generic event lifecycle and unmatched RX cleanup
+
+`ws63_event_lifecycle_probe.py` exercises10 matched completion/RX cases using
+real LOS_MemInit/Alloc/Free and dts_free. The callback is explicitly the original
+ROM no-op slot handler. GDB observes callback arguments,12-byte payload, queue
+ownership and subsequent free; reallocation checks address reuse after completion
+and non-reuse while RX retains the task. Deferred link-task GC and mode-specific
+callback processing are excluded. The replacement uses new C metadata through a
+bridge but retains original allocator/callback hooks as an explicit boundary.
+
+This fixture restores executable AND initialized-data PT_LOAD contents at VMA.
+An executable-only attempt failed in __clzsi2 because its GOT word was missing.
+The original GOT value is now verified; segment flags and hashes are recorded.
+No helper/allocator replacement or invented return is used. Boot remains unproven.
+
+`ws63_rx_orphan_probe.py` adds24 cases for unmatched event10: last-protocol tags1,
+2,0,3, both urgent settings, cursor0/wrap3, bit15 set/unset and invalid buffer64.
+The last protocol selects the RX pool; successful cleanup advances a numeric
+cursor, not the descriptor NEXT link. Twenty outcomes match. Four deliberately
+differ: invalid buffer IDs retain descriptor/cursor in the replacement but the
+ROM clears/advances without a buffer-release write. No hardware ownership claim
+is inferred. Restoring data also enables logging defaults; the fixture calls the
+actual log_set_local_log_level(0) API (LOG_LEVEL_NONE) before executing the original
+filter path, because the logger backend is not initialized. This is a documented
+configuration precondition, not a patched logging function. Both initial failures
+and subsequent successful evidence remain local.
