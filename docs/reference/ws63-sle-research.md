@@ -189,3 +189,14 @@ for both queues. This is executable software arithmetic; whether hardware can
 present that input, and what calling invariant prevents it, remain unknown.
 The probe now rejects mismatched ELF identity as well as mismatched ROM, since
 its GP, callback addresses and global layout are fixed to the captured build.
+
+For independently reconstructed C primitives, `--replacement-elf PATH --nm NM`
+loads an additional experiment ELF and invokes its named `ws63_probe_*` bridge
+functions instead of ROM entry points. The bridge must expose the clock,
+queue-init/head, EM-offset and EEQ-allow functions plus `ws63_probe_status`.
+The runner checks that status as well as the original synthetic-state
+assertions, and records the replacement ELF hash and the original vendor PC.
+This option does not alter ROM bytes or turn missing functions into successes.
+The external reconstruction project provides the bridge and paired-trace
+comparison. Its current19 scenarios agree on MMIO operation shapes and
+non-clock data; clock-value differences reflect differing instruction time.

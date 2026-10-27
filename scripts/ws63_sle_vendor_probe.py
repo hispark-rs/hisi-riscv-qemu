@@ -95,6 +95,20 @@ def run(args):
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     results = []
+    replacement = getattr(args, 'replacement_elf', None)
+    replacement_symbols = {}
+    if replacement:
+        for line in subprocess.check_output([args.nm,'--defined-only',replacement],text=True).splitlines():
+            fields=line.split()
+            if len(fields)==3:
+                replacement_symbols[fields[2]]=int(fields[0],16)
+        assert 'ws63_probe_status' in replacement_symbols
+    replacements={
+        0x136576:'ws63_probe_gle_clock',0x1365a8:'ws63_probe_gle_fine',
+        0x13fba0:'ws63_probe_gle_queue_init',0x13fc26:'ws63_probe_gle_queue_head',
+        0x136516:'ws63_probe_ble_clock',0x136548:'ws63_probe_ble_fine',
+        0x13418c:'ws63_probe_ble_queue_init',0x134286:'ws63_probe_ble_queue_head',
+        0x139200:'ws63_probe_eeq_allow',0x137c84:'ws63_probe_em_offsets'}
     cases = [('clock', 0x136576), ('fine', 0x1365a8),
              ('queue-init', 0x13fba0), ('em-offsets', 0x137c84),
              ('queue-valid', 0x13fc26), ('queue-skip', 0x13fc26),
@@ -106,6 +120,11 @@ def run(args):
              ('eeq-normal-room', 0x139200), ('eeq-urgent-room', 0x139200),
              ('eeq-normal-underflow', 0x139200), ('eeq-urgent-underflow', 0x139200)]
     for name, pc in cases:
+        vendor_pc=pc
+        if replacement:
+            if pc not in replacements:
+                continue
+            pc=replacement_symbols[replacements[pc]]
         with tempfile.TemporaryDirectory(prefix='sle-rsp-') as tmp:
             trace = out / (name + '.jsonl')
             sock = Path(tmp) / 'gdb'
@@ -117,6 +136,8 @@ def run(args):
                        (',assume-ble-clock=on' if name.startswith('ble-') else ''),
                        '-gdb', f'unix:{sock},server=on,wait=off',
                        '-icount', 'shift=2']
+            if replacement:
+                command+=['-device',f'loader,file={Path(replacement).resolve()}']
             with (out / (name + '.stderr')).open('w') as err:
                 env = dict(os.environ, WS63_SLE_STRICT_ROM='1')
                 proc = subprocess.Popen(command, stdout=err, stderr=err, env=env)
@@ -178,6 +199,8 @@ def run(args):
                     stop = trace.stat().st_size
                     rows = [json.loads(x) for x in trace.read_bytes()[start:stop].splitlines()]
                     result = {'case': name, 'pc': hex(pc), 'return_a0': returned,
+                              'reference_vendor_pc':hex(vendor_pc),
+                              'implementation':'reconstructed C' if replacement else 'vendor ROM',
                               'synthetic_input_halfwords': {hex(k): hex(v) for k,v in seeds.items()},
                               'synthetic_queue_count': 16, 'synthetic_queue_input': queue_input,
                               'synthetic_mmio_seed': '0xa5a5a5a5',
@@ -185,6 +208,8 @@ def run(args):
                               'ble_clock_profile_assumption': ble,
                               'trace_start_byte': start, 'trace_end_byte': stop,
                               'firmware_accesses': rows}
+                    if replacement:
+                        assert g.read(replacement_symbols['ws63_probe_status'])==0, name
                     if name == 'queue-init':
                         assert g.read(0x182800) == 0x49011090
                         assert g.read(0x182805, 1) == 16
@@ -228,7 +253,8 @@ def run(args):
                         g.sock.close()
                     proc.terminate()
                     proc.wait(timeout=5)
-    report = {'claim': 'vendor function execution with synthetic state; no radio/boot proof',
+    report = {'claim': ('reconstructed C' if replacement else 'vendor') + ' function execution with synthetic state; no radio/boot proof',
+              'replacement_elf_sha256':sha(replacement) if replacement else None,
               'rom_sha256': sha(args.rom), 'elf_sha256': sha(args.elf),
               'qemu_sha256': sha(args.qemu), 'cases': results}
     (out / 'results.json').write_text(json.dumps(report, indent=2) + '\n')
@@ -239,4 +265,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('qemu', 'rom', 'elf', 'out'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--replacement-elf')
+    parser.add_argument('--nm',default='nm')
     run(parser.parse_args())
