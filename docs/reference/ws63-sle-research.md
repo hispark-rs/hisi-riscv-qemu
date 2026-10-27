@@ -228,3 +228,23 @@ layout; the reconstructed library itself need not adopt that private ABI.
 Direct volatile accesses in the bridge are QEMU-only and do not establish the
 silicon cache/barrier policy. Paired runs compare final EM/software state and
 MMIO sequences, not every RAM access ordering or concurrent hardware behavior.
+
+
+### Linked EEQ event association
+
+`ws63_eeq_match_probe.py` accepts the same `--qemu`, `--rom`, `--elf`, `--out`
+and optional `--replacement-elf`/`--nm` arguments. It executes linked patch
+`0x14EBC2` and original ROM list routines with exact executable relocations
+from the pinned ELF. Twenty-eight cases cover normal/urgent lists, locate/fetch,
+exact-match priority, label fallback, clock fallback, low-byte alias, singleton,
+miss and empty lists. Event code9 is supplied synthetically. The harness checks
+return pointer, all next links, head/tail/count, copied protocol byte, unchanged
+other queue and unchanged IRQ entry. No controller MMIO is expected here.
+
+The observed association order is clock-low8 + label-low8, then full16 label,
+then clock-low8. A label0x103 can match the first pass for IRQ label3 but not the
+second. IRQ bit24 selects the list; bytes1/2 supply the clock/label. Lookup
+retains list membership; fetch unlinks and clears next. These are software
+contracts only: there is no hardware IRQ producer, actual RF completion or
+unmatched RX-descriptor cleanup in this fixture. Reconstructed code uses its
+own ABI through a QEMU-only bridge, not the vendor SDK structure ABI.
