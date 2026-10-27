@@ -25,3 +25,9 @@ No shared ring, remote-pointer parser, TRNG service, full control-core firmware,
 physical power/reset timing, cache coherence, DMA drain or low-power handshake
 is implemented here. The generic SDK shared-memory defaults are not used: the
 actual application takes the origin from its retained control-image header.
+
+The receive-enable word has only evidenced SDK writes. MMIO reads now fault;
+`receive-mask` is a QOM debug observation, not a fabricated readable register.
+The Rust HAL adopts an explicit known mask and writes its owned shadow without
+RMW. The earlier c85c5e3 profile accepted a mask read; keep that old result as
+history, not evidence that the read is supported by silicon.

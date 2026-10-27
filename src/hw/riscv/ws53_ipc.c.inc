@@ -37,7 +37,6 @@ static MemTxResult ws53_ipc_read(void *opaque, hwaddr off, uint64_t *value,
         return ws53_ipc_reject(s, off, size, false);
     }
     switch (off) {
-    case 0: *value = s->enable; break;
     case 8: *value = s->receive; break;
     case 12:
         s->sync_reads++;
@@ -132,6 +131,8 @@ static void ws53_ipc_init(Object *obj)
     object_property_add_uint64_ptr(obj, "sync-reads", &s->sync_reads, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "send-writes", &s->send_writes, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "rejections", &s->rejected, OBJ_PROP_FLAG_READ);
+    /* Debug observation, never a fabricated software-readable mask register. */
+    object_property_add_uint32_ptr(obj, "receive-mask", &s->enable, OBJ_PROP_FLAG_READ);
 }
 static void ws53_ipc_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {
