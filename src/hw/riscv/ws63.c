@@ -2647,6 +2647,8 @@ static const TypeInfo ws63_netmac_typeinfo = {
 /* ============================================================================
  * WS63 machine
  * ========================================================================= */
+#include "ws63_sle_research.c.inc"
+
 #define TYPE_WS63_MACHINE MACHINE_TYPE_NAME("ws63")
 OBJECT_DECLARE_SIMPLE_TYPE(WS63MachineState, WS63_MACHINE)
 
@@ -2856,6 +2858,7 @@ static void ws63_machine_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
     MachineClass *mc = MACHINE_CLASS(oc);
     mc->desc = "HiSilicon WS63 (RV32IMFC Wi-Fi6/BLE/SLE SoC)";
     mc->init = ws63_machine_init;
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_WS63_SLE_RESEARCH);
     mc->max_cpus = 1;
     mc->default_cpu_type = TYPE_RISCV_CPU_WS63;
     mc->default_ram_id = "ws63.sram";

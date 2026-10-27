@@ -45,6 +45,7 @@ fi
 #    series), ws63-test.c the boot-free register-level qtest.
 echo "==> copying WS63 + BS21 sources (machines, shared models, xlinx decoder, qtest)"
 cp "$HERE/src/hw/riscv/ws63.c"                            "$QEMU_DIR/hw/riscv/ws63.c"
+cp "$HERE/src/hw/riscv/ws63_sle_research.c.inc" "$QEMU_DIR/hw/riscv/ws63_sle_research.c.inc"
 # Shared HiSilicon riscv31 device-model declarations + the BS21/BS22 machines.
 # bs21.c/bs22.c reuse ws63.c's device models via hisi_riscv31.h (CONFIG_BS21/BS22
 # select CONFIG_WS63).
