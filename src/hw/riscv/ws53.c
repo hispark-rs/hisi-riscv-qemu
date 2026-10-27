@@ -534,6 +534,16 @@ static void ws53_init(MachineState *machine)
         }
         qdev_connect_gpio_out_named(pinctrl, "i2c-route-ready", bus,
             qdev_get_gpio_in_named(i2c, "wire-route", bus));
+        for (unsigned signal = 0; signal < 2; signal++) {
+            qdev_connect_gpio_out_named(spi, "wire-level", 2 * bus + signal,
+                qdev_get_gpio_in_named(pinctrl, "spi-level", 2 * bus + signal));
+        }
+        qdev_connect_gpio_out_named(spi, "wire-drive", bus,
+            qdev_get_gpio_in_named(pinctrl, "spi-drive", bus));
+        qdev_connect_gpio_out_named(pinctrl, "spi-route-ready", bus,
+            qdev_get_gpio_in_named(spi, "wire-route", bus));
+        qdev_connect_gpio_out_named(pinctrl, "spi-miso", bus,
+            qdev_get_gpio_in_named(spi, "wire-miso", bus));
     }
     const unsigned uart_rx_peer_pads[] = { 36, 18, 34 };
     for (unsigned i = 0; i < 3; i++) {
