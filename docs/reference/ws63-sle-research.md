@@ -200,3 +200,31 @@ This option does not alter ROM bytes or turn missing functions into successes.
 The external reconstruction project provides the bridge and paired-trace
 comparison. Its current19 scenarios agree on MMIO operation shapes and
 non-clock data; clock-value differences reflect differing instruction time.
+
+## EEQ submission probes
+
+`scripts/ws63_eeq_vendor_probe.py` uses the same required qemu/rom/elf/out
+arguments and optional replacement-elf/nm arguments. It executes six scenarios
+for `evt_prog_push_eeq` at `0x139104`: empty/nonempty software lists and ring
+wrap for normal and urgent queues. All use explicitly seeded environments,
+SED references, queue storage and log-mask state. It checks the six-byte entry,
+neighboring sentinel bytes, head/tail/count, next links, producer and all four
+MMIO accesses at `0x49000444`. There is no autonomous EEQ consumer.
+
+This function invokes ROM `memcpy_s`, whose ITCM trampoline jumps to linked
+SRAM `memcpy`. Unlike earlier leaf probes, it needs executable relocations that
+startup normally performs. The fixture extracts the original nonidentity
+executable PT_LOAD segments from the pinned ELF, loads their exact bytes at
+their VMAs and verifies the trampoline/memcpy entry bytes before running.
+Report metadata contains file offsets, VMAs, LMAs, lengths and hashes. These
+are synthetic setup actions, not boot evidence or function substitutions.
+The initial unrelocated and SRAM-only experiments timed out at PC0; their
+failure snapshots remain local. Restoring both ITCM and SRAM permits all six
+scenarios to execute actual vendor code and return.
+
+The optional replacement bridge is `ws63_probe_eeq_push(task,queue,urgent)` and
+must update `ws63_probe_status`. This fixture adapter uses the fixed r2 test
+layout; the reconstructed library itself need not adopt that private ABI.
+Direct volatile accesses in the bridge are QEMU-only and do not establish the
+silicon cache/barrier policy. Paired runs compare final EM/software state and
+MMIO sequences, not every RAM access ordering or concurrent hardware behavior.
