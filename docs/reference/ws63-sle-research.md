@@ -271,3 +271,27 @@ The unset-bit case retains memory in both; the new API exposes a status error.
 This suite proves neither actual packet reception nor silicon ownership,
 access attributes, readback or command-effect timing. All raw results stay in
 local evidence; this repository contains only the source harness and guidance.
+
+
+### Linked IRQ service control flow
+
+`ws63_irq_dispatch_probe.py` executes fixed BLE/GLE ISR entry points with the
+usual explicit ROM/ELF/QEMU/output arguments and optional replacement ELF/nm.
+Twelve cases cover single, batch, wrap, skip, empty and full queues for both.
+Selected callback-table entries explicitly point to the original ROM slot
+handler (a no-op). GDB stops at that handler, platform IRQ clear and notifier,
+records arguments/slot state, then executes the original instructions onward.
+No breakpoint path fabricates a return or replaces a callback implementation.
+
+The fixture constructs g_hwiOps with the original HalIrqClear callback and sets
+the HCI queue pointer to zero. Thus CSR clear executes, notification is attempted,
+and the real notifier takes its absent-queue branch; no message is delivered.
+The replacement bridge reuses these original platform helpers while the IRQ
+core decisions/MMIO run reconstructed C. This is deliberately a mixed platform
+fixture, not a standalone replacement platform port or real event processing.
+
+For these status-zero scenarios, ACK precedes clear/capture, both protocols
+capture GLE clock, callback sees VALID, release preserves other word bits and
+the second word, and the next entry is traversed without a fresh producer read.
+Nonzero-status retry/start fallback, asynchronous arrivals, real EEQ callbacks
+and OS delivery remain outside this original-code runtime suite.
