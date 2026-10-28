@@ -34,6 +34,7 @@ typedef struct WS53SpiChannel {
     int64_t remaining, deadline;
     uint64_t frames;
     bool wire_active, wire_ready, wire_miso, wire_sck, wire_mosi;
+    bool collision_status;
     unsigned wire_edge;
     uint32_t wire_tx, wire_rx;
 } WS53SpiChannel;
@@ -178,6 +179,7 @@ static void ws53_spi_tick(void *opaque)
         c->tx_head = (c->tx_head + 1) % 8; c->tx_len--; c->frames++;
         if (c->collision) {
             c->latched |= SP_MULTI;
+            c->collision_status = true;
         } else if (c->rx_len == 8) {
             c->latched |= SP_RX_OVER;
         } else {
@@ -242,14 +244,21 @@ static uint64_t ws53_spi_read(void *opaque, hwaddr off, unsigned size)
     case SP_RX_LEVEL: return c->rx_len;
     case SP_STATUS: {
         bool busy = c->tx_len || (c->enable_event && c->scheduled && c->enabled);
+        /* SDK WSR.DCFE/SR.DCOL are read-clear status, not TX FIFO overflow.
+         * Preserve the separate IRQ latch until its explicit acknowledgement:
+         * the SDK does not establish cross-register clearing by a status read.
+         * QSPI TXE denotes slave TX-empty at frame start. Both implemented
+         * profiles are master-only, so queue overflow must never invent TXE. */
+        bool collision = c->collision_status;
+        c->collision_status = false;
         if (c->index) {
             return busy | (c->tx_len < 8 ? 2 : 0) | (!c->tx_len ? 4 : 0) |
                 (c->rx_len ? 8 : 0) | (c->rx_len == 8 ? 16 : 0) |
-                (c->latched & SP_TX_OVER ? 32 : 0) | (c->latched & SP_MULTI ? 64 : 0);
+                (collision ? 64 : 0);
         }
         return (busy ? 0x8000 : 0) | (c->tx_len < 8 ? 0x800 : 0) |
             (!c->tx_len ? 0x1000 : 0) | (c->rx_len ? 16 : 0) |
-            (c->rx_len == 8 ? 32 : 0) | (!!(c->latched & (SP_MULTI | SP_TX_OVER)));
+            (c->rx_len == 8 ? 32 : 0) | collision;
     }
     case SP_CLEAR_TX: clear = SP_TX_OVER; break;
     case SP_CLEAR_OVER: clear = SP_RX_OVER; break;
@@ -384,6 +393,7 @@ static void ws53_spi_reset(void *opaque)
         memset(c->regs, 0, sizeof(c->regs)); c->latched = 0;
         c->tx_head = c->tx_len = c->rx_head = c->rx_len = 0;
         c->enabled = c->scheduled = c->enable_event = false; c->frames = 0;
+        c->collision_status = false;
         c->wire_active = c->wire_ready = false; c->wire_sck = c->wire_mosi = false;
         c->wire_edge = c->wire_tx = c->wire_rx = 0;
         ws53_spi_wire_refresh(c);
