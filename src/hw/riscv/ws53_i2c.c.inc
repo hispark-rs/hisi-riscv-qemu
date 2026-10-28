@@ -229,7 +229,9 @@ static void ws53_i2c_tick(void *opaque)
         unsigned target = c->regs[0x10 / 4] & 0x3ff;
         bool absent = c->nack_address || (c->owner->wire_profile && !c->owner->wire_peer);
         if (absent || target != (ten ? 0x250 : 0x50)) {
-            unsigned detail = ten ? 2 : 1;
+            /* The virtual peer does not acknowledge general call address 0.
+             * Model the SDK's distinct general-call NACK status (bit4). */
+            unsigned detail = ten ? 2 : target == 0 ? 0x10 : 1;
             if (c->owner->wire_profile && ten && !absent && (target & 0x300) == 0x200) {
                 detail = 4; /* Prefix ACK, second address byte NACK. */
             }
