@@ -355,7 +355,9 @@ static const Property ws53_agpio_clock_properties[] = {
 static void ws53_agpio_clock_init(Object *obj)
 {
     WS53AgpioClockState *s = WS53_AGPIO_CLOCK(obj);
-    memory_region_init_io(&s->iomem, obj, &ws53_agpio_clock_ops, s, TYPE_WS53_AGPIO_CLOCK, 4);
+    /* Include the explicitly rejected following word so an invalid 64-bit
+     * transaction reaches our width guard whole, without a partial low write. */
+    memory_region_init_io(&s->iomem, obj, &ws53_agpio_clock_ops, s, TYPE_WS53_AGPIO_CLOCK, 8);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->gate);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_agpio_clock_blocked, "write-blocked", 1);
