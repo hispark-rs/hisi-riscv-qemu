@@ -56,6 +56,9 @@ def run(qemu):
             b.write('fifo',0xa5);b.step(1000)
             reset();b=Bus(cmd,bus);b.init()
             assert b.read('status')==idle and not b.read('raw')&b.bits(32)
+            # Reset clears internal latches, not a still-asserted external
+            # collision-injection line. Release the peer before the next case.
+            b.fault('collision',False)
             cases.append(dict(bus=bus,case='model-reset-clears-both-latches',passed=True))
             # Fill a paused master FIFO, then overflow it. This is the raw TX
             # overflow cause, not a collision or slave transmission-empty flag.
