@@ -22,7 +22,7 @@ typedef struct WS53I2cChannel {
     uint16_t tx[8], rx[8];
     unsigned tx_head, tx_len, rx_head, rx_len;
     bool enabled, active, direction, first_write, pending_read_ack;
-    bool gate, clock, stretch, nack_address, nack_data, arbitration;
+    bool gate, clock, stretch, nack_address, nack_data, arbitration, inject_sda_stuck;
     bool scheduled, enable_event;
     int64_t remaining, deadline;
     uint8_t memory[256], pointer;
@@ -216,13 +216,22 @@ static void ws53_i2c_tick(void *opaque)
     }
     uint16_t cmd = c->tx[c->tx_head];
     bool read = cmd & 0x100;
+    /* Synthetic register fault for software recovery testing, not an electrical
+     * stuck-line or timeout model. Allow the address-NACK input to coexist so
+     * software must retain and classify both hardware status words. */
+    if (c->inject_sda_stuck) {
+        ws53_i2c_abort(c, 2, c->nack_address ? ((c->regs[0] & 16) ? 2 : 1) : 0);
+        return;
+    }
     if (c->arbitration) { ws53_i2c_abort(c, 0, 1 << 12); return; }
     if (!c->active || (cmd & 0x400)) {
         bool ten = c->regs[0] & 16;
         unsigned target = c->regs[0x10 / 4] & 0x3ff;
         bool absent = c->nack_address || (c->owner->wire_profile && !c->owner->wire_peer);
         if (absent || target != (ten ? 0x250 : 0x50)) {
-            unsigned detail = ten ? 2 : 1;
+            /* The virtual peer does not acknowledge general call address 0.
+             * Model the SDK's distinct general-call NACK status (bit4). */
+            unsigned detail = ten ? 2 : target == 0 ? 0x10 : 1;
             if (c->owner->wire_profile && ten && !absent && (target & 0x300) == 0x200) {
                 detail = 4; /* Prefix ACK, second address byte NACK. */
             }
@@ -415,6 +424,10 @@ static void ws53_i2c_arbitration(void *opaque, int n, int level)
 {
     WS53I2cState *s = opaque; s->channel[n].arbitration = level;
 }
+static void ws53_i2c_inject_sda_stuck(void *opaque, int n, int level)
+{
+    WS53I2cState *s = opaque; s->channel[n].inject_sda_stuck = level;
+}
 static void ws53_i2c_wire_route(void *opaque, int n, int level)
 {
     WS53I2cState *s = opaque; WS53I2cChannel *c = &s->channel[n];
@@ -480,6 +493,7 @@ static void ws53_i2c_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_nack_address, "nack-address", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_nack_data, "nack-data", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_arbitration, "arbitration", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_inject_sda_stuck, "inject-sda-stuck", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_wire_route, "wire-route", 2);
 }
 static void ws53_i2c_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)

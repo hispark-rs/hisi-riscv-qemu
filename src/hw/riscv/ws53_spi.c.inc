@@ -31,6 +31,7 @@ typedef struct WS53SpiChannel {
     uint32_t regs[SP_REG_COUNT], tx[8], rx[8], latched;
     unsigned tx_head, tx_len, rx_head, rx_len;
     bool enabled, scheduled, enable_event, clock, stretch, collision, disable_stall;
+    bool inject_collision_status_only;
     int64_t remaining, deadline;
     uint64_t frames;
     bool wire_active, wire_ready, wire_miso, wire_sck, wire_mosi;
@@ -177,8 +178,9 @@ static void ws53_spi_tick(void *opaque)
         }
         uint32_t word = c->tx[c->tx_head];
         c->tx_head = (c->tx_head + 1) % 8; c->tx_len--; c->frames++;
-        if (c->collision) {
-            c->latched |= SP_MULTI;
+        if (c->collision || c->inject_collision_status_only) {
+            /* Test-only status injection: real status/IRQ coupling is unknown. */
+            if (c->collision) { c->latched |= SP_MULTI; }
             c->collision_status = true;
         } else if (c->rx_len == 8) {
             c->latched |= SP_RX_OVER;
@@ -371,6 +373,7 @@ static void ws53_spi_global_gate(void *opaque, int n, int level)
 WS53_SPI_INPUT(clock)
 WS53_SPI_INPUT(stretch)
 WS53_SPI_INPUT(collision)
+WS53_SPI_INPUT(inject_collision_status_only)
 WS53_SPI_INPUT(disable_stall)
 #undef WS53_SPI_INPUT
 static void ws53_spi_wire_route(void *opaque, int n, int level)
@@ -441,6 +444,7 @@ static void ws53_spi_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_clock, "clock", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_stretch, "stretch", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_collision, "collision", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_inject_collision_status_only, "inject-collision-status-only", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_disable_stall, "disable-stall", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_wire_route, "wire-route", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_miso, "wire-miso", 2);
