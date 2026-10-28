@@ -120,3 +120,216 @@ ws63-qemu/
 ## 许可
 
 `src/hw/riscv/ws63.c` 派生自 QEMU 代码风格，按 **GPL-2.0-or-later** 授权（与 QEMU 一致）。
+
+### WS53 UART 外部 TX 引脚模型
+
+显式开启 `ws53-uart.assume-pad-tx=on`、`ws53-uart.assume-dma-profile=on`
+和 `ws53-pinctrl.assume-uart-tx=on`，8N1 字节按分频寄存器及假设32MHz时钟
+输出逐位电平。该开关只启用TX；RX由下方独立开关启用。其他外部帧格式及
+发送中改格式明确报错。既有
+内部回环继续使用独立的 `char-ns` 时序假设，默认行为保持。非零分频、精确
+时钟来源、模拟边沿和负载仍不能由模型证明。
+
+路由为 H1/MGPIO12(mode2)、H0/MGPIO17(mode2)及MGPIO8(mode1)、
+L0/AGPIO1(mode1)。各 pad 独立选择信号，允许 H0 同时驱动两个已复用 pad，
+对应 `hisi-registers` 的 `ws53-uart-pad-route-hil.json` 三轮实测。pad 的
+`uart-tx-bytes-N` 与 `uart-tx-hash-N` QOM属性记录整帧期间连接有效的虚拟对端
+字节数/FNV1a64；中途切换、复位或数字争用的帧不计成功。GPIO数字争用仍可
+单独观测，不能据此推断电流。TX场景不会自动开启RX串行采样模型。
+
+`ws53-pinctrl.uart-console-profile=on` 是明确的 RAM 继承配置：M17/M18 mode2、
+AG1/AG2 mode1，其余 mode0；不是芯片复位默认值。用于主工程的
+`uart-pad-probe` 同一ELF对照。所有 pad 字节数/校验和及八对pad配置和GPIO
+方向恢复都必须检查，不能只看控制台成功标记。
+
+`uv run --script scripts/ws53_uart_pads_test.py --qemu <qemu-system-riscv32>`
+覆盖逐位数据/停止位、双pad输出、复用切换、内部回环隔离、暂停、复位、争用
+及不支持配置；已接入 `test-ws53.py`。原有 H1/H0/L0 复位和UART DMA模型独立。
+
+### WS53 FlashBoot 交接与引脚记录
+
+新增可选 `flashboot-handoff=on`，用非零 RAM 初值测试真实应用 ELF 的模式1
+内存切换、data/bss初始化及外设接管。它不是完整厂商启动链仿真。
+`ws53-pinctrl.pad-trace` 可导出带虚拟时间的数字状态，供与逻辑分析仪对照。
+配置、测试和限制见 [交接模型说明](docs/reference/ws53-flash-handoff.md)。
+
+### WS53 UART RX 数字输入模型
+
+`ws53-uart.assume-pad-rx=on` 与 `ws53-pinctrl.assume-uart-rx=on` 显式启用
+8N1接收器。按分频寄存器及假设32MHz时钟，在起始位中心检查低电平、随后逐位
+采样数据和停止位。正常/帧错误数据送入原有FIFO、LSR、IRQ和DMA请求路径，
+不增加绕过寄存器行为的“成功”返回。起始毛刺、输入使能/复用断开、
+无pull时外部驱动丢失、时钟丢失及复位取消未完成帧；有pull维持电平时继续
+数字采样。这些取消策略属于模型约定，尚无相应电气实测。
+
+RX路由为UART0/AGPIO4(mode2)、UART1/MGPIO18(mode2)或MGPIO9(mode1)、
+UART2/AGPIO2(mode1)。要求输入缓冲使能，且外部驱动或内部pull建立数字电平；
+悬空pad不凭数字默认零制造输入字节。UART1同时选中两个RX pad时，输出明确
+诊断并断开输入，既不猜测OR/AND，也不假设优先级。恢复单一路由后需要新的
+有效起始边沿。内部回环期间外部pad输入被隔离。
+
+开启RX模型会禁止原字符后端直接向FIFO注入字节，测试须通过
+`/machine/pinctrl` 的 `external-level` / `external-drive` 数字输入驱动实际pad。
+也可额外开启 `ws53-uart.assume-rx-peer=on`，将字符后端输入交给独立8N1
+发送器，再经固定板端 pad（UART0/AGPIO4、UART1/MGPIO18、UART2/AGPIO2）
+的复用和输入使能进入RX采样器。`rx-peer-baud`默认115200，可设1200..4000000，
+独立于芯片分频器。64字节等待队列通过字符后端背压保序；目标时钟或外设复位
+不会暂停发送器，整机复位则清空虚拟对端。不能同时用qtest在同一pad注入另一个
+外部驱动；不模拟流控、电气争用或精确物理时序。RX及peer默认关闭，旧场景保持兼容。
+
+`scripts/ws53_uart_peer_test.py` 检查三个对端、输入选择、独立时钟/复位及超过
+队列容量的收发。主工程 `test-ws53-uart-host.py --mode irq-pad` 使用现有UART2
+IRQ RAM镜像，7个字节全部经peer与AGPIO2采样，检查两次IRQ42通知及取消后读取。
+同镜像三轮实板对照仅确认继承配置的UART2正常接收；UART0/1物理RX及错误路径
+仍待验收。只读 `rx-peer-frames` 统计发送完毕的帧，区别于 `pad-rx-frames`。
+
+`uv run --script scripts/ws53_uart_rx_pads_test.py --qemu <qemu-system-riscv32>`
+覆盖四组路由各256字节、数据IRQ及屏蔽恢复、帧错误读清、FIFO满/溢出、起始
+毛刺、复用/输入/驱动断开、内部回环隔离、时钟/复位恢复、双RX歧义、非法帧
+格式、接收中改分频拒绝及禁止后端旁路；纳入完整 `test-ws53.py`。
+`pad-rx-frames` / `pad-rx-aborted` 为只读QOM统计。没有RX电气、过采样抗扰、
+Break、其他帧格式或精准分数分频调制的验收结论。
+
+### WS53 TIMER LOAD 读回
+
+`hisi-registers/evidence/ws53-timer-load-hil.json` 记录了A板两路TIMER各16种
+写入模式：CPU重复读回均为 `written | 0xF`，配置/运行/停止/到期阶段也一致。
+模型已分离“请求的计数”和“LOAD读回”，修正原先逐位返回写入值的假设；普通
+HAL仍完整写入32位请求，不做基于读回值的RMW。计时仍采用既有32MHz/请求计数
+假设，不能把低4位读回推断为实际16tick量化。未写过LOAD时的模型复位零值仍是
+确定性测试初值，没有实板POR证据。主工程两路TIMER async RAM测试同时观察该
+读回和中断取消；没有模拟低功耗或更改时钟后的延时补偿。
+
+### WS53 UART L0 应用核 IRQ 路由
+
+新增显式命令1到 IRQ42 路由模型；默认保留既有 UART2 兼容直通行为。
+SDK 证据、未知读回/复位状态、故障注入及测试见
+[UART L0 路由说明](docs/ws53-uart-l0-route.md)。模型通过不代表真实 Flash 或冷启动通过。
+
+### WS53 UART TX IRQ / PTIM
+
+The opt-in `assume-dma-profile` timed FIFO now models TX IRQ2 as a latched
+notification: reading IIR2 acknowledges it; disabling/enabling TX IRQ rearms
+an already-ready FIFO. PTIM0 uses empty FIFO, PTIM1 uses the configured
+0/2/16/32-byte threshold. With PTIM and FIFO enabled, LSR.THRE_S reports
+FIFO full, not empty; TX_EMPTY_S separately waits for the serializer.
+`scripts/ws53_uart_tx_irq_test.py`, included by `test-ws53.py`, tests24
+port/mode/threshold combinations, read-clear/rearm, stalls and reset.
+UART2's inherited threshold2 and14 sample rows match three same-ELF physical
+runs (`hisi-registers/evidence/ws53-uart-tx-irq-hil.json`). UART0/1 IRQ, other
+thresholds and INTR_STATUS raw RX conditions remain source/model assumptions.
+The default immediate-TX profile still rejects TX IRQ configuration.
+The integration `tx-async-pad` fixture adds real async write/flush cancellation
+and checks that queued RX survives TX activity through the digital pad peer.
+Exact interrupt latency, arbitrary flow control and physical clock loss are
+not qualified by the model.
+
+## WS53 SDIO initialization and event profile
+
+`-global ws53-sdio.assume-init-profile=on` opts into source-profile configuration,
+host-clock readiness, Function1 enable, latched child status, captured-word ACK,
+IRQ46 masking and initialization-state reset. These reset/ACK behaviors are
+explicit functional assumptions, not silicon qualification. CIS, host command
+parsing, voltage switching and ADMA/data-transfer registers are unsupported and
+diagnose access; no transfer success is synthesized.
+
+The SDK patch uses word accesses to both M_CLKEN0/1. Shared clock models now
+retain upper bits and provide SDIO device/AHB gates while preserving existing
+halfword users. `ws53_sdio_init_test.py` checks four configuration seeds, IRQ/ACK
+races, host enable ordering, gate retention, reset/reinitialization and18 rejected
+accesses. It is included by `test-ws53.py`. The I2C/ADC invalid-width cases now use
+byte accesses: a word access to M_CLKEN1 is supported by audited SDK evidence.
+
+Virtual inputs `/machine/sdio host 0/1` supply clock/enable, `fault 0` refuses
+READY readback, and `inject 0..95` supplies raw Function1/Function0/global events
+for fault tests. They are test inputs, not SDIO commands. The `config-seed`
+property seeds opaque configuration bits; `host-message` supplies test message
+data. No reset defaults, DMA drain or full vendor controller firmware is claimed.
+
+### WS53 abstract ADMA peer (additional opt-in)
+
+Add `-global ws53-sdio.assume-adma-profile=on` to the initialization profile for
+an abstract Function1 CMD53 peer. `host-command`, `host-block-size` and bounded
+hex `host-write-data` QOM properties describe one request; `host 2` submits it.
+`device-read-data` and DMA counters expose results. Guest code supplies actual
+eight-byte descriptors and ordinary RAM payloads. Unsupported requests, widths,
+flags and registers diagnose rejection; no transfer success is synthesized.
+
+The model explicitly assumes CMD53-byte-count termination of flags0x21 chains;
+the SDK's four-byte trailing descriptor has no END flag. Each virtual beat moves
+data and completion/error status drives IRQ46. Clock loss pauses new transactions.
+Accepted posted writes may finish after masking, clock loss or peripheral reset;
+none of those actions proves drain. The profile has no CIS, CMD52, wire CRC,
+electrical timing or silicon cache-coherency qualification.
+
+Fault inputs1..6 respectively stall DMA, fail read/write bus access, delay posted
+writes, suppress completion and hold accepted posted writes until released.
+`ws53_sdio_adma_test.py`, included by `test-ws53.py`, checks22 normal transfers,
+nine DMA error cases,12 rejected requests/submissions, IRQ, guards, reset recovery
+and posted-write survival. The integration repository additionally runs the real
+Rust driver in14 host-paced CPU scenarios with no host MMIO setup.
+
+The audited prepare-send sequence also delivers a bounded read offer to the
+virtual host. `read-offer-pending`, `read-offer-length` and `read-notifications`
+expose this notification before any ADMA request is submitted. A host read consumes
+the model offer; this does not infer that the device command bit self-clears.
+Zero-length and duplicate pending offers are rejected, reset clears the pending
+offer, and cancelling software observation does not retract it. No host-side CIS
+layout or electrical interrupt delivery is inferred from these abstract inputs.
+
+## WS53 SPACC/HASH assumed profile
+
+The separate [WS53 KM clear-key loader model](docs/reference/ws53-km.md) uses
+`-global ws53-km.assume-profile=on`. It copies actual synthetic key words into
+8 cipher/2 HMAC slots and models claims, bounded completion/flush, clock/reset
+and faults; it does not perform encryption or establish silicon key erasure.
+The integration repository's `ws53-km-model` fixture exercises the production
+Rust HAL in 357 CPU scenarios. Neither this profile nor the HASH profile below
+establishes real cross-core ownership or Flash qualification.
+
+`-global ws53-hash.assume-profile=on` enables two REE channels at `0x52010000`
+with shared IRQ59. The register layout and state/descriptor encoding follow
+hisi-registers `2e271c8` and SDK `163d9150`. Owner claiming, selected-bit ACK,
+clear/reset behavior, the two-entry ring, coherent mode-1 DTCM DMA and virtual
+delays are explicit assumptions. The default device rejects accesses; unsupported
+PKE, HMAC/keyslots, widths and registers also diagnose rejection. The separate
+[SYMC profile](docs/reference/ws53-symc.md) must be explicitly enabled for cipher
+channels; HASH and SYMC share the MMIO window and the combined IRQ59 line.
+
+The compression implementation computes SHA-1/224/256/384/512 and SM3 from the
+supplied state and complete blocks; it neither installs an implicit IV nor adds
+padding. Algorithms follow [FIPS 180-4](https://nvlpubs.nist.gov/nistpubs/fips/nist.fips.180-4.pdf)
+and the [SM3 description and vectors](https://datatracker.ietf.org/doc/html/draft-sca-cfrg-sm3-01)
+(the latter is an expired Internet-Draft, not an IETF standard). SHA-1 is a legacy
+compatibility option. This model is not a cryptographic validation certificate.
+
+```sh
+uv run --script scripts/ws53_hash_compression_test.py
+uv run --script scripts/ws53_hash_test.py --qemu ./qemu/build/qemu-system-riscv32
+```
+
+The native compression test compares 1,866 digests against Python/OpenSSL,
+1,854 split-block executions, 72 changed-IV chaining cases and 274 rejected
+inputs under an undefined-behavior trap sanitizer. The QEMU test is also part of
+`test-ws53.py`: 288 digests, 12 split-ring transfers, concurrent channels, IRQ59
+masking/ACK, reset, clock/fault recovery and rejected MMIO/configurations.
+
+`/machine/hash clock 0` controls the virtual peripheral clock. `fault` inputs
+`(channel - 1) * 8 + index` use indices 0..7 for clear stall, DMA stall, bus error,
+completion suppression, claim refusal, ownership loss, ACK refusal and holding
+an accepted read. QOM counters expose descriptors, bytes read, completions,
+pending/late reads and rejections; `inject-{tee,ree}-{cause,status}` supplies raw
+read-only error-register snapshots. No undocumented error-clear command or bus
+error bit is invented.
+
+An accepted read may finish after reset, clear or clock loss. Epoch checks keep
+old reads from updating a new channel; returned data waits for clock restoration
+before compression. Neither completion nor stopping observation proves physical
+drain. The integration repository's `examples/ws53-hash-model` runs the production
+Rust HAL in 198 CPU scenarios with only mailbox host writes and explicit fault
+inputs. None of these tests qualifies real cross-core ownership, security state,
+cache coherence, precise timing, Flash startup or board behavior.
+
+WS53 also has an explicit [IPC doorbell profile](docs/reference/ws53-ipc.md):
+two peer-driven notifications/IRQs, patched halfword sends and ACK readback.
+It does not simulate the vendor peer's shared-ring or ownership protocol.

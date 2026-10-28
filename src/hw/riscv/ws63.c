@@ -138,6 +138,9 @@ struct WS63IntcState {
     SysBusDevice parent_obj;
     CPURISCVState *env;            /* target hart (set by the machine) */
     uint32_t loci[0x40];           /* LOCIPRI/PRITHD read-back (0xBC0..0xBFF) */
+    uint64_t latched_inputs[2];    /* machine-qualified sources only */
+    uint64_t reassert_on_clear[2]; /* qualified LOCIPCLR re-sampling */
+    uint64_t input_levels[2];
 };
 
 /* Single global so the (context-free) custom-CSR ops can reach the intc. */
@@ -158,6 +161,9 @@ static void ws63_intc_set_irq(void *opaque, int n, int level)
     if (n < 0 || n >= WS63_IRQ_MAX) {
         return;
     }
+    uint64_t bit = 1ULL << (n & 63);
+    if (level) { s->input_levels[n >> 6] |= bit; }
+    else { s->input_levels[n >> 6] &= ~bit; }
     if (!s->env) {
         return;
     }
@@ -165,6 +171,12 @@ static void ws63_intc_set_irq(void *opaque, int n, int level)
         /* Standard mie bits — QEMU delivers via mip + vectored mtvec. */
         riscv_cpu_update_mip(s->env, 1ull << n, level ? (1ull << n) : 0);
     } else {
+        /* Some sources retain LOCIPD after peripheral deassertion, even
+         * with delivery masked. CPU trap/LOCIPCLR handles acknowledgement.
+         * Default masks are zero, preserving existing machine behavior. */
+        if (!level && (s->latched_inputs[n >> 6] & (1ULL << (n & 63)))) {
+            return;
+        }
         /* Custom local interrupt (>=32): deliver via the target/riscv hook,
          * which sets mcause=irq + vectored mtvec, gated by LOCIEN + mstatus.MIE. */
         riscv_cpu_set_local_irq(s->env, n, level);
@@ -185,6 +197,18 @@ static void ws63_intc_realize(DeviceState *dev, Error **errp)
 void ws63_intc_set_cpu_env(DeviceState *intc, CPURISCVState *env)
 {
     WS63_INTC(intc)->env = env;
+}
+
+void ws63_intc_latch_source(DeviceState *intc, unsigned irq)
+{
+    g_assert(irq >= 32 && irq < WS63_IRQ_MAX);
+    WS63_INTC(intc)->latched_inputs[irq >> 6] |= 1ULL << (irq & 63);
+}
+
+void ws63_intc_reassert_on_clear(DeviceState *intc, unsigned irq)
+{
+    g_assert(irq >= 32 && irq < WS63_IRQ_MAX);
+    WS63_INTC(intc)->reassert_on_clear[irq >> 6] |= 1ULL << (irq & 63);
 }
 
 static void ws63_intc_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
@@ -253,7 +277,16 @@ static RISCVException ws63_loci_read(CPURISCVState *env, int csrno,
     case WS63_CSR_LOCIPD1: *val = (uint32_t)env->ws63_locipd[1]; break;
     case WS63_CSR_LOCIPD2: *val = (uint32_t)(env->ws63_locipd[1] >> 32); break;
     default:
-        *val = g_ws63_intc ? g_ws63_intc->loci[csrno - WS63_LOCI_CSR_BASE] : 0;
+        /* Read the same resettable CPU state used for priority arbitration.
+         * A zero-filled device shadow made the first CSR read/modify/write
+         * silently clear priorities of adjacent IRQs after CPU reset. */
+        if (csrno >= 0xBC0 && csrno <= 0xBCF) {
+            *val = env->ws63_locipri[csrno - 0xBC0];
+        } else if (csrno == 0xBFE) {
+            *val = env->ws63_prithd;
+        } else {
+            *val = g_ws63_intc ? g_ws63_intc->loci[csrno - WS63_LOCI_CSR_BASE] : 0;
+        }
         break;
     }
     return RISCV_EXCP_NONE;
@@ -282,6 +315,15 @@ static RISCVException ws63_loci_write(CPURISCVState *env, int csrno,
         int irq = v & 0xFFF;
         if (irq >= 32 && irq < 128) {
             env->ws63_locipd[irq >> 6] &= ~(1ULL << (irq & 63));
+            /* A-board IRQ58 remains pending when its peripheral line is high
+             * across LOCIPCLR. Do not extend this evidence to other sources
+             * or infer retention after the peripheral source deasserts. */
+            if (g_ws63_intc && g_ws63_intc->env == env) {
+                uint64_t bit = 1ULL << (irq & 63);
+                env->ws63_locipd[irq >> 6] |= bit &
+                    g_ws63_intc->reassert_on_clear[irq >> 6] &
+                    g_ws63_intc->input_levels[irq >> 6];
+            }
             riscv_cpu_interrupt(env);
         }
         break;

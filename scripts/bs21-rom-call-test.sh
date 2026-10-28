@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Validate bs21_rom_call (patches/v10.0.0/0005): a guest call to a BS21 mask-ROM
 # function is intercepted by the illegal-instruction hook, emulated in host C, and
-# returns to ra. The test program calls memset_s @0x3d80c to fill a buffer with
+# returns to ra. The test program calls memset_s @0x3d1dc to fill a buffer with
 # 'A', reads it back, and prints it over UART0 — so a correct run prints "XA"
 # (X = the UART works, A = the byte bs21_rom_call's memset_s wrote).
 #
@@ -27,7 +27,7 @@ _start:
     li   a1, 16             /* dmax */
     li   a2, 0x41           /* 'A' */
     li   a3, 16             /* n */
-    li   t0, 0x0003d80c     /* memset_s ROM addr -> bs21_rom_call */
+    li   t0, 0x0003d1dc     /* memset_s ROM addr -> bs21_rom_call */
     jalr ra, 0(t0)
     li   t1, 0x00100800
     lbu  t2, 0(t1)          /* 'A' iff memset_s ran */

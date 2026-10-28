@@ -6,6 +6,7 @@
 """WS53 canonical pad mapping and digital routing tests (no analog claims)."""
 import argparse
 import json
+import subprocess
 from pathlib import Path
 from ws53_gpio_test import running, BANKS
 
@@ -105,12 +106,30 @@ def pinctrl_test(qemu):
     errors = diagnostics[0]
     assert errors.count("unimplemented") == 11, errors
     assert "alternate peripheral route" in errors, errors
+    l0_profile = ('-global', 'ws53-pinctrl.assume-uart-tx=on',
+                  '-global', 'ws53-pinctrl.uart-l0-console-profile=on')
+    muxes = (0x52008044, 0x52008048, 0x57036004, 0x57036008)
+    for selected, expected in ((l0_profile, [0, 0, 1, 1]),
+            (('-global', 'ws53-pinctrl.assume-uart-tx=on', '-global', 'ws53-pinctrl.uart-console-profile=on'), [2, 2, 1, 1])):
+        with running(qemu, False, selected) as (cmd, _, reset, diagnostics):
+            def modes(): return [int(cmd(f'readl {addr:#x}')[0], 0) for addr in muxes]
+            assert modes() == expected
+            for _ in range(2):
+                for addr in muxes: cmd(f'writel {addr:#x} 0')
+                reset(); assert modes() == expected
+        assert not diagnostics[0], diagnostics
+    for flags in (l0_profile[2:], l0_profile+('-global', 'ws53-pinctrl.uart-console-profile=on')):
+        result = subprocess.run([qemu, '-M', 'ws53', '-S', '-display', 'none', '-monitor', 'none',
+            '-serial', 'null', *flags], capture_output=True, timeout=5)
+        assert result.returncode != 0 and b'L0-only console profile requires TX model and excludes legacy console profile' in result.stderr
     return {"canonical_pads": 31, "gpio_routes": 30, "pad_domains": 3,
+            "l0_console_muxes": [0, 0, 1, 1], "legacy_console_muxes": [2, 2, 1, 1],
+            "console_profile_reset_rounds": 4, "invalid_console_profiles_refused": 2,
             "checks": ["SDK address/drive map", "pull up/down", "input buffer gate",
                        "external drive overrides pull", "output enable/data routing",
                        "floating indication", "contention indication", "mux disconnect",
                        "reset preserves external driver", "invalid config retained"],
-            "unsupported_diagnostics": 11, "alternate_peripheral_signals_modeled": False,
+            "unsupported_diagnostics": 11, "alternate_peripheral_signals_modeled": ["PWM0P"],
             "electrical_or_hardware_verified": False}
 
 

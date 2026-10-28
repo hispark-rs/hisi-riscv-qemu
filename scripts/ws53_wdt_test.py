@@ -34,7 +34,9 @@ def access(command):
     def sample():
         write(0x28, 1)
         assert read(0x28) == 2
-        return read(0x14)
+        count = read(0x14)
+        assert read(0x28) == 0  # CNT consumption clears validity on silicon.
+        return count
     def step(ns):
         command(f"clock_step {ns}")
     def input_(name, high):
@@ -73,6 +75,27 @@ def wdt_test(qemu):
         "ws53-wdt: unimplemented read +0xc size=4",
         "ws53-wdt: unimplemented read +0x14 size=4", *([UNKNOWN] * 3)], diagnostics
 
+    # Lost requests must not spontaneously complete once the test window ends.
+    # Parameter sweep, not a claim of exact measured silicon rearm duration.
+    for gap in (1, 31250, 62500):
+        options=profile(255)+('-global',f'ws53-wdt.snapshot-rearm-ns={gap}')
+        with running(qemu, False, options) as (command, irq, reset, diagnostics):
+            read, write, sample, step, _, start = access(command)
+            start()
+            sample()
+            write(8, KEY)  # A feed must not erase the previous CNT read's window.
+            write(0x28, 1)
+            assert read(0x28) == 0
+            if gap > 1:
+                step(gap-1)
+            assert read(0x28) == 0
+            step(1); assert read(0x28) == 0
+            sample()  # Only a fresh request after the window is accepted.
+            reset()
+            start(); sample()  # Reset clears the window as well as the latch.
+        assert diagnostics[0].splitlines() == [notice(255),
+            f'ws53-wdt: assumed snapshot rearm window={gap}ns; not exact silicon timing'], diagnostics
+
     # Test both extreme low-byte assumptions. This is a parameter sweep, not
     # evidence that either value describes the actual silicon.
     for low in (0, 255):
@@ -95,8 +118,11 @@ def wdt_test(qemu):
             assert sample() == count - 1  # fractional clock phase survived gating
             write(8, KEY)
             assert sample() == count
+            write(0x28, 1)
+            assert read(0x28) == 2
             step(2 * TICK)
             assert read(0x14) == count  # snapshot must not become a live counter
+            assert read(0x28) == 0
             assert sample() == count - 2
             input_("stall-snapshot", True)
             write(0x28, 1)
@@ -210,14 +236,17 @@ def wdt_test(qemu):
         write(8, KEY)
         assert sample() == 256
         for operation in invalid:
+            write(0x28, 1)
             command(operation)
             assert read(0) == read(0x10) == read(0x18) == 0
             assert read(4) == 0x100 and read(0x28) == 2 and read(0x14) == 256
+        write(0x28, 1)
         write(0, 0)  # lock status is not a key readback
         assert read(0) == 1
         for off, value in ((4, 0x200), (8, KEY), (0x10, 0xbd), (0x28, 1)):
             write(off, value)
-            assert read(4) == 0x100 and read(0x10) == 0 and read(0x14) == 256
+            assert read(4) == 0x100 and read(0x10) == 0 and read(0x28) == 2
+        assert read(0x14) == 256 and read(0x28) == 0
         write(0, KEY)
         write(0x10, 0xbd)
         assert sample() == 256
@@ -226,11 +255,13 @@ def wdt_test(qemu):
     assert all(line.startswith("ws53-wdt: unimplemented") for line in lines[1:]), diagnostics
     return {"hardware_verified": False, "counting_requires_explicit_assumption": True,
             "assumed_low_bytes_tested": [0, 255], "clock_hz": 32000,
+            "assumed_snapshot_rearm_ns_tested": [1, 31250, 62500],
             "invalid_accesses_diagnosed": len(invalid), "locked_writes_diagnosed": 4,
             "invalid_low_byte_property_rejected": True,
             "pending_eoi_rejections": 2,
             "checks": ["default profile rejects counting", "count/latch/reload", "valid zero",
                        "fractional clock gating", "snapshot stall/recovery", "stop/restart",
+                       "rearm-window request lost until explicitly retried", "reset clears rearm window",
                        "first/second expiry modes", "feed versus EOI", "mask/raw status",
                        "NMI source 1 wiring", "reset request and recovery", "32-bit maximum",
                        "invalid access preserves state", "reset retains external input levels"],

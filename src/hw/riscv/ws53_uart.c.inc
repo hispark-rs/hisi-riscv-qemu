@@ -1,6 +1,9 @@
 /* WS53 SDK basic UART access profile. Included by ws53.c.
- * This owns RX FIFO/IRQ/error/timeout behavior; TX delivery is immediate and
- * does not claim baud-accurate serial framing, TX FIFO pacing or flow control.
+ * Default TX delivery is immediate. An opt-in MDMA profile adds FIFO64 and a
+ * timed serializer with byte requests. A separate opt-in8N1 TX pad profile
+ * derives bit time from divisors at an assumed32MHz. No analog timing,
+ * bridge byte-lane or hardware flow-control claim. A separate RX8N1 profile
+ * adds digital center sampling with explicitly unqualified physical timing.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #define TYPE_WS53_UART "ws53-uart"
@@ -11,14 +14,49 @@ struct WS53UartState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     CharBackend chr;
-    qemu_irq irq;
-    QEMUTimer *timeout;
-    uint64_t rx_timeout_ns;
+    qemu_irq irq, dma_request[2], pad_level, pad_drive, pad_frame_event;
+    QEMUTimer *timeout, *tx_timer;
+    uint64_t rx_timeout_ns, char_ns, transmitted;
+    int64_t tx_remaining, tx_deadline;
     uint32_t control, div_h, div_l, div_fra, baud, fifo, ier, far, modem, scratch;
     uint8_t rx[WS53_UART_DEPTH], errors[WS53_UART_DEPTH];
     unsigned head, count;
     bool overrun, timed_out;
+    /* Optional single-byte DMA handshake/serializer profile. Timing, request
+     * levels and byte lane adaptation are assumptions, not silicon evidence. */
+    bool dma_profile, clock_on, tx_stall, tx_active, tx_halt;
+    bool div_l_read_requires_enable;
+    bool tx_irq_latched, tx_irq_ready;
+    bool soft_reset_asserted;
+    /* Test-only missing-capability input; not a writable silicon register. */
+    bool no_dma_capability;
+    uint8_t tx[WS53_UART_DEPTH], tx_shift;
+    unsigned tx_head, tx_count;
+    bool pad_profile, pad_frame;
+    unsigned pad_phase;
+    uint64_t pad_bit_ns;
+    bool pad_rx_profile, pad_rx_level, pad_rx_enabled, pad_rx_active;
+    QEMUTimer *pad_rx_timer;
+    unsigned pad_rx_phase;
+    uint8_t pad_rx_byte;
+    uint64_t pad_rx_bit_ns, pad_rx_frames, pad_rx_aborted;
+    bool peer_profile, peer_active;
+    uint32_t peer_baud;
+    QEMUTimer *peer_timer;
+    qemu_irq peer_level, peer_drive;
+    uint8_t peer_bytes[WS53_UART_DEPTH], peer_byte;
+    unsigned peer_head, peer_count, peer_phase;
+    uint64_t peer_frames;
 };
+
+/* Wire profiles share divisor arithmetic at an assumed stable32MHz input.
+ * Other formats still use the existing internal-loopback profile. */
+static uint64_t ws53_uart_pad_bit_ns(WS53UartState *s)
+{
+    uint64_t divisor = ((s->div_h << 8) | s->div_l) * 64 + s->div_fra;
+    return DIV_ROUND_UP(divisor * ((s->baud & 15) + 1) * 1000000000ULL,
+                        64ULL * 32000000);
+}
 
 static unsigned ws53_uart_capacity(WS53UartState *s)
 {
@@ -42,6 +80,25 @@ static uint32_t ws53_uart_errors(WS53UartState *s)
     return result;
 }
 
+/* UART2 observation: IIR=2 acknowledges the TX request in both PTIM modes.
+ * An empty FIFO re-notifies after IER disable/enable. PTIM uses the configured
+ * SDK threshold; only the inherited2-char threshold has physical evidence.
+ * Other instances share the IP model, not physical TX IRQ qualification. */
+static unsigned ws53_uart_tx_threshold(WS53UartState *s)
+{
+    static const unsigned thresholds[] = {0, 2, 16, 32};
+    return (s->ier & 0x10) && (s->fifo & 0x10) ? thresholds[s->fifo & 3] : 0;
+}
+
+static void ws53_uart_tx_irq_update(WS53UartState *s)
+{
+    bool enabled = s->dma_profile && !s->soft_reset_asserted && (s->ier & 8);
+    bool ready = enabled && s->tx_count <= ws53_uart_tx_threshold(s);
+    if (!enabled) { s->tx_irq_latched = false; }
+    else if (ready && !s->tx_irq_ready) { s->tx_irq_latched = true; }
+    s->tx_irq_ready = ready;
+}
+
 static unsigned ws53_uart_irq_id(WS53UartState *s)
 {
     static const unsigned thresholds[] = {1, 16, 32, 62};
@@ -55,12 +112,17 @@ static unsigned ws53_uart_irq_id(WS53UartState *s)
     if ((s->ier & 4) && s->timed_out && s->count) {
         return 12;
     }
+    if ((s->ier & 8) && s->tx_irq_latched) { return 2; }
     return 1;
 }
 
 static void ws53_uart_irq_update(WS53UartState *s)
 {
-    qemu_set_irq(s->irq, ws53_uart_irq_id(s) != 1);
+    ws53_uart_tx_irq_update(s);
+    qemu_set_irq(s->irq, !s->soft_reset_asserted && ws53_uart_irq_id(s) != 1);
+    bool enabled = !s->soft_reset_asserted && s->dma_profile && s->clock_on && (s->fifo & 0x10);
+    qemu_set_irq(s->dma_request[0], enabled && s->tx_count < WS53_UART_DEPTH);
+    qemu_set_irq(s->dma_request[1], enabled && s->count != 0);
 }
 
 static void ws53_uart_timeout(void *opaque)
@@ -101,11 +163,165 @@ static void ws53_uart_push(WS53UartState *s, uint8_t value, uint8_t errors)
     ws53_uart_rx_activity(s);
 }
 
+static void ws53_uart_pad_rx_abort(WS53UartState *s)
+{
+    if (s->pad_rx_active) { s->pad_rx_aborted++; }
+    s->pad_rx_active = false;
+    timer_del(s->pad_rx_timer);
+}
+static void ws53_uart_pad_rx_sample(void *opaque)
+{
+    WS53UartState *s = opaque;
+    if (!s->pad_rx_phase) {
+        if (s->pad_rx_level) { ws53_uart_pad_rx_abort(s); return; }
+    } else if (s->pad_rx_phase <= 8) {
+        s->pad_rx_byte |= s->pad_rx_level << (s->pad_rx_phase - 1);
+    } else {
+        s->pad_rx_active = false;
+        s->pad_rx_frames++;
+        /* Existing SDK LSR encoding: bit2 framing error, cleared on LSR read.
+         * Break detection and receiver oversampling/hysteresis remain unmodeled. */
+        ws53_uart_push(s, s->pad_rx_byte, s->pad_rx_level ? 0 : 4);
+        return;
+    }
+    s->pad_rx_phase++;
+    timer_mod(s->pad_rx_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->pad_rx_bit_ns);
+}
+static void ws53_uart_pad_rx_level(void *opaque, int n, int level)
+{
+    WS53UartState *s = opaque;
+    bool falling = s->pad_rx_level && !level;
+    s->pad_rx_level = level != 0;
+    if (!s->pad_rx_profile || !s->pad_rx_enabled || !falling ||
+        s->pad_rx_active || s->soft_reset_asserted || !s->clock_on || (s->modem & 2)) { return; }
+    uint64_t bit_ns = ws53_uart_pad_bit_ns(s);
+    if (s->control != 0x0c || !bit_ns) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: RX pad profile requires8N1 and nonzero divisor\n");
+        return;
+    }
+    s->pad_rx_active = true;
+    s->pad_rx_phase = 0;
+    s->pad_rx_byte = 0;
+    s->pad_rx_bit_ns = bit_ns;
+    timer_mod(s->pad_rx_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + DIV_ROUND_UP(bit_ns, 2));
+}
+static void ws53_uart_pad_rx_enable(void *opaque, int n, int level)
+{
+    WS53UartState *s = opaque;
+    s->pad_rx_enabled = level != 0;
+    /* Selection changes abort a partial frame. Enabling a low line is not a
+     * new start edge; a valid high-to-low transition is required afterwards. */
+    if (!level) { ws53_uart_pad_rx_abort(s); }
+}
+
+static void ws53_uart_tx_resume(WS53UartState *s)
+{
+    if (s->soft_reset_asserted || !s->dma_profile || !s->clock_on || s->tx_stall) { return; }
+    if (!s->tx_active && s->tx_count && !s->tx_halt) {
+        s->tx_shift = s->tx[s->tx_head];
+        s->tx_head = (s->tx_head + 1) % WS53_UART_DEPTH;
+        s->tx_count--; s->tx_active = true; s->tx_remaining = s->char_ns;
+        s->pad_frame = s->pad_profile && !(s->modem & 2);
+        if (s->pad_frame) {
+            s->pad_phase = 0;
+            s->pad_bit_ns = ws53_uart_pad_bit_ns(s);
+            s->tx_remaining = s->pad_bit_ns;
+            qemu_set_irq(s->pad_level, 0);
+            qemu_set_irq(s->pad_frame_event, s->tx_shift + 1);
+        }
+    }
+    if (s->tx_active && !timer_pending(s->tx_timer)) {
+        s->tx_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->tx_remaining;
+        timer_mod(s->tx_timer, s->tx_deadline);
+    }
+    ws53_uart_irq_update(s);
+}
+
+static void ws53_uart_tx_complete(void *opaque)
+{
+    WS53UartState *s = opaque;
+    if (s->pad_frame && ++s->pad_phase < 10) {
+        qemu_set_irq(s->pad_level, s->pad_phase == 9 ? 1 :
+                     ((s->tx_shift >> (s->pad_phase - 1)) & 1));
+        s->tx_remaining = s->pad_bit_ns;
+        ws53_uart_tx_resume(s);
+        return;
+    }
+    if (s->pad_frame) {
+        qemu_set_irq(s->pad_frame_event, 0);
+        s->pad_frame = false;
+    }
+    s->tx_active = false; s->transmitted++;
+    if (s->modem & 2) { ws53_uart_push(s, s->tx_shift, 0); }
+    else { qemu_chr_fe_write_all(&s->chr, &s->tx_shift, 1); }
+    ws53_uart_tx_resume(s);
+}
+
+static bool ws53_uart_tx_enqueue(WS53UartState *s, uint8_t value)
+{
+    if (s->pad_profile && !(s->modem & 2) &&
+        (s->control != 0x0c || !ws53_uart_pad_bit_ns(s))) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: TX pad profile requires8N1 and nonzero divisor\n");
+        return false;
+    }
+    if (s->tx_count >= ws53_uart_capacity(s)) { return false; }
+    s->tx[(s->tx_head + s->tx_count++) % WS53_UART_DEPTH] = value;
+    s->tx_irq_latched = s->tx_irq_ready = false;
+    ws53_uart_tx_resume(s); ws53_uart_irq_update(s); return true;
+}
+
+/* Dedicated byte handshake adapter: CPU MMIO remains 32-bit. The SDK supplies
+ * byte DMA widths but does not prove APB bridge byte-lane behavior. */
+static bool ws53_uart_dma_read(WS53UartState *s, uint8_t *value)
+{
+    if (s->soft_reset_asserted || !s->dma_profile || !s->clock_on || !(s->fifo & 0x10) || !s->count) { return false; }
+    *value = s->rx[s->head]; s->head = (s->head + 1) % WS53_UART_DEPTH; s->count--;
+    ws53_uart_rx_activity(s); qemu_chr_fe_accept_input(&s->chr); return true;
+}
+
+static bool ws53_uart_dma_write(WS53UartState *s, uint8_t value)
+{
+    return !s->soft_reset_asserted && s->dma_profile && s->clock_on && (s->fifo & 0x10) && ws53_uart_tx_enqueue(s, value);
+}
+
+static void ws53_uart_tx_gate(void *opaque, int n, int level)
+{
+    WS53UartState *s = opaque;
+    if (timer_pending(s->tx_timer)) {
+        s->tx_remaining = MAX(s->tx_deadline - qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), 1);
+        timer_del(s->tx_timer);
+    }
+    if (n == 0) { s->clock_on = !!level; } else { s->tx_stall = !!level; }
+    if (n == 0 && !level) { ws53_uart_pad_rx_abort(s); }
+    ws53_uart_tx_resume(s); ws53_uart_irq_update(s);
+}
+
+static void ws53_uart_no_dma_capability(void *opaque, int n, int level)
+{
+    WS53_UART(opaque)->no_dma_capability = !!level;
+}
+
+static void ws53_uart_tx_stall(void *opaque, int n, int level)
+{
+    ws53_uart_tx_gate(opaque, 1, level);
+}
+
 static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
 {
     WS53UartState *s = opaque;
+    if (s->soft_reset_asserted) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: read while soft reset asserted is unqualified\n");
+        return 0;
+    }
     switch (off) {
-    case 0x00: return ws53_uart_irq_id(s) | (s->fifo & 0x10);
+    case 0x00: {
+        unsigned id = ws53_uart_irq_id(s);
+        if (id == 2) {
+            s->tx_irq_latched = false;
+            ws53_uart_irq_update(s);
+        }
+        return id | (s->fifo & 0x10);
+    }
     case 0x04: {
         uint8_t result = 0;
         if (s->count) {
@@ -119,13 +335,25 @@ static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
     }
     case 0x08: return s->control;
     case 0x0c: return s->div_h;
-    case 0x10: return s->div_l;
+    case 0x10:
+        /* Observed on all three A-board application UARTs; high latch unqualified. */
+        return s->div_l_read_requires_enable && !(s->control & 1) ? 0 : s->div_l;
     case 0x14: return s->div_fra;
     case 0x18: return s->ier;
+    case 0x1c: {
+        static const unsigned thresholds[] = {1, 16, 32, 62};
+        unsigned threshold = s->fifo & 0x10 ? thresholds[(s->fifo >> 2) & 3] : 1;
+        return (ws53_uart_errors(s) ? 32 : 0) | (s->count >= threshold ? 16 : 0) |
+               (s->timed_out && s->count ? 8 : 0) | (s->tx_irq_latched ? 4 : 0);
+    }
     case 0x28: return s->far;
     case 0x2c: return s->modem;
     case 0x34: {
-        uint32_t result = 0xc0 | (s->count ? 0x20 : 0) | ws53_uart_errors(s);
+        bool thre = (s->ier & 0x10) && (s->fifo & 0x10) ?
+                    s->tx_count == ws53_uart_capacity(s) : !s->tx_count;
+        uint32_t tx = !s->dma_profile ? 0xc0 :
+                      ((thre ? 0x40 : 0) | (!s->tx_count && !s->tx_active ? 0x80 : 0));
+        uint32_t result = tx | (s->count ? 0x20 : 0) | ws53_uart_errors(s);
         if (s->count) {
             s->errors[s->head] = 0;
         }
@@ -134,12 +362,19 @@ static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
         return result;
     }
     case 0x38: return s->scratch;
-    case 0x44: return 2 | (s->count ? 4 : 0) |
-                       (s->count == ws53_uart_capacity(s) ? 8 : 0);
-    case 0x48: return 0; /* TX is delivered immediately in this model. */
+    case 0x44: return (s->dma_profile ?
+                      ((s->tx_count == ws53_uart_capacity(s) ? 1 : 0) | (!s->tx_count ? 2 : 0)) : 2) |
+                       ((s->fifo & 0x10) ?
+                        ((s->count == ws53_uart_capacity(s) ? 4 : 0) | (!s->count ? 8 : 0)) : 0) |
+                       (s->count ? 0x10 : 0); /* Observed RX-pending busy; TX-only unqualified. */
+    case 0x48: return s->tx_count;
     case 0x4c: return s->count;
     case 0x58: return s->baud;
-    case 0x60: return 0x204; /* Model-selected 64-byte FIFO / 32-bit access. */
+    case 0x50: if (s->dma_profile) { return s->tx_halt; } break;
+    /* Read-only silicon identity, observed on all three A-board instances.
+     * APB width advertises 16 bits although CPU accesses use SDK 32-bit slots.
+     * This does not claim a CTS/RTS model or proven DMA byte-lane adaptation. */
+    case 0x60: return s->no_dma_capability ? 0x504 : 0xd04;
     }
     qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: unimplemented read +0x%" HWADDR_PRIx "\n", off);
     return 0;
@@ -148,9 +383,27 @@ static uint64_t ws53_uart_read(void *opaque, hwaddr off, unsigned size)
 static void ws53_uart_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     WS53UartState *s = opaque;
+    if (s->soft_reset_asserted) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: write while soft reset asserted is unqualified\n");
+        return;
+    }
+    if (s->pad_profile && s->tx_active && (off == 0x08 || off == 0x0c || off == 0x10 ||
+                        off == 0x14 || off == 0x2c || off == 0x58)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: live TX pad format change is unqualified\n");
+        return;
+    }
+    if (s->pad_rx_active && (off == 0x08 || off == 0x0c || off == 0x10 ||
+                            off == 0x14 || off == 0x2c || off == 0x58)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: live RX pad format change is unqualified\n");
+        return;
+    }
     switch (off) {
     case 0x04: {
         uint8_t byte = value;
+        if (s->dma_profile) {
+            if (!ws53_uart_tx_enqueue(s, byte)) { break; }
+            return;
+        }
         if (s->modem & 2) {
             ws53_uart_push(s, byte, 0);
         } else {
@@ -158,18 +411,26 @@ static void ws53_uart_write(void *opaque, hwaddr off, uint64_t value, unsigned s
         }
         return;
     }
-    case 0x08: s->control = value & 0xff; ws53_uart_rx_activity(s); return;
+    case 0x08:
+        /* A-board all-three-port observation: DIV_EN cannot be set with
+         * queued RX. Other CTL bit acceptance and TX-only busy are unqualified. */
+        if (s->count) { value = (value & ~1u) | (s->control & 1); }
+        s->control = value & 0xff; ws53_uart_rx_activity(s); return;
     case 0x0c: s->div_h = value & 0xff; ws53_uart_rx_activity(s); return;
     case 0x10: s->div_l = value & 0xff; ws53_uart_rx_activity(s); return;
     case 0x14: s->div_fra = value & 0x3f; ws53_uart_rx_activity(s); return;
     case 0x18:
-        if (value & ~5u) {
-            break; /* TX/modem IRQ and programmable THRE remain unsupported. */
+        if (value & ~(s->dma_profile ? 0x1du : 5u)) {
+            break; /* TX requires timed FIFO profile; modem remains unsupported. */
         }
         s->ier = value;
         ws53_uart_irq_update(s);
         return;
     case 0x24:
+        if (s->dma_profile && (value & ~0x7fu)) { break; }
+        if (s->dma_profile && ((s->fifo ^ value) & 0x10) && s->tx_count && !(value & 0x20)) {
+            break; /* Changing capacity must explicitly discard queued TX. */
+        }
         if (((s->fifo ^ value) & 0x10) && !(value & 0x40)) {
             break; /* Mode changes without an explicit RX reset are unmodeled. */
         }
@@ -177,10 +438,16 @@ static void ws53_uart_write(void *opaque, hwaddr off, uint64_t value, unsigned s
             s->head = s->count = 0;
             s->overrun = false;
         }
+        if (s->dma_profile && (value & 0x20)) {
+            s->tx_head = s->tx_count = 0; /* Already shifting byte survives. */
+        }
         s->fifo = value & 0x1f; /* Reset commands do not latch. */
         ws53_uart_rx_activity(s);
         qemu_chr_fe_accept_input(&s->chr);
         return;
+    case 0x50:
+        if (!s->dma_profile || (value & ~1u)) { break; }
+        s->tx_halt = value; ws53_uart_tx_resume(s); return;
     case 0x28: s->far = value & 1; return;
     case 0x2c:
         if (value & ~2u) {
@@ -213,15 +480,61 @@ static const MemoryRegionOps ws53_uart_ops = {
     .impl = { .min_access_size = 4, .max_access_size = 4 },
 };
 
+/* Independent8N1 host peer. It drives a fixed board pad, never calls RX FIFO
+ * push. Chip clock/reset cannot pause an external sender. Whole-machine reset
+ * resets this virtual peer too; no CTS/RTS or electrical behavior is inferred. */
+static void ws53_uart_peer_resume(WS53UartState *s)
+{
+    if (s->peer_active || !s->peer_count) { return; }
+    s->peer_byte = s->peer_bytes[s->peer_head];
+    s->peer_head = (s->peer_head + 1) % WS53_UART_DEPTH;
+    s->peer_count--;
+    s->peer_active = true;
+    s->peer_phase = 0;
+    qemu_set_irq(s->peer_level, 0);
+    timer_mod(s->peer_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              DIV_ROUND_UP(1000000000ULL, s->peer_baud));
+    qemu_chr_fe_accept_input(&s->chr);
+}
+static void ws53_uart_peer_tick(void *opaque)
+{
+    WS53UartState *s = opaque;
+    if (++s->peer_phase < 10) {
+        qemu_set_irq(s->peer_level, s->peer_phase == 9 ? 1 :
+                     ((s->peer_byte >> (s->peer_phase - 1)) & 1));
+        timer_mod(s->peer_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  DIV_ROUND_UP(1000000000ULL, s->peer_baud));
+    } else {
+        s->peer_frames++;
+        s->peer_active = false;
+        ws53_uart_peer_resume(s);
+    }
+}
+
 static int ws53_uart_can_receive(void *opaque)
 {
     WS53UartState *s = opaque;
-    return ws53_uart_capacity(s) - s->count;
+    if (s->peer_profile) { return WS53_UART_DEPTH - s->peer_count; }
+    /* Wire-profile input must traverse pad selection, not the logical byte
+     * backend. A serial virtual peer may drive that pad separately. */
+    return s->soft_reset_asserted || s->pad_rx_profile ? 0 : ws53_uart_capacity(s) - s->count;
 }
 
 static void ws53_uart_receive(void *opaque, const uint8_t *buf, int size)
 {
     WS53UartState *s = opaque;
+    if (s->peer_profile) {
+        for (int i = 0; i < size; i++) {
+            if (s->peer_count == WS53_UART_DEPTH) {
+                qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: peer input exceeded advertised capacity\n");
+                break;
+            }
+            s->peer_bytes[(s->peer_head + s->peer_count++) % WS53_UART_DEPTH] = buf[i];
+        }
+        ws53_uart_peer_resume(s);
+        return;
+    }
+    if (s->soft_reset_asserted || s->pad_rx_profile) { return; }
     for (int i = 0; i < size; i++) {
         ws53_uart_push(s, buf[i], 0);
     }
@@ -230,7 +543,21 @@ static void ws53_uart_receive(void *opaque, const uint8_t *buf, int size)
 static void ws53_uart_reset(void *opaque)
 {
     WS53UartState *s = opaque;
+    s->soft_reset_asserted = false;
     timer_del(s->timeout);
+    timer_del(s->tx_timer);
+    ws53_uart_pad_rx_abort(s);
+    s->pad_rx_frames = s->pad_rx_aborted = 0;
+    if (s->peer_profile) {
+        timer_del(s->peer_timer);
+        s->peer_active = false;
+        s->peer_head = s->peer_count = s->peer_frames = 0;
+        qemu_set_irq(s->peer_level, 1);
+        qemu_set_irq(s->peer_drive, 1);
+    }
+    s->tx_head = s->tx_count = 0;
+    s->tx_active = s->tx_halt = false; s->transmitted = 0;
+    s->tx_irq_latched = s->tx_irq_ready = false;
     s->head = s->count = 0;
     s->overrun = s->timed_out = false;
     s->ier = s->far = s->modem = s->scratch = s->div_h = 0;
@@ -240,13 +567,73 @@ static void ws53_uart_reset(void *opaque)
     s->div_fra = 23;
     s->baud = 0x7f;
     s->fifo = 0x10;
+    s->pad_frame = false;
+    qemu_set_irq(s->pad_frame_event, -1);
+    qemu_set_irq(s->pad_level, 1);
+    qemu_set_irq(s->pad_drive, s->pad_profile);
     ws53_uart_irq_update(s);
+}
+
+static void ws53_uart_soft_reset_n(void *opaque, int n, int level)
+{
+    WS53UartState *s = opaque;
+    bool asserted = !level;
+    if (asserted && !s->soft_reset_asserted) {
+        /* H1/H0/L0 profiles from ws53-uart-reset-hil.json and
+         * ws53-uart-l0-reset-hil.json, not machine boot state.
+         * Divisor-zero and cancellation of in-flight TX/errors are explicit
+         * model assumptions; the board fixture tested queued clean RX only. */
+        timer_del(s->timeout);
+        timer_del(s->tx_timer);
+        ws53_uart_pad_rx_abort(s);
+        s->tx_head = s->tx_count = s->head = s->count = 0;
+        s->tx_active = s->tx_halt = s->overrun = s->timed_out = false;
+        s->tx_irq_latched = s->tx_irq_ready = false;
+        s->control = s->div_h = s->div_l = s->div_fra = 0;
+        s->ier = s->far = s->modem = s->scratch = s->fifo = 0;
+        s->baud = 0x7f;
+        s->pad_frame = false;
+        qemu_set_irq(s->pad_frame_event, -1);
+        qemu_set_irq(s->pad_level, 1);
+    }
+    s->soft_reset_asserted = asserted;
+    if (s->pad_profile) {
+        qemu_set_irq(s->pad_drive, !asserted);
+    }
+    ws53_uart_irq_update(s);
+    if (!asserted) { qemu_chr_fe_accept_input(&s->chr); }
 }
 
 static void ws53_uart_realize(DeviceState *dev, Error **errp)
 {
     WS53UartState *s = WS53_UART(dev);
+    if (!s->char_ns || s->char_ns > 1000000000) {
+        error_setg(errp, "ws53-uart: char-ns must be 1..1000000000"); return;
+    }
+    if (s->dma_profile) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: assumed byte DMA requests, FIFO64 and timed serializer\n");
+    }
+    if (s->pad_profile) {
+        if (!s->dma_profile) {
+            error_setg(errp, "ws53-uart: TX pad profile requires timed serializer profile"); return;
+        }
+        qemu_log_mask(LOG_GUEST_ERROR, s->pad_rx_profile ?
+            "ws53-uart: TX pad8N1 profile assumes stable32MHz; RX separate profile\n" :
+            "ws53-uart: TX pad8N1 profile assumes stable32MHz; RX pads unmodeled\n");
+    }
+    if (s->pad_rx_profile) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: RX pad8N1 center sampling assumes stable32MHz; physical timing unqualified\n");
+    }
+    if (s->peer_profile) {
+        if (!s->pad_rx_profile || s->peer_baud < 1200 || s->peer_baud > 4000000) {
+            error_setg(errp, "ws53-uart: RX peer requires RX pad profile and baud1200..4000000"); return;
+        }
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-uart: host8N1 peer drives fixed RX board pad; no flow control\n");
+    }
     s->timeout = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_uart_timeout, s);
+    s->tx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_uart_tx_complete, s);
+    s->pad_rx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_uart_pad_rx_sample, s);
+    s->peer_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_uart_peer_tick, s);
     qemu_chr_fe_set_handlers(&s->chr, ws53_uart_can_receive, ws53_uart_receive,
                             NULL, NULL, s, NULL, true);
     qemu_register_reset(ws53_uart_reset, s);
@@ -255,14 +642,39 @@ static void ws53_uart_realize(DeviceState *dev, Error **errp)
 static const Property ws53_uart_properties[] = {
     DEFINE_PROP_CHR("chardev", WS53UartState, chr),
     DEFINE_PROP_UINT64("rx-timeout-ns", WS53UartState, rx_timeout_ns, 0),
+    DEFINE_PROP_BOOL("assume-dma-profile", WS53UartState, dma_profile, false),
+    DEFINE_PROP_BOOL("assume-pad-tx", WS53UartState, pad_profile, false),
+    DEFINE_PROP_BOOL("assume-pad-rx", WS53UartState, pad_rx_profile, false),
+    DEFINE_PROP_BOOL("assume-rx-peer", WS53UartState, peer_profile, false),
+    DEFINE_PROP_UINT32("rx-peer-baud", WS53UartState, peer_baud, 115200),
+    DEFINE_PROP_BOOL("div-l-read-requires-enable", WS53UartState, div_l_read_requires_enable, false),
+    DEFINE_PROP_UINT64("char-ns", WS53UartState, char_ns, 10000),
 };
 
 static void ws53_uart_init(Object *obj)
 {
     WS53UartState *s = WS53_UART(obj);
+    s->clock_on = true;
     memory_region_init_io(&s->iomem, obj, &ws53_uart_ops, s, TYPE_WS53_UART, 0x1000);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
+    qdev_init_gpio_out_named(DEVICE(obj), s->dma_request, "dma-request", 2);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->pad_level, "pad-tx-level", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->pad_drive, "pad-tx-drive", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->pad_frame_event, "pad-tx-frame", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->peer_level, "peer-rx-level", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->peer_drive, "peer-rx-drive", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_tx_gate, "clock", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_tx_stall, "tx-stall", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_no_dma_capability,
+                            "no-dma-capability", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_soft_reset_n, "soft-reset-n", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_pad_rx_level, "pad-rx-level", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_uart_pad_rx_enable, "pad-rx-enable", 1);
+    object_property_add_uint64_ptr(obj, "transmitted", &s->transmitted, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "pad-rx-frames", &s->pad_rx_frames, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "pad-rx-aborted", &s->pad_rx_aborted, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "rx-peer-frames", &s->peer_frames, OBJ_PROP_FLAG_READ);
 }
 
 static void ws53_uart_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)

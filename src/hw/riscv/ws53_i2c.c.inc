@@ -1,0 +1,493 @@
+/* WS53 non-PRO I2C v151, fbb_ws53 163d9150 / hisi-registers 01dcce5.
+ * Explicit functional profile, not measured silicon timing/reset behavior.
+ * Built-in volatile 256-byte register peers at 7-bit 0x50 / 10-bit 0x250.
+ * DMA source evidence: hisi-registers a233614; lanes/handshake opt-in only.
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+#define TYPE_WS53_I2C "ws53-i2c"
+OBJECT_DECLARE_SIMPLE_TYPE(WS53I2cState, WS53_I2C)
+
+typedef struct WS53I2cWireStep {
+    bool scl_low, sda_low;
+    int64_t ns;
+} WS53I2cWireStep;
+
+typedef struct WS53I2cChannel {
+    WS53I2cState *owner;
+    unsigned index;
+    MemoryRegion mmio;
+    QEMUTimer *timer;
+    qemu_irq irq, dma_request[2];
+    uint32_t regs[0xc8 / 4], latched, abort_source, abort_detail, flushed;
+    uint16_t tx[8], rx[8];
+    unsigned tx_head, tx_len, rx_head, rx_len;
+    bool enabled, active, direction, first_write, pending_read_ack;
+    bool gate, clock, stretch, nack_address, nack_data, arbitration;
+    bool scheduled, enable_event;
+    int64_t remaining, deadline;
+    uint8_t memory[256], pointer;
+    uint64_t starts, restarts, stops, read_acks, read_nacks;
+    qemu_irq wire_low[2];
+    bool wire_active, wire_ready;
+    unsigned wire_pos, wire_len;
+    WS53I2cWireStep wire[160];
+} WS53I2cChannel;
+struct WS53I2cState {
+    SysBusDevice parent_obj;
+    WS53I2cChannel channel[2];
+    bool assume_profile, assume_dma, warned, wire_profile, wire_peer;
+};
+static void ws53_i2c_wire_release(WS53I2cChannel *c)
+{
+    c->wire_active = false; c->wire_len = c->wire_pos = 0;
+    qemu_set_irq(c->wire_low[0], 0); qemu_set_irq(c->wire_low[1], 0);
+}
+static uint32_t ws53_i2c_raw(WS53I2cChannel *c)
+{
+    return c->latched | (c->rx_len > c->regs[0x50 / 4] ? 4 : 0) |
+        (c->enabled && c->tx_len <= c->regs[0x54 / 4] ? 16 : 0);
+}
+static bool ws53_i2c_clocked(WS53I2cChannel *c)
+{
+    return c->owner->assume_profile && c->clock &&
+        c->gate;
+}
+static bool ws53_i2c_dma_available(WS53I2cChannel *c, bool receive)
+{
+    return c->owner->assume_dma && ws53_i2c_clocked(c) && c->enabled &&
+        (c->regs[1] & 1) && !(c->latched & 64) &&
+        (c->regs[0xa0 / 4] & (receive ? 1 : 2)) &&
+        (receive ? c->rx_len > 0 : c->tx_len < 8);
+}
+static void ws53_i2c_irq(WS53I2cChannel *c)
+{
+    qemu_set_irq(c->irq, ws53_i2c_raw(c) & c->regs[0xb0 / 4]);
+    qemu_set_irq(c->dma_request[0], ws53_i2c_dma_available(c, false) &&
+                 c->tx_len <= c->regs[0xa4 / 4]);
+    qemu_set_irq(c->dma_request[1], ws53_i2c_dma_available(c, true) &&
+                 c->rx_len > c->regs[0xa8 / 4]);
+}
+static void ws53_i2c_pause(WS53I2cChannel *c)
+{
+    if (c->scheduled && timer_pending(c->timer)) {
+        c->remaining = MAX(c->deadline - qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), 1);
+        timer_del(c->timer);
+    }
+}
+static void ws53_i2c_resume(WS53I2cChannel *c)
+{
+    if (c->scheduled && !timer_pending(c->timer) && ws53_i2c_clocked(c) &&
+        (c->enable_event || (!c->stretch &&
+         (!c->owner->wire_profile || c->wire_ready)))) {
+        c->deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + c->remaining;
+        timer_mod(c->timer, c->deadline);
+    }
+}
+static void ws53_i2c_schedule(WS53I2cChannel *c, bool enable_event, int64_t delay)
+{
+    timer_del(c->timer);
+    c->scheduled = true; c->enable_event = enable_event; c->remaining = delay;
+    ws53_i2c_resume(c);
+}
+static void ws53_i2c_abort(WS53I2cChannel *c, uint32_t source, uint32_t detail)
+{
+    c->abort_source |= source; c->abort_detail |= detail; c->latched |= 64;
+    if (c->wire_active) { ws53_i2c_wire_release(c); }
+    c->flushed = c->tx_len;
+    c->tx_len = c->rx_len = 0; c->active = c->pending_read_ack = false;
+    c->scheduled = false; timer_del(c->timer); ws53_i2c_irq(c);
+}
+static void ws53_i2c_wire_step(WS53I2cChannel *c, bool scl, bool sda, int64_t ns)
+{
+    g_assert(c->wire_len < ARRAY_SIZE(c->wire));
+    c->wire[c->wire_len++] = (WS53I2cWireStep) { scl, sda, MAX(ns, 1) };
+}
+static void ws53_i2c_wire_byte(WS53I2cChannel *c, uint8_t byte, bool ack,
+                              bool deferred_ack, int64_t low, int64_t high)
+{
+    for (unsigned bit = 0; bit < (deferred_ack ? 8 : 9); bit++) {
+        /* Wired-AND master/virtual-peer zeros; a one is always released.
+         * The functional register peer remains the source of ACK/read data.
+         * This profile is not an analog or arbitrary external-peer model. */
+        bool zero = bit == 8 ? ack : !(byte & (0x80u >> bit));
+        ws53_i2c_wire_step(c, true, zero, low);
+        ws53_i2c_wire_step(c, false, zero, high);
+    }
+}
+static void ws53_i2c_wire_start(WS53I2cChannel *c, bool restart,
+                               int64_t low, int64_t high)
+{
+    if (restart) { ws53_i2c_wire_step(c, true, false, low); }
+    ws53_i2c_wire_step(c, false, false, high);
+    ws53_i2c_wire_step(c, false, true, high);
+}
+static void ws53_i2c_wire_begin(WS53I2cChannel *c, uint16_t cmd,
+                               int64_t low, int64_t high)
+{
+    bool read = cmd & 0x100, ten = c->regs[0] & 16;
+    unsigned target = c->regs[0x10 / 4] & 0x3ff;
+    bool peer = c->owner->wire_peer && !c->nack_address;
+    bool address_ack = peer && target == (ten ? 0x250 : 0x50);
+    bool header_ack = ten ? peer && (target & 0x300) == 0x200 : address_ack;
+    bool new_address = !c->active || (cmd & 0x400);
+    bool aborted = new_address && !address_ack;
+    c->wire_len = c->wire_pos = 0;
+    /* Read data is visible to the guest before its ninth clock when the TX
+     * FIFO runs dry. The next command determines ACK versus last-read NACK.
+     * Keep SCL low while waiting; do not synthesize an early ACK. */
+    if (c->pending_read_ack) {
+        bool ack = read && !(cmd & 0x400);
+        ws53_i2c_wire_step(c, true, ack, low);
+        ws53_i2c_wire_step(c, false, ack, high);
+    }
+    if (new_address) {
+        ws53_i2c_wire_start(c, c->active, low, high);
+        uint8_t header = ten ? 0xf0 | ((target >> 7) & 6) |
+            (read && c->active ? 1 : 0) : (target << 1) | read;
+        ws53_i2c_wire_byte(c, header, header_ack, false, low, high);
+        if (ten && header_ack && !(read && c->active)) {
+            ws53_i2c_wire_byte(c, target, address_ack, false, low, high);
+            if (read && address_ack) {
+                ws53_i2c_wire_start(c, true, low, high);
+                ws53_i2c_wire_byte(c, header | 1, true, false, low, high);
+            }
+        }
+    }
+    if (!aborted) {
+        uint8_t byte = read ? c->memory[c->pointer] : cmd;
+        bool ack = read ? !(cmd & 0x200) : !c->nack_data;
+        ws53_i2c_wire_byte(c, byte, ack, read && !(cmd & 0x200), low, high);
+        aborted = !read && c->nack_data;
+    }
+    if (aborted || (cmd & 0x200)) {
+        /* A distinct SCL rise prepares STOP after the ninth ACK clock,
+         * matching both independently measured A-board routes. */
+        ws53_i2c_wire_step(c, true, true, low);
+        ws53_i2c_wire_step(c, false, true, high);
+        ws53_i2c_wire_step(c, false, false, high);
+    } else {
+        ws53_i2c_wire_step(c, true, false, low);
+    }
+    c->wire_active = true;
+    ws53_i2c_schedule(c, false, 1);
+}
+static void ws53_i2c_start_next(WS53I2cChannel *c)
+{
+    if (!c->enabled || !c->tx_len || c->scheduled || (c->latched & 64)) { return; }
+    uint16_t cmd = c->tx[c->tx_head];
+    if ((cmd & 0x100) && c->rx_len == 8 && (c->regs[0] & 0x200)) { return; }
+    unsigned mode = (c->regs[0] >> 1) & 3;
+    unsigned off = mode == 1 ? 0x30 : mode == 2 ? 0x3c : 0x44;
+    uint64_t period = c->regs[off / 4] + 8 + c->regs[(off + 4) / 4] + 1;
+    if (c->owner->wire_profile) {
+        ws53_i2c_wire_begin(c, cmd,
+            DIV_ROUND_UP((c->regs[(off + 4) / 4] + 1) * 1000ULL, 32),
+            DIV_ROUND_UP((c->regs[off / 4] + 8) * 1000ULL, 32));
+        return;
+    }
+    /* One byte including ACK; initial/repeated address adds 9 or 18 clocks.
+     * No analog edges, bus rise time or silicon SDA hold proof is implied. */
+    unsigned clocks = 9;
+    if (!c->active || (cmd & 0x400)) { clocks += (c->regs[0] & 16) ? 18 : 9; }
+    ws53_i2c_schedule(c, false, (period * clocks * 1000 + 31) / 32);
+}
+static void ws53_i2c_tick(void *opaque)
+{
+    WS53I2cChannel *c = opaque;
+    c->scheduled = false;
+    if (c->wire_active) {
+        if (c->wire_pos < c->wire_len) {
+            WS53I2cWireStep *step = &c->wire[c->wire_pos++];
+            qemu_set_irq(c->wire_low[0], step->scl_low);
+            qemu_set_irq(c->wire_low[1], step->sda_low);
+            ws53_i2c_schedule(c, false, step->ns);
+            return;
+        }
+        c->wire_active = false;
+    }
+    if (c->enable_event) {
+        c->enabled = c->regs[1] & 1;
+        if (!c->enabled) {
+            if (c->pending_read_ack) { c->read_nacks++; }
+            c->tx_len = c->rx_len = 0;
+            c->active = c->pending_read_ack = false;
+        }
+        ws53_i2c_start_next(c); ws53_i2c_irq(c); return;
+    }
+    uint16_t cmd = c->tx[c->tx_head];
+    bool read = cmd & 0x100;
+    if (c->arbitration) { ws53_i2c_abort(c, 0, 1 << 12); return; }
+    if (!c->active || (cmd & 0x400)) {
+        bool ten = c->regs[0] & 16;
+        unsigned target = c->regs[0x10 / 4] & 0x3ff;
+        bool absent = c->nack_address || (c->owner->wire_profile && !c->owner->wire_peer);
+        if (absent || target != (ten ? 0x250 : 0x50)) {
+            unsigned detail = ten ? 2 : 1;
+            if (c->owner->wire_profile && ten && !absent && (target & 0x300) == 0x200) {
+                detail = 4; /* Prefix ACK, second address byte NACK. */
+            }
+            ws53_i2c_abort(c, 0, detail); return;
+        }
+        if (c->active && !(c->regs[0] & 32)) {
+            ws53_i2c_abort(c, 0, 1 << 10); return;
+        }
+        if (c->active) { c->restarts++; } else { c->starts++; }
+        c->latched |= c->active ? 0x1000 : 0x400;
+        c->active = true; c->direction = read; c->first_write = !read;
+    } else if (read != c->direction) {
+        /* The profile requires explicit RESTART for a direction change. */
+        ws53_i2c_abort(c, 0, 1 << 10); return;
+    }
+    if (c->pending_read_ack) {
+        if (read && !(cmd & 0x400)) { c->read_acks++; }
+        else { c->read_nacks++; }
+    }
+    c->tx_head = (c->tx_head + 1) % 8; c->tx_len--;
+    if (read) {
+        if (c->rx_len == 8) {
+            c->latched |= 2;
+        } else {
+            c->rx[(c->rx_head + c->rx_len) % 8] = c->memory[c->pointer++];
+            c->rx_len++;
+        }
+        /* ACK is deferred across an empty TX FIFO; the next command decides
+         * continuation versus last-read NACK. This is an explicit assumption. */
+        c->pending_read_ack = !(cmd & 0x200);
+        if (cmd & 0x200) { c->read_nacks++; }
+    } else {
+        c->pending_read_ack = false;
+        if (c->nack_data) { ws53_i2c_abort(c, 0, 8); return; }
+        if (c->first_write) { c->pointer = cmd; c->first_write = false; }
+        else { c->memory[c->pointer++] = cmd; }
+    }
+    if (cmd & 0x200) {
+        c->active = c->pending_read_ack = false; c->latched |= 0x200; c->stops++;
+    }
+    ws53_i2c_start_next(c); ws53_i2c_irq(c);
+}
+static uint64_t ws53_i2c_read(void *opaque, hwaddr off, unsigned size)
+{
+    WS53I2cChannel *c = opaque;
+    if (size != 4 || (off & 3)) { goto invalid; }
+    switch (off) {
+    case 0: case 4: case 0x10: case 0x30: case 0x34: case 0x3c: case 0x40:
+    case 0x44: case 0x48: case 0x50: case 0x54: case 0x6c: case 0x70:
+    case 0xa0: case 0xac: case 0xb0: return c->regs[off / 4];
+    case 0xa4: case 0xa8:
+        if (!c->owner->assume_dma) { goto invalid; }
+        return c->regs[off / 4];
+    case 0x1c: {
+        if (!c->rx_len) { c->latched |= 1; ws53_i2c_irq(c); return 0; }
+        uint16_t v = c->rx[c->rx_head];
+        c->rx_head = (c->rx_head + 1) % 8; c->rx_len--;
+        ws53_i2c_start_next(c); ws53_i2c_irq(c); return v;
+    }
+    case 0x60: return (c->active ? 0x21 : 0) | (c->tx_len < 8 ? 2 : 0) |
+        (!c->tx_len ? 4 : 0) | (c->rx_len ? 8 : 0) | (c->rx_len == 8 ? 16 : 0) |
+        (c->active && !c->tx_len ? 128 : 0) |
+        (c->rx_len == 8 && c->tx_len && (c->regs[0] & 0x200) ? 256 : 0);
+    case 0x64: return c->tx_len;
+    case 0x68: return c->rx_len;
+    case 0x74: return c->flushed;
+    case 0x78: return c->abort_source;
+    case 0x7c: return c->abort_detail;
+    case 0x84: return c->enabled;
+    case 0xb4: return ws53_i2c_raw(c) & c->regs[0xb0 / 4];
+    case 0xb8: return ws53_i2c_raw(c);
+    }
+invalid:
+    qemu_log_mask(LOG_GUEST_ERROR, "ws53-i2c%u: unimplemented read +0x%" HWADDR_PRIx " size=%u\n", c->index, off, size);
+    return 0;
+}
+static void ws53_i2c_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
+{
+    WS53I2cChannel *c = opaque;
+    if (size != 4 || (off & 3)) { goto invalid; }
+    switch (off) {
+    case 4:
+        if (v & ~3u) { goto invalid; }
+        if ((v & 1) && c->owner->assume_profile) {
+            unsigned mode = (c->regs[0] >> 1) & 3;
+            unsigned counts = mode == 1 ? 0x30 : mode == 2 ? 0x3c : 0x44;
+            unsigned min_low = mode == 1 ? 12 : mode == 2 ? 15 : 21;
+            if ((c->regs[0] & 0x41) != 0x41 || !mode ||
+                c->regs[counts / 4] < 6 || c->regs[(counts + 4) / 4] < min_low) {
+                goto invalid;
+            }
+        }
+        c->regs[1] = v & 1;
+        if (!(v & 1) && c->wire_active) { ws53_i2c_wire_release(c); }
+        if (v & 2) { ws53_i2c_abort(c, 1, 0); }
+        if ((v & 1) && !c->owner->warned) {
+            qemu_log_mask(LOG_GUEST_ERROR, c->owner->assume_profile ?
+                "ws53-i2c: assumed profile 32MHz FIFO8 CON-addressing deferred-read-ACK disable=1us\n" :
+                "ws53-i2c: unimplemented transfer without assume-profile\n");
+            c->owner->warned = true;
+        }
+        ws53_i2c_schedule(c, true, 1000); ws53_i2c_irq(c); return;
+    case 0x1c:
+        if (v > 0x7ff) { goto invalid; }
+        if (!c->enabled) { ws53_i2c_abort(c, 0, 1 << 11); return; }
+        if (c->latched & 64) { return; } /* abort latches FIFO until clear */
+        if (c->tx_len == 8) { c->latched |= 8; ws53_i2c_irq(c); return; }
+        c->tx[(c->tx_head + c->tx_len) % 8] = v; c->tx_len++;
+        ws53_i2c_start_next(c); ws53_i2c_irq(c); return;
+    case 0xc4:
+        if (v != 1) { goto invalid; }
+        c->latched = c->abort_source = c->abort_detail = c->flushed = 0;
+        ws53_i2c_start_next(c); ws53_i2c_irq(c); return;
+    case 0xb0:
+        if (v & ~0x165fu) { goto invalid; }
+        c->regs[off / 4] = v; ws53_i2c_irq(c); return;
+    case 0xa0:
+        if (v & ~(c->owner->assume_dma ? 3u : 0u)) { goto invalid; }
+        break;
+    case 0xa4: case 0xa8:
+        if (!c->owner->assume_dma || v > 7) { goto invalid; }
+        break;
+    case 0:
+        if (c->enabled || (v & ~0x277u) || !(v & 1) || !(v & 64) || !(v & 6)) { goto invalid; }
+        break;
+    case 0x10:
+        if (c->enabled || (v & ~0x3ffu)) { goto invalid; }
+        break;
+    case 0x30: case 0x34: case 0x3c: case 0x40: case 0x44: case 0x48:
+    case 0x70:
+        if (c->enabled || v > 0xffff) { goto invalid; } break;
+    case 0x50: case 0x54:
+        if (v > 7) { goto invalid; } break;
+    case 0x6c: case 0xac:
+        if (c->enabled || v > 255) { goto invalid; } break;
+    default: goto invalid;
+    }
+    c->regs[off / 4] = v; ws53_i2c_irq(c); return;
+invalid:
+    qemu_log_mask(LOG_GUEST_ERROR, "ws53-i2c%u: unimplemented write +0x%" HWADDR_PRIx " value=0x%" PRIx64 " size=%u\n", c->index, off, v, size);
+}
+/* DMA byte lanes are an explicit profile, separate from 32-bit CPU MMIO.
+ * An already-read TX beat may arrive after requests are disabled. It is
+ * accepted only while the controller/clock/FIFO can still accept the write. */
+static bool ws53_i2c_dma_write(WS53I2cChannel *c, const uint8_t *data, unsigned width)
+{
+    if (!c || !ws53_i2c_clocked(c) || !c->enabled || !(c->regs[1] & 1) ||
+        (c->latched & 64) || c->tx_len == 8 || (width != 1 && width != 2)) { return false; }
+    unsigned v = data[0] | (width == 2 ? data[1] << 8 : 0);
+    if (v > 0x7ff) { return false; }
+    ws53_i2c_write(c, 0x1c, v, 4); return true;
+}
+static bool ws53_i2c_dma_read(WS53I2cChannel *c, uint8_t *data, unsigned width)
+{
+    if (!c || width != 1 || !ws53_i2c_dma_available(c, true)) { return false; }
+    data[0] = ws53_i2c_read(c, 0x1c, 4); return true;
+}
+#define WS53_I2C_OPS(name, reader, writer) \
+    static const MemoryRegionOps name = { .read=reader, .write=writer, \
+        .endianness=DEVICE_LITTLE_ENDIAN, \
+        .valid={.min_access_size=1,.max_access_size=8,.unaligned=true}, \
+        .impl={.min_access_size=1,.max_access_size=8,.unaligned=true} }
+WS53_I2C_OPS(ws53_i2c_ops, ws53_i2c_read, ws53_i2c_write);
+#undef WS53_I2C_OPS
+/* Fault inputs are external to the controller and survive system reset. */
+static void ws53_i2c_clock(void *opaque, int n, int level)
+{
+    WS53I2cState *s = opaque; WS53I2cChannel *c = &s->channel[n];
+    ws53_i2c_pause(c); c->clock = level; ws53_i2c_resume(c); ws53_i2c_irq(c);
+}
+static void ws53_i2c_gate(void *opaque, int n, int level)
+{
+    WS53I2cState *s = opaque; WS53I2cChannel *c = &s->channel[n];
+    ws53_i2c_pause(c); c->gate = level; ws53_i2c_resume(c); ws53_i2c_irq(c);
+}
+static void ws53_i2c_stretch(void *opaque, int n, int level)
+{
+    WS53I2cState *s = opaque; WS53I2cChannel *c = &s->channel[n];
+    ws53_i2c_pause(c); c->stretch = level; ws53_i2c_resume(c);
+}
+static void ws53_i2c_nack_address(void *opaque, int n, int level)
+{
+    WS53I2cState *s = opaque; s->channel[n].nack_address = level;
+}
+static void ws53_i2c_nack_data(void *opaque, int n, int level)
+{
+    WS53I2cState *s = opaque; s->channel[n].nack_data = level;
+}
+static void ws53_i2c_arbitration(void *opaque, int n, int level)
+{
+    WS53I2cState *s = opaque; s->channel[n].arbitration = level;
+}
+static void ws53_i2c_wire_route(void *opaque, int n, int level)
+{
+    WS53I2cState *s = opaque; WS53I2cChannel *c = &s->channel[n];
+    ws53_i2c_pause(c); c->wire_ready = level; ws53_i2c_resume(c);
+}
+static void ws53_i2c_reset(void *opaque)
+{
+    WS53I2cState *s = opaque;
+    for (unsigned i = 0; i < 2; i++) {
+        WS53I2cChannel *c = &s->channel[i];
+        ws53_i2c_wire_release(c);
+        timer_del(c->timer); memset(c->regs, 0, sizeof(c->regs));
+        c->tx_head = c->tx_len = c->rx_head = c->rx_len = 0;
+        c->latched = c->abort_source = c->abort_detail = c->flushed = 0;
+        c->active = c->enabled = c->scheduled = c->pending_read_ack = false;
+        c->pointer = 0;
+        c->starts = c->restarts = c->stops = c->read_acks = c->read_nacks = 0;
+        for (unsigned j = 0; j < 256; j++) { c->memory[j] = j ^ 0xa5; }
+        ws53_i2c_irq(c);
+    }
+}
+static void ws53_i2c_realize(DeviceState *dev, Error **errp)
+{
+    WS53I2cState *s = WS53_I2C(dev);
+    if (s->wire_profile && !s->assume_profile) {
+        error_setg(errp, "ws53-i2c: master wire profile requires functional profile"); return;
+    }
+    if (s->wire_profile) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-i2c: assumed32MHz master wire/virtual-peer profile; pull/filter delay unmodeled\n");
+    }
+    qemu_register_reset(ws53_i2c_reset, s);
+}
+static const Property ws53_i2c_properties[] = {
+    DEFINE_PROP_BOOL("assume-profile", WS53I2cState, assume_profile, false),
+    DEFINE_PROP_BOOL("assume-wire-profile", WS53I2cState, wire_profile, false),
+    DEFINE_PROP_BOOL("wire-peer-connected", WS53I2cState, wire_peer, true),
+};
+static void ws53_i2c_init(Object *obj)
+{
+    WS53I2cState *s = WS53_I2C(obj);
+    for (unsigned i = 0; i < 2; i++) {
+        WS53I2cChannel *c = &s->channel[i]; c->owner = s; c->index = i; c->clock = true;
+        memory_region_init_io(&c->mmio, obj, &ws53_i2c_ops, c, TYPE_WS53_I2C, 0x1000);
+        sysbus_init_mmio(SYS_BUS_DEVICE(obj), &c->mmio);
+        sysbus_init_irq(SYS_BUS_DEVICE(obj), &c->irq);
+        qdev_init_gpio_out_named(DEVICE(obj), c->dma_request, i ? "dma1" : "dma0", 2);
+        qdev_init_gpio_out_named(DEVICE(obj), c->wire_low, i ? "wire1-low" : "wire0-low", 2);
+        c->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ws53_i2c_tick, c);
+        g_autofree char *starts = g_strdup_printf("starts%u", i);
+        g_autofree char *restarts = g_strdup_printf("restarts%u", i);
+        g_autofree char *stops = g_strdup_printf("stops%u", i);
+        g_autofree char *acks = g_strdup_printf("read-acks%u", i);
+        g_autofree char *nacks = g_strdup_printf("read-nacks%u", i);
+        object_property_add_uint64_ptr(obj, starts, &c->starts, OBJ_PROP_FLAG_READ);
+        object_property_add_uint64_ptr(obj, restarts, &c->restarts, OBJ_PROP_FLAG_READ);
+        object_property_add_uint64_ptr(obj, stops, &c->stops, OBJ_PROP_FLAG_READ);
+        object_property_add_uint64_ptr(obj, acks, &c->read_acks, OBJ_PROP_FLAG_READ);
+        object_property_add_uint64_ptr(obj, nacks, &c->read_nacks, OBJ_PROP_FLAG_READ);
+    }
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_gate, "gate", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_clock, "clock", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_stretch, "stretch", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_nack_address, "nack-address", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_nack_data, "nack-data", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_arbitration, "arbitration", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_i2c_wire_route, "wire-route", 2);
+}
+static void ws53_i2c_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+    dc->realize = ws53_i2c_realize; device_class_set_props(dc, ws53_i2c_properties);
+}
+static const TypeInfo ws53_i2c_type = {
+    .name=TYPE_WS53_I2C,.parent=TYPE_SYS_BUS_DEVICE,.instance_size=sizeof(WS53I2cState),
+    .instance_init=ws53_i2c_init,.class_init=ws53_i2c_class_init,
+};

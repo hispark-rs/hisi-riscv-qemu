@@ -33,8 +33,66 @@ jobs:
 
       - uses: astral-sh/setup-uv@v7
 
+      - name: WS53 HASH compression and padding-independent state tests
+        run: uv run --script scripts/ws53_hash_compression_test.py
+
       - name: WS53 RAM-profile timer model contracts
         run: uv run --script scripts/test-ws53.py --qemu ./qemu/build/qemu-system-riscv32
+
+      - name: WS53 Flash control-domain access and reset contracts
+        run: |
+          uv run --script scripts/ws53_tsensor_domain_test.py \
+            --qemu ./qemu/build/qemu-system-riscv32 \
+            --output "$RUNNER_TEMP/ws53-tsensor-domain"
+
+      - name: Retain control-domain model observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ws53-tsensor-control-domain
+          path: ${{ runner.temp }}/ws53-tsensor-domain/
+          if-no-files-found: warn
+
+      - name: Shared interrupt priority and reset regression (six TCG machines)
+        run: uv run --script scripts/hisi_priority_test.py --qemu ./qemu/build/qemu-system-riscv32
+
+      - name: WS53 timer paused-clock fault contracts
+        run: uv run --script scripts/ws53_timer_stall_test.py --qemu ./qemu/build/qemu-system-riscv32
+
+      - name: WS53 unavailable counter CSR and older-machine regression
+        run: uv run --script scripts/ws53_counter_csr_test.py --qemu ./qemu/build/qemu-system-riscv32
+
+      - name: WS53 synthetic SFC command and NOR contracts
+        run: |
+          mkdir -p artifacts/ws53-sfc
+          uv run --script scripts/ws53_sfc_contract_test.py --qemu ./qemu/build/qemu-system-riscv32 \
+            --output artifacts/ws53-sfc/contract > artifacts/ws53-sfc/contract.stdout.log 2> artifacts/ws53-sfc/contract.stderr.log
+
+      - name: WS53 SFC CPU access-fault contracts
+        run: |
+          mkdir -p artifacts/ws53-sfc
+          uv run --script scripts/ws53_sfc_cpu_test.py --qemu ./qemu/build/qemu-system-riscv32 \
+            > artifacts/ws53-sfc/cpu.json 2> artifacts/ws53-sfc/cpu.stderr.log
+
+      - name: WS53 SFC configured snapshot and TCG read-only contracts
+        run: |
+          mkdir -p artifacts/ws53-sfc
+          uv run --script scripts/ws53_sfc_snapshot_test.py --qemu ./qemu/build/qemu-system-riscv32 \
+            --output artifacts/ws53-sfc/snapshot > artifacts/ws53-sfc/snapshot.stdout.log 2> artifacts/ws53-sfc/snapshot.stderr.log
+
+      - name: WS53 SFC startup and immutable-profile guards
+        run: |
+          mkdir -p artifacts/ws53-sfc
+          uv run --script scripts/ws53_sfc_profile_test.py --qemu ./qemu/build/qemu-system-riscv32 \
+            --output artifacts/ws53-sfc/profile > artifacts/ws53-sfc/profile.stdout.log 2> artifacts/ws53-sfc/profile.stderr.log
+
+      - name: Upload WS53 SFC reports and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ws53-sfc-${{ env.QEMU_TAG }}
+          path: artifacts/ws53-sfc/
+          if-no-files-found: warn
 
       - name: Checkout ws63-rs (firmware source)
         uses: actions/checkout@v5

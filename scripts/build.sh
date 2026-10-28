@@ -54,11 +54,40 @@ cp "$HERE/src/hw/riscv/bs22.c"                            "$QEMU_DIR/hw/riscv/bs
 cp "$HERE/src/hw/riscv/bs20.c"                            "$QEMU_DIR/hw/riscv/bs20.c"
 cp "$HERE/src/hw/riscv/bs21e.c"                           "$QEMU_DIR/hw/riscv/bs21e.c"
 cp "$HERE/src/hw/riscv/ws53.c"                            "$QEMU_DIR/hw/riscv/ws53.c"
+cp "$HERE/src/hw/riscv/ws53_flash_handoff.c.inc"            "$QEMU_DIR/hw/riscv/ws53_flash_handoff.c.inc"
+cp "$HERE/src/hw/riscv/ws53_cache_state.c.inc"              "$QEMU_DIR/hw/riscv/ws53_cache_state.c.inc"
+cp "$HERE/src/hw/riscv/ws53_instruction_cache.c.inc"        "$QEMU_DIR/hw/riscv/ws53_instruction_cache.c.inc"
+cp "$HERE/src/hw/riscv/ws53_sfc_command.c.inc"              "$QEMU_DIR/hw/riscv/ws53_sfc_command.c.inc"
+cp "$HERE/src/hw/riscv/ws53_sdio.c.inc"                     "$QEMU_DIR/hw/riscv/ws53_sdio.c.inc"
+cp "$HERE/src/hw/riscv/ws53_sdio_adma.c.inc"                "$QEMU_DIR/hw/riscv/ws53_sdio_adma.c.inc"
 cp "$HERE/src/hw/riscv/ws53_uart.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_uart.c.inc"
+cp "$HERE/src/hw/riscv/ws53_uart_reset.c.inc"             "$QEMU_DIR/hw/riscv/ws53_uart_reset.c.inc"
+cp "$HERE/src/hw/riscv/ws53_uart_route.c.inc"             "$QEMU_DIR/hw/riscv/ws53_uart_route.c.inc"
 cp "$HERE/src/hw/riscv/ws53_gpio.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_gpio.c.inc"
 cp "$HERE/src/hw/riscv/ws53_pinctrl.c.inc"                "$QEMU_DIR/hw/riscv/ws53_pinctrl.c.inc"
 cp "$HERE/src/hw/riscv/ws53_nmi.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_nmi.c.inc"
 cp "$HERE/src/hw/riscv/ws53_wdt.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_wdt.c.inc"
+cp "$HERE/src/hw/riscv/ws53_tcxo.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_tcxo.c.inc"
+cp "$HERE/src/hw/riscv/ws53_ipc.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_ipc.c.inc"
+cp "$HERE/src/hw/riscv/ws53_rtc.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_rtc.c.inc"
+cp "$HERE/src/hw/riscv/ws53_pwm.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_pwm.c.inc"
+cp "$HERE/src/hw/riscv/ws53_i2s.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_i2s.c.inc"
+cp "$HERE/src/hw/riscv/ws53_mclken0.c.inc"                "$QEMU_DIR/hw/riscv/ws53_mclken0.c.inc"
+cp "$HERE/src/hw/riscv/ws53_adc.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_adc.c.inc"
+cp "$HERE/src/hw/riscv/ws53_adc_capture.c.inc"            "$QEMU_DIR/hw/riscv/ws53_adc_capture.c.inc"
+cp "$HERE/src/hw/riscv/ws53_mdma.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_mdma.c.inc"
+cp "$HERE/src/hw/riscv/ws53_global_clken.c.inc"           "$QEMU_DIR/hw/riscv/ws53_global_clken.c.inc"
+cp "$HERE/src/hw/riscv/ws53_i2c.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_i2c.c.inc"
+cp "$HERE/src/hw/riscv/ws53_mclken1.c.inc"                "$QEMU_DIR/hw/riscv/ws53_mclken1.c.inc"
+cp "$HERE/src/hw/riscv/ws53_spi.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_spi.c.inc"
+cp "$HERE/src/hw/riscv/ws53_tsensor.c.inc"                "$QEMU_DIR/hw/riscv/ws53_tsensor.c.inc"
+cp "$HERE/src/hw/riscv/ws53_trng.c.inc"                   "$QEMU_DIR/hw/riscv/ws53_trng.c.inc"
+cp "$HERE/src/hw/riscv/ws53_hash.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_hash.c.inc"
+cp "$HERE/src/hw/riscv/ws53_km.c.inc"                      "$QEMU_DIR/hw/riscv/ws53_km.c.inc"
+cp "$HERE/src/hw/riscv/ws53_symc.c.inc"                    "$QEMU_DIR/hw/riscv/ws53_symc.c.inc"
+cp "$HERE/src/hw/riscv/ws53_symc_block.h"                  "$QEMU_DIR/hw/riscv/ws53_symc_block.h"
+cp "$HERE/src/hw/riscv/ws53_hash_compress.h"               "$QEMU_DIR/hw/riscv/ws53_hash_compress.h"
+cp "$HERE/src/hw/riscv/ws53_efuse.c.inc"                  "$QEMU_DIR/hw/riscv/ws53_efuse.c.inc"
 cp "$HERE/src/target/riscv/insn_trans/trans_xlinx.c.inc" "$QEMU_DIR/target/riscv/insn_trans/trans_xlinx.c.inc"
 cp "$HERE/src/tests/qtest/ws63-test.c"                    "$QEMU_DIR/tests/qtest/ws63-test.c"
 
@@ -89,8 +118,11 @@ done
 #    Wi-Fi/Ethernet MAC model (needs libslirp-dev installed).
 if [ ! -f "$QEMU_DIR/build/build.ninja" ]; then
     echo "==> configuring (riscv32-softmmu only, slirp on)"
+    # DTC overrides Meson's global werror setting. Keep the declared
+    # --disable-werror policy for this fallback too (new GCC/glibc headers
+    # diagnose its older memchr const conversion).
     (cd "$QEMU_DIR" && ./configure --target-list=riscv32-softmmu \
-        --disable-werror --disable-docs --enable-slirp)
+        --disable-werror --disable-docs --enable-slirp -Ddtc:werror=false)
 fi
 
 # 6. build the emulator, then the WS63 qtest binary (ninja picks up the

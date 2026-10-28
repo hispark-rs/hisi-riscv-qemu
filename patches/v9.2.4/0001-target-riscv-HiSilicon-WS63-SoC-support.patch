@@ -138,7 +138,7 @@ index 803d874..97e2715 100644
 +{
 +    /*
 +     * WS63 priority/threshold: each IRQ has a 4-bit priority in LOCIPRI (8/reg,
-+     * priority irq = ws63_locipri[irq/8] bits[(irq%8)*4 +: 4]); higher value =
++     * priority index is (irq - 26), matching SDK LOCIPRI; higher value =
 +     * more urgent. An IRQ is eligible only when its priority > PRITHD (strict).
 +     * Among eligible pending+enabled IRQs, deliver the highest priority; ties go
 +     * to the lowest IRQ number. (Default priority 1, PRITHD 0 -> deliver by
@@ -152,7 +152,7 @@ index 803d874..97e2715 100644
 +        while (active) {
 +            int b = ctz64(active);
 +            int irq = w * 64 + b;
-+            int pri = (env->ws63_locipri[(irq >> 3) & 15] >> ((irq & 7) * 4)) & 0xF;
++            int pri = (env->ws63_locipri[(irq - 26) / 8] >> (((irq - 26) % 8) * 4)) & 0xF;
 +            active &= active - 1; /* clear lowest set bit */
 +            if (pri > (int)env->ws63_prithd && pri > best_pri) {
 +                best_pri = pri;

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = ["gmssl==3.2.2", "pycryptodomex==3.23.0"]
 # ///
 """Boot-free WS53 timer qtest and optional RAM UART/IRQ integration smoke."""
 import argparse
@@ -12,10 +12,52 @@ import tempfile
 import time
 from pathlib import Path
 from ws53_gpio_test import gpio_test
+from ws53_flash_handoff_test import handoff_test
+from ws53_cache_state_test import cache_state_test
+from ws53_instruction_cache_test import run as instruction_cache_test
+from ws53_rom_trap_test import rom_trap_test
+from ws53_counter_csr_test import run as counter_csr_test
 from ws53_gpio_ram_test import gpio_ram_test
 from ws53_pinctrl_test import pinctrl_test
 from ws53_nmi_test import nmi_test
 from ws53_wdt_test import wdt_test
+from ws53_uart_config_test import uart_config_test
+from ws53_uart_tx_irq_test import uart_tx_irq_test
+from ws53_uart_reset_test import uart_reset_test
+from ws53_uart_l0_reset_test import uart_l0_reset_test
+from ws53_uart_route_test import uart_route_test
+from ws53_uart_pads_test import uart_pads_test
+from ws53_uart_rx_pads_test import uart_rx_pads_test
+from ws53_uart_peer_test import uart_peer_test
+from ws53_tcxo_test import tcxo_test
+from ws53_rtc_test import rtc_test
+from ws53_pwm_test import pwm_test
+from ws53_pwm_start_test import pwm_start_test
+from ws53_irq_latch_test import irq_latch_test, irq58_clear_test
+from ws53_pwm_pad_test import pwm_pad_test, pwm_divider_test
+from ws53_i2c_test import i2c_test
+from ws53_spi_test import spi_test
+from ws53_tsensor_test import tsensor_test
+from ws53_trng_test import trng_test
+from ws53_efuse_test import efuse_test
+from ws53_branch_immediate_test import run as branch_immediate_test
+from ws53_compressed_memory_test import run as compressed_memory_test
+from ws53_priority_test import run as priority_test
+from ws53_i2s_test import i2s_test
+from ws53_adc_test import adc_test
+from ws53_adc_capture_test import capture_test
+from ws53_mdma_test import mdma_test
+from ws53_mdma_uart_test import uart_dma_test
+from ws53_mdma_spi_test import spi_dma_test
+from ws53_mdma_i2c_test import i2c_dma_test
+from ws53_mdma_i2s_test import i2s_dma_test
+from ws53_sdio_init_test import sdio_init_test
+from ws53_sdio_adma_test import sdio_adma_test
+from ws53_hash_test import hash_test
+from ws53_km_test import km_test
+from ws53_symc_test import symc_test
+from ws53_symc_contract_test import contract_test as symc_contract_test
+from ws53_ipc_test import run as ipc_test
 
 
 def connect(path):
@@ -55,6 +97,13 @@ def model_test(qemu):
                 def step(ns):
                     command(f"clock_step {ns}")
                 assert read(0x110) == read(0x210) == 0
+                load_patterns = (0,1,2,7,15,16,17,31,32,33,0xff,0x100,
+                                 0x12345670,0x89abcdef,0xfffffff0,0xffffffff)
+                for offset in (0x100,0x200):
+                    for value in load_patterns:
+                        write(offset,value)
+                        assert read(offset) == value | 15
+                        assert read(offset) == value | 15
                 write(0x100, 320_000)
                 write(0x110, 1)  # one-shot, 10 ms at the SDK's 32 MHz
                 step(9_999_999)
@@ -179,13 +228,13 @@ def uart_test(qemu):
                         return int(command(f"readl {base + off:#x}")[0], 0)
                     def write(off, value):
                         command(f"writel {base + off:#x} {value:#x}")
-                    assert read(0x44) == 2 and read(0x34) == 0xc0
+                    assert read(0x44) == 10 and read(0x34) == 0xc0
                     assert read(0x4c) == 0 and (read(0) & 15) == 1
                     write(0x28, 1)  # SDK-defined FIFO test injection
                     write(0x24, 0x50)
                     for value in range(64):
                         write(0x40, value)
-                    assert read(0x4c) == 64 and read(0x44) == 14
+                    assert read(0x4c) == 64 and read(0x44) == 22
                     assert read(0) & 15 == 1 and not irq[irq_number], "RX ignored mask"
                     write(0x18, 4)
                     assert read(0) & 15 == 4 and irq[irq_number], "pending RX not unmasked"
@@ -196,7 +245,7 @@ def uart_test(qemu):
                     assert read(0x34) & 8 == 0, "overrun did not clear on status read"
                     for value in range(64):
                         assert read(4) == value, "FIFO pop order/overflow retention"
-                    assert read(0x44) == 2 and read(0x4c) == 0
+                    assert read(0x44) == 10 and read(0x4c) == 0
                     assert read(0x34) & 0x20 == 0, "empty FIFO falsely claims RX data"
                     # Framing and parity are captured once, then clear on LSR read.
                     write(0x18, 1)
@@ -304,10 +353,54 @@ if __name__ == "__main__":
     parser.add_argument("--elf-gpio", type=Path, help="RAM GPIO traits/IRQ test (gpio-smoke, QEMU only)")
     parser.add_argument("--elf-all", type=Path, help="RAM test built with all UART and GPIO features")
     args = parser.parse_args()
-    result = {"model": model_test(args.qemu), "unsupported": unsupported_test(args.qemu),
-              "uart": uart_test(args.qemu), "gpio": gpio_test(args.qemu),
+    result = {"flashboot_handoff": handoff_test(args.qemu),
+              "cache_state": cache_state_test(args.qemu),
+              "instruction_cache": instruction_cache_test(args.qemu),
+              "rom_trap_scope": rom_trap_test(args.qemu),
+              "counter_csr": counter_csr_test(args.qemu),
+              "model": model_test(args.qemu), "unsupported": unsupported_test(args.qemu),
+              "uart": uart_test(args.qemu), "uart_config": uart_config_test(args.qemu),
+              "uart_tx_irq": uart_tx_irq_test(args.qemu),
+              "uart_l0_reset": uart_l0_reset_test(args.qemu),
+              "uart_l0_route": uart_route_test(args.qemu),
+              "uart_pads": uart_pads_test(args.qemu),
+              "uart_rx_pads": uart_rx_pads_test(args.qemu),
+              "uart_peer": uart_peer_test(args.qemu),
+        "uart_reset": uart_reset_test(args.qemu), "gpio": gpio_test(args.qemu),
               "pinctrl": pinctrl_test(args.qemu), "nmi": nmi_test(args.qemu),
               "wdt": wdt_test(args.qemu),
+              "tcxo": tcxo_test(args.qemu),
+              "rtc": rtc_test(args.qemu),
+              "pwm": pwm_test(args.qemu),
+              "pwm_start": pwm_start_test(args.qemu),
+              "irq72_latch": irq_latch_test(args.qemu),
+              "irq58_clear": irq58_clear_test(args.qemu),
+              "pwm0_pad_hil_clock": pwm_pad_test(args.qemu,2000000),
+              "pwm_dividers": pwm_divider_test(args.qemu),
+              "pwm0_pad_sdk_clock": pwm_pad_test(args.qemu,32000000),
+              "i2c": i2c_test(args.qemu),
+              "spi": spi_test(args.qemu),
+              "tsensor": tsensor_test(args.qemu),
+              "trng": trng_test(args.qemu),
+              "efuse_read": efuse_test(args.qemu),
+              "branch_immediate": branch_immediate_test(args.qemu),
+              "compressed_memory": compressed_memory_test(args.qemu),
+              "priority": priority_test(args.qemu),
+              "i2s": i2s_test(args.qemu),
+              "adc_calibration": adc_test(args.qemu),
+              "adc_capture": capture_test(args.qemu),
+              "mdma": mdma_test(args.qemu),
+              "mdma_uart": uart_dma_test(args.qemu),
+              "mdma_spi": spi_dma_test(args.qemu),
+              "mdma_i2c": i2c_dma_test(args.qemu),
+              "mdma_i2s": i2s_dma_test(args.qemu),
+              "sdio_initialization": sdio_init_test(args.qemu),
+              "sdio_adma": sdio_adma_test(args.qemu),
+              "hash": hash_test(args.qemu),
+              "km": km_test(args.qemu),
+              "symc": symc_test(args.qemu),
+              "symc_contract": symc_contract_test(args.qemu),
+              "ipc": ipc_test(args.qemu),
               "hardware_verified": False}
     if args.elf:
         result["ram"] = ram_test(args.qemu, args.elf)

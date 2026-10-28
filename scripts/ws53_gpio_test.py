@@ -32,12 +32,12 @@ def connect(path):
 
 
 @contextmanager
-def running(qemu, direct_gpio=True, extra_args=()):
+def running(qemu, direct_gpio=True, extra_args=(), *, serial_options=("-serial", "null")):
     with tempfile.TemporaryDirectory(prefix="ws53-gpio-") as tmp:
         qt, qm = Path(tmp) / "qtest", Path(tmp) / "qmp"
         machine = "ws53,gpio-direct=on" if direct_gpio else "ws53"
         proc = subprocess.Popen([qemu, "-M", machine, "-accel", "qtest", "-display", "none",
-            "-monitor", "none", "-serial", "null", "-qtest-log", "/dev/null",
+            "-monitor", "none", *serial_options, "-qtest-log", "/dev/null",
             "-qtest", f"unix:{qt},server=on,wait=off", "-qmp", f"unix:{qm},server=on,wait=off",
             "-d", "guest_errors", *extra_args], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         diagnostics = []
@@ -53,16 +53,21 @@ def running(qemu, direct_gpio=True, extra_args=()):
                             continue
                         assert parts and parts[0] == "OK", (text, parts)
                         return parts[1:]
-                def qmp_execute(operation):
+                def qmp_execute(operation, arguments=None):
                     with connect(qm) as qmp, qmp.makefile("rwb", buffering=0) as stream:
                         json.loads(stream.readline())
                         for name in ("qmp_capabilities", operation):
-                            stream.write(json.dumps({"execute": name}).encode() + b"\n")
+                            request = {"execute": name}
+                            if name == operation and arguments is not None:
+                                request["arguments"] = arguments
+                            stream.write(json.dumps(request).encode() + b"\n")
                             while True:
                                 response = json.loads(stream.readline())
                                 assert "error" not in response, response
                                 if "return" in response:
                                     break
+                        return response["return"]
+                command.qmp = qmp_execute
                 def reset():
                     qmp_execute("system_reset")
                 try:
