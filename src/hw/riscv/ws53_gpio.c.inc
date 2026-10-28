@@ -15,6 +15,7 @@ struct WS53GpioState {
     uint32_t width, valid;
     uint32_t input, latch, oen, enable, mask, type, polarity, dedge, edges;
     bool assume_source_control;
+    bool clock_access, require_clock;
     uint32_t source_control_initial, source_control_observed;
 };
 
@@ -117,6 +118,11 @@ static MemTxResult ws53_gpio_read_with_attrs(void *opaque, hwaddr off,
                                             MemTxAttrs attrs)
 {
     WS53GpioState *s = opaque;
+    if (s->require_clock && !s->clock_access) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-gpio: disabled AGPIO clock; MMIO read rejected\n");
+        *value = 0;
+        return MEMTX_ERROR;
+    }
     if (size != 4 || (off & 3)) {
         qemu_log_mask(LOG_GUEST_ERROR,
             "ws53-gpio: unsupported read width/alignment +0x%" HWADDR_PRIx " size=%u\n", off, size);
@@ -141,6 +147,11 @@ static MemTxResult ws53_gpio_write_with_attrs(void *opaque, hwaddr off,
                                              uint64_t value, unsigned size,
                                              MemTxAttrs attrs)
 {
+    WS53GpioState *s = opaque;
+    if (s->require_clock && !s->clock_access) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-gpio: disabled AGPIO clock; MMIO write rejected\n");
+        return MEMTX_ERROR;
+    }
     if (size != 4 || (off & 3)) {
         qemu_log_mask(LOG_GUEST_ERROR,
             "ws53-gpio: unsupported write width/alignment +0x%" HWADDR_PRIx " size=%u\n", off, size);
@@ -165,6 +176,11 @@ static const MemoryRegionOps ws53_gpio_ops = {
     .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
     .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
 };
+
+static void ws53_gpio_clock_input(void *opaque, int n, int level)
+{
+    WS53_GPIO(opaque)->clock_access = level != 0;
+}
 
 static void ws53_gpio_reset(void *opaque)
 {
@@ -200,6 +216,7 @@ static void ws53_gpio_realize(DeviceState *dev, Error **errp)
 
 static const Property ws53_gpio_properties[] = {
     DEFINE_PROP_UINT32("width", WS53GpioState, width, 32),
+    DEFINE_PROP_BOOL("require-clock", WS53GpioState, require_clock, false),
     DEFINE_PROP_BOOL("assume-source-control", WS53GpioState, assume_source_control, false),
     DEFINE_PROP_UINT32("source-control-value", WS53GpioState, source_control_initial, 0),
 };
@@ -235,6 +252,7 @@ static void ws53_gpio_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_gpio_input, "pin", 32);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_gpio_clock_input, "clock-access", 1);
     qdev_init_gpio_out_named(DEVICE(obj), s->output, "out", 32);
     qdev_init_gpio_out_named(DEVICE(obj), s->output_enable, "output-enable", 32);
     object_property_add(obj, "source-control-observation", "uint32",
@@ -254,4 +272,103 @@ static const TypeInfo ws53_gpio_type = {
     .name = TYPE_WS53_GPIO, .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(WS53GpioState), .instance_init = ws53_gpio_init,
     .class_init = ws53_gpio_class_init,
+};
+
+/* SDK 163d9150 main.c dev_work_clock_init sets 0x57030024.bit0 with a
+ * halfword RMW; PM/clock_recover also use full-word values0/1/3.
+ * This visibility gate is a conservative diagnostic model. SPI23 observed
+ * GPIO1 inaccessible, but did not capture the failing clock word/mepc.
+ * No claim about exact silicon faults, pad holding, synchronizer/IRQ timing,
+ * 32K sampling, power or shared-peer ownership is made here.
+ * Initial values are integration profiles, NOT silicon reset values:
+ * RAM inherits the factory-open gate; FlashBoot qualification starts closed. */
+#define TYPE_WS53_AGPIO_CLOCK "ws53-agpio-clock"
+OBJECT_DECLARE_SIMPLE_TYPE(WS53AgpioClockState, WS53_AGPIO_CLOCK)
+struct WS53AgpioClockState {
+    SysBusDevice parent_obj;
+    MemoryRegion iomem;
+    qemu_irq gate;
+    uint32_t value, initial_value;
+    bool write_blocked, change_source;
+};
+static void ws53_agpio_clock_update(WS53AgpioClockState *s)
+{
+    qemu_set_irq(s->gate, (s->value & 1) != 0);
+}
+static MemTxResult ws53_agpio_clock_read(void *opaque, hwaddr off,
+                                       uint64_t *value, unsigned size,
+                                       MemTxAttrs attrs)
+{
+    WS53AgpioClockState *s = opaque;
+    if (off || (size != 2 && size != 4)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-agpio-clock: unsupported read +0x%" HWADDR_PRIx " size=%u\n", off, size);
+        *value = 0;
+        return MEMTX_ERROR;
+    }
+    *value = s->value & (size == 2 ? 0xffffu : UINT32_MAX);
+    return MEMTX_OK;
+}
+static MemTxResult ws53_agpio_clock_write(void *opaque, hwaddr off,
+                                        uint64_t value, unsigned size,
+                                        MemTxAttrs attrs)
+{
+    WS53AgpioClockState *s = opaque;
+    if (off || (size != 2 && size != 4)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-agpio-clock: unsupported write +0x%" HWADDR_PRIx " size=%u\n", off, size);
+        return MEMTX_ERROR;
+    }
+    if (!s->write_blocked) {
+        s->value = size == 2 ? (s->value & 0xffff0000u) | (value & 0xffffu) : value;
+        if (s->change_source) { s->value ^= 2; }
+        ws53_agpio_clock_update(s);
+    }
+    return MEMTX_OK;
+}
+static const MemoryRegionOps ws53_agpio_clock_ops = {
+    .read_with_attrs = ws53_agpio_clock_read,
+    .write_with_attrs = ws53_agpio_clock_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+};
+static void ws53_agpio_clock_blocked(void *opaque, int n, int level)
+{
+    WS53_AGPIO_CLOCK(opaque)->write_blocked = level != 0;
+}
+static void ws53_agpio_clock_source(void *opaque, int n, int level)
+{
+    WS53_AGPIO_CLOCK(opaque)->change_source = level != 0;
+}
+static void ws53_agpio_clock_reset(void *opaque)
+{
+    WS53AgpioClockState *s = opaque;
+    s->value = s->initial_value;
+    ws53_agpio_clock_update(s);
+}
+static void ws53_agpio_clock_realize(DeviceState *dev, Error **errp)
+{
+    qemu_register_reset(ws53_agpio_clock_reset, WS53_AGPIO_CLOCK(dev));
+}
+static const Property ws53_agpio_clock_properties[] = {
+    DEFINE_PROP_UINT32("initial-value", WS53AgpioClockState, initial_value, 1),
+};
+static void ws53_agpio_clock_init(Object *obj)
+{
+    WS53AgpioClockState *s = WS53_AGPIO_CLOCK(obj);
+    memory_region_init_io(&s->iomem, obj, &ws53_agpio_clock_ops, s, TYPE_WS53_AGPIO_CLOCK, 4);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
+    sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->gate);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_agpio_clock_blocked, "write-blocked", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_agpio_clock_source, "source-change", 1);
+}
+static void ws53_agpio_clock_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+    dc->realize = ws53_agpio_clock_realize;
+    device_class_set_props(dc, ws53_agpio_clock_properties);
+}
+static const TypeInfo ws53_agpio_clock_type = {
+    .name = TYPE_WS53_AGPIO_CLOCK, .parent = TYPE_SYS_BUS_DEVICE,
+    .instance_size = sizeof(WS53AgpioClockState), .instance_init = ws53_agpio_clock_init,
+    .class_init = ws53_agpio_clock_class_init,
 };

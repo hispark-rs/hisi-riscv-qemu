@@ -572,13 +572,23 @@ static void ws53_init(MachineState *machine)
     }
     const unsigned gpio_irqs[] = { 34, 33, 29 };
     const unsigned gpio_widths[] = { 23, 12, 3 };
+    DeviceState *agpio_clock = qdev_new(TYPE_WS53_AGPIO_CLOCK);
+    object_property_add_child(OBJECT(machine), "agpio-clock", OBJECT(agpio_clock));
+    qdev_prop_set_uint32(agpio_clock, "initial-value", s->flashboot_handoff ? 0 : 1);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(agpio_clock), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(agpio_clock), 0, 0x57030024);
     for (unsigned i = 0; i < 3; i++) {
         DeviceState *gpio = qdev_new(TYPE_WS53_GPIO);
         g_autofree char *name = g_strdup_printf("gpio%u", i);
         object_property_add_child(OBJECT(machine), name, OBJECT(gpio));
         qdev_prop_set_uint32(gpio, "width", gpio_widths[i]);
+        qdev_prop_set_bit(gpio, "require-clock", i == 1);
         sysbus_realize_and_unref(SYS_BUS_DEVICE(gpio), &error_fatal);
         sysbus_mmio_map(SYS_BUS_DEVICE(gpio), 0, gpio_bases[i]);
+        if (i == 1) {
+            sysbus_connect_irq(SYS_BUS_DEVICE(agpio_clock), 0,
+                qdev_get_gpio_in_named(gpio, "clock-access", 0));
+        }
         sysbus_connect_irq(SYS_BUS_DEVICE(gpio), 0, qdev_get_gpio_in(intc, gpio_irqs[i]));
         if (!s->gpio_direct) {
             for (unsigned j = 0; j < ARRAY_SIZE(ws53_pad_desc); j++) {
@@ -694,6 +704,7 @@ static void ws53_register_types(void)
     type_register_static(&ws53_uart_reset_type);
     type_register_static(&ws53_uart_l0_route_type);
     type_register_static(&ws53_gpio_type);
+    type_register_static(&ws53_agpio_clock_type);
     type_register_static(&ws53_pinctrl_type);
     type_register_static(&ws53_nmi_type);
     type_register_static(&ws53_wdt_type);
