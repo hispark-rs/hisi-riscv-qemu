@@ -39,6 +39,9 @@ jobs:
       - name: UART RX masking, buffering and reset contracts
         run: uv run --script scripts/ws63_uart_rx_test.py --qemu ./qemu/build/qemu-system-riscv32
 
+      - name: WS63 software interrupt source contracts
+        run: uv run --script scripts/ws63_softint_test.py --qemu ./qemu/build/qemu-system-riscv32
+
       - name: WS53 HASH compression and padding-independent state tests
         run: uv run --script scripts/ws53_hash_compression_test.py
 
