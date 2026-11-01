@@ -39,6 +39,9 @@ jobs:
       - name: UART RX masking, buffering and reset contracts
         run: uv run --script scripts/ws63_uart_rx_test.py --qemu ./qemu/build/qemu-system-riscv32
 
+      - name: Shared UART TX backpressure contracts
+        run: uv run --script scripts/ws63_uart_tx_test.py --qemu ./qemu/build/qemu-system-riscv32
+
       - name: WS63 software interrupt source contracts
         run: uv run --script scripts/ws63_softint_test.py --qemu ./qemu/build/qemu-system-riscv32
 
