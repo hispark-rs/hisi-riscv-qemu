@@ -1057,7 +1057,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(WS63TcxoState, WS63_TCXO)
 struct WS63TcxoState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
-    uint64_t count;     /* 64-bit free-running TCXO tick counter */
+    uint64_t epoch_count;
+    int64_t epoch_ns;
+    uint32_t control; /* EN bit2 and read-only VALID bit4; commands self-clear. */
     uint32_t count_off; /* offset of the TCXO_COUNT block within the region:
                          * 0x4C0 on WS63 (TCXO @0x44000000); 0x000 on BS21 where
                          * TCXO_COUNT_BASE_ADDR is the region base (0x57000200).
@@ -1068,7 +1070,7 @@ struct WS63TcxoState {
                          * count1[31:16] @+8, count2[47:32] @+0C, count3[63:48]
                          * @+10 (hal_tcxo_v150_regs_def.h). Set via
                          * ws63_tcxo_set_chunked16() before realize. */
-    uint64_t latched;   /* chunked16: count snapshot taken on the refresh write
+    uint64_t latched;   /* count snapshot taken on the refresh write
                          * (status bit0). The v150 read is refresh -> poll valid ->
                          * read count0..3, and the firmware reads the chunks
                          * high-to-low, so all four must come from one snapshot;
@@ -1089,43 +1091,25 @@ void ws63_tcxo_set_chunked16(DeviceState *dev, bool chunked16)
     WS63_TCXO(dev)->chunked16 = chunked16;
 }
 
-/*
- * Advance the 64-bit counter. Track the QEMU virtual clock at the nominal 24 MHz
- * for rough realism, but ALWAYS advance by at least a step on each sample: in TCG
- * without icount the virtual clock barely moves inside a tight MMIO-poll loop, so
- * a purely clock-derived counter would freeze and TCXO delay loops would never
- * terminate. The guaranteed step makes delays elapse after a bounded # of reads.
- */
+/* Virtual elapsed time, not number of MMIO reads. BS21 has a 32 MHz clock. */
 static uint64_t ws63_tcxo_tick(WS63TcxoState *s)
 {
-    uint64_t clk = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) * WS63_TCXO_HZ
-                 / 1000000000ULL;
-    s->count = (clk > s->count + 64) ? clk : s->count + 64;
-    return s->count;
+    uint64_t elapsed = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->epoch_ns;
+    uint64_t hz = s->chunked16 ? 32000000ULL : WS63_TCXO_HZ;
+    return s->epoch_count + ((s->control & 4) ?
+           muldiv64(elapsed, hz, 1000000000ULL) : 0);
 }
 
 static uint64_t ws63_tcxo_read(void *opaque, hwaddr off, unsigned size)
 {
     WS63TcxoState *s = opaque;
-    if (off == s->count_off) {              /* +0x00: status, bit4 = count valid */
-        return 0x10;
+    if (off == s->count_off) {
+        return s->control;
     }
-    if (s->chunked16) {
-        /* BS21 TCXO v150: count split into four 16-bit chunks, all read from the
-         * snapshot latched by the most recent refresh write (ws63_tcxo_write). */
-        if (off == s->count_off + 4) {       /* count0: count[15:0]  */
-            return (uint32_t)(s->latched & 0xffff);
-        } else if (off == s->count_off + 8) { /* count1: count[31:16] */
-            return (uint32_t)((s->latched >> 16) & 0xffff);
-        } else if (off == s->count_off + 0xc) { /* count2: count[47:32] */
-            return (uint32_t)((s->latched >> 32) & 0xffff);
-        } else if (off == s->count_off + 0x10) { /* count3: count[63:48] */
-            return (uint32_t)((s->latched >> 48) & 0xffff);
-        }
-    } else if (off == s->count_off + 4) {   /* +0x04: count[31:0] (advance here) */
-        return (uint32_t)ws63_tcxo_tick(s);
-    } else if (off == s->count_off + 8) {   /* +0x08: count[63:32] */
-        return (uint32_t)(s->count >> 32);
+    if (off > s->count_off && off <= s->count_off + (s->chunked16 ? 16 : 8)) {
+        unsigned word = (off - s->count_off) / 4 - 1;
+        unsigned width = s->chunked16 ? 16 : 32;
+        return (s->latched >> (word * width)) & (s->chunked16 ? 0xffff : 0xffffffff);
     }
     return s->shadow[(off / 4) % (WS63_TCXO_SIZE / 4)];
 }
@@ -1133,10 +1117,22 @@ static uint64_t ws63_tcxo_read(void *opaque, hwaddr off, unsigned size)
 static void ws63_tcxo_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
 {
     WS63TcxoState *s = opaque;
-    /* chunked16 (BS21 v150): a write to the status register with the refresh bit
-     * (bit0) set takes a fresh count snapshot for the count0..3 reads. */
-    if (s->chunked16 && off == s->count_off && (val & 0x1)) {
-        s->latched = ws63_tcxo_tick(s);
+    if (off == s->count_off) {
+        s->epoch_count = ws63_tcxo_tick(s);
+        s->epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        s->control = (s->control & 0x10) | (val & 4);
+        if (val & 2) {
+            s->epoch_count = 0;
+            s->control &= ~0x10;
+        }
+        if (val & 1) {
+            s->control &= ~0x10;
+            if (s->control & 4) {
+                s->latched = ws63_tcxo_tick(s);
+                s->control |= 0x10;
+            }
+        }
+        return;
     }
     s->shadow[(off / 4) % (WS63_TCXO_SIZE / 4)] = (uint32_t)val;
 }
@@ -1153,6 +1149,10 @@ static void ws63_tcxo_instance_init(Object *obj)
 {
     WS63TcxoState *s = WS63_TCXO(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+    /* Preserve the direct-kernel machine's inherited running clock. This is
+     * a boot-environment choice, not a claim about silicon POR state. */
+    s->control = 4;
+    s->epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->count_off = WS63_TCXO_COUNT_OFF;     /* WS63 default; bs21.c overrides to 0 */
     memory_region_init_io(&s->iomem, obj, &ws63_tcxo_ops, s,
                           TYPE_WS63_TCXO, WS63_TCXO_SIZE);

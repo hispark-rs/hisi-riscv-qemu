@@ -33,6 +33,9 @@ jobs:
 
       - uses: astral-sh/setup-uv@v7
 
+      - name: WS63 and BS21 TCXO time and snapshot contracts
+        run: uv run --script scripts/ws63_tcxo_test.py --qemu ./qemu/build/qemu-system-riscv32
+
       - name: WS53 RAM-profile timer model contracts
         run: uv run --script scripts/test-ws53.py --qemu ./qemu/build/qemu-system-riscv32
 
