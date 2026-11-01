@@ -39,6 +39,8 @@
 - [掩膜 ROM 桩目录](reference/rom-stubs.md) —— 已仿真的 ROM 函数与设备桩清单。
 - [运行选项](reference/run-options.md) —— `run.sh` 环境变量与 QEMU 命令行。
 - [验证覆盖范围](reference/verification.md) —— CI 门禁、C SDK fixture、Rust 冒烟、覆盖边界。
+- [WS53 指令缓存实验](reference/ws53-instruction-cache.md) —— 取指可见性、维护、假设和验证范围。
+- [WS53 SYMC 整块加密模型](reference/ws53-symc.md) —— AES/SM4、KM权限、共享IRQ和在途请求测试。
 
 ## 解释（Explanation）— 理解导向
 
@@ -72,3 +74,5 @@
 真值来源：内存布局 = `ws63-rs/ws63-rt/{memory.x,layout.ld}` 与 fbb_ws63 C SDK 板级配置相互对齐；
 外设基址/寄存器 = `ws63-rs/ws63-pac/ws63-svd/WS63.svd`；寄存器行为 = fbb_ws63 C SDK `hal_*_regs_def.h` +
 `ws63-rs` HAL 交叉验证。
+
+- [WS53 IPC doorbell profile](reference/ws53-ipc.md)

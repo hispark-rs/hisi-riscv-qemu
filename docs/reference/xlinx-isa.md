@@ -32,10 +32,17 @@ push/pop/uxt，funct3=001/101 的 D-float 槽位）。在我们的 RV32 核上�
 |--------|------|------|------|
 | `push/pop/popret {ra,s0-sN}, spimm` | funct3=100,Q0：`insn & 0xE003 == 0x8000` | Zcmp 式多寄存器入/出栈（popret 末尾 `ret`）| bits[3:0]=op（8 push,0 pop,4 popret）；bits[7:4]=rlist（1..13 ⇒ {ra,s0..s(N-2)}）；bits[12:8]=extra；`stack_adj = round_up(n*4,16)+extra*16` |
 | `uxtb/uxth rd'` | `insn & 0xFC5F == 0x9C01` | `rd' = zext8/zext16(rd')` 原地 | rd'=bits[9:7]（x8+）；bit5: 0 字节 / 1 半字 |
-| 压缩 `lbu/lhu rd',imm(rs1')` | funct3=001,bit0=0：`insn & 0xE001 == 0x2000` | 无符号字节/半字 load（占用 C.FLD/C.FLDSP 空槽）| rd'=bits[4:2], rs1'=bits[9:7]（均 x8+）；bit1: 0 字节 / 1 半字；imm[4:0]={bit11,bit10,bit6,bit5,bit12}（字节偏移，不缩放）|
+| 压缩 `lbu/lhu rd',imm(rs1')` | funct3=001,bit0=0：`insn & 0xE001 == 0x2000` | 无符号字节/半字 load（占用 C.FLD/C.FLDSP 空槽）| rd'=bits[4:2], rs1'=bits[9:7]（均 x8+）；bit1: 0 字节 / 1 半字；字节 imm[4:0]={bit11,bit10,bit6,bit5,bit12}；半字 imm[5:1]={bit12,bit11,bit10,bit6,bit5}，imm[0]=0（均为字节偏移）|
 | 压缩 `sb/sh rs2',imm(rs1')` | funct3=101,bit0=0：`insn & 0xE001 == 0xA000` | 字节/半字 store（占用 C.FSD/C.FSDSP 空槽）| rs2'=bits[4:2], rs1'=bits[9:7]；其余同上 |
 
 ## 在 QEMU 中的接入
+
+半字访问的bit12表示偏移32，不能按字节访问的偏移1解释。WS53 SDIO ROM中
+`lhu/sh`访问状态计数器偏移32..44暴露了旧解码错误。新增
+`scripts/ws53_compressed_memory_test.py`覆盖四种指令、全部基址/数据寄存器组合
+和各32种偏移，共8192例，验证零扩展、寄存器别名、整段内存及边界哨兵。
+默认使用已由厂商汇编器核对且固定SHA256的编码，不依赖SDK；指定`--tool-prefix`
+可重新汇编全部编码。厂商as需显式ISA版本及`-enable-c-lbu-sb -enable-c-lhu-sh`。
 
 - 新文件 `target/riscv/insn_trans/trans_xlinx.c.inc`：`decode_xlinx16/32/48` + 各 `trans_*`。
 - `target/riscv/translate.c`（见 `patches/<QEMU_TAG>/0001-target-riscv-*.patch`）最小 hook：

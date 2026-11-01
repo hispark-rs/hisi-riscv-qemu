@@ -1,0 +1,40 @@
+From: hispark-rs contributors
+Subject: [PATCH] target/riscv: let WS53 opt out of legacy ROM interception
+
+The legacy BS21 range overlaps WS53 application ITCM. Preserve real traps
+for WS53 through a per-CPU board policy outside resettable architectural
+state. Default false preserves existing WS63/BS2X ROM-call behavior.
+
+diff --git a/target/riscv/cpu.h b/target/riscv/cpu.h
+--- a/target/riscv/cpu.h
++++ b/target/riscv/cpu.h
+@@ -530,6 +530,9 @@
+ 
+     /* Configuration Settings */
+     RISCVCPUConfig cfg;
++
++    /* Board policy, outside resettable env; legacy HiSilicon ROM stubs opt out. */
++    bool hisi_legacy_rom_disabled;
+ 
+     QEMUTimer *pmu_timer;
+     /* A bitmask of Available programmable counters */
+diff --git a/target/riscv/cpu_helper.c b/target/riscv/cpu_helper.c
+--- a/target/riscv/cpu_helper.c
++++ b/target/riscv/cpu_helper.c
+@@ -2762,12 +2762,14 @@
+      * call into an on-chip ROM function we don't have a binary for. Emulate it
+      * in host C and resume at ra instead of taking the trap. (See ws63_rom_call.)
+      */
+-    if (!async && cause == RISCV_EXCP_ILLEGAL_INST &&
++    if (!cpu->hisi_legacy_rom_disabled &&
++        !async && cause == RISCV_EXCP_ILLEGAL_INST &&
+         env->pc >= WS63_ROM_BASE && env->pc < WS63_ROM_END) {
+         ws63_rom_call(env);
+         return;
+     }
+-    if (!async && cause == RISCV_EXCP_ILLEGAL_INST &&
++    if (!cpu->hisi_legacy_rom_disabled &&
++        !async && cause == RISCV_EXCP_ILLEGAL_INST &&
+         env->pc >= BS21_ROM_BASE && env->pc < BS21_ROM_END) {
+         bs21_rom_call(env);
+         return;

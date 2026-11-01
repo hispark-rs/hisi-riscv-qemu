@@ -31,8 +31,13 @@ typedef struct WS53SpiChannel {
     uint32_t regs[SP_REG_COUNT], tx[8], rx[8], latched;
     unsigned tx_head, tx_len, rx_head, rx_len;
     bool enabled, scheduled, enable_event, clock, stretch, collision, disable_stall;
+    bool inject_collision_status_only;
     int64_t remaining, deadline;
     uint64_t frames;
+    bool wire_active, wire_ready, wire_miso, wire_sck, wire_mosi;
+    bool collision_status;
+    unsigned wire_edge;
+    uint32_t wire_tx, wire_rx;
 } WS53SpiChannel;
 typedef struct WS53SpiGate {
     WS53SpiState *owner;
@@ -45,9 +50,21 @@ struct WS53SpiState {
     WS53SpiChannel channel[2];
     /* SPI_CLOCK, SPI_DEVICE_MODE, GLOBAL_CLKEN, XIP_QSPI_CLOCK, XIP_CLOCK_ENABLE */
     WS53SpiGate gate[5];
-    bool spi_gate, assume_profile, assume_dma;
+    bool spi_gate, assume_profile, assume_dma, assume_wire;
+    qemu_irq wire_level[4], wire_drive[2];
 };
 static bool ws53_spi_clocked(WS53SpiChannel *c);
+static void ws53_spi_wire_refresh(WS53SpiChannel *c)
+{
+    WS53SpiState *s = c->owner;
+    if (!s->assume_wire) { return; }
+    if (!c->wire_active) {
+        c->wire_sck = !!(c->regs[SP_CONTROL] & (1u << (c->index ? 7 : 4)));
+    }
+    qemu_set_irq(s->wire_level[2 * c->index + 1], c->wire_mosi);
+    qemu_set_irq(s->wire_level[2 * c->index], c->wire_sck);
+    qemu_set_irq(s->wire_drive[c->index], ws53_spi_clocked(c));
+}
 static uint32_t ws53_spi_encode(WS53SpiChannel *c, uint32_t v)
 {
     if (c->index) { return v; }
@@ -86,9 +103,11 @@ static void ws53_spi_pause(WS53SpiChannel *c)
 }
 static void ws53_spi_resume(WS53SpiChannel *c)
 {
+    ws53_spi_wire_refresh(c);
     ws53_spi_irq(c);
     if (c->scheduled && !timer_pending(c->timer) && ws53_spi_clocked(c) &&
-        (c->enable_event ? (c->regs[SP_ENABLE] || !c->disable_stall) : !c->stretch)) {
+        (c->enable_event ? (c->regs[SP_ENABLE] || !c->disable_stall) :
+         !c->stretch && (!c->owner->assume_wire || c->wire_ready))) {
         c->deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + c->remaining;
         timer_mod(c->timer, c->deadline);
     }
@@ -102,9 +121,27 @@ static unsigned ws53_spi_bits(WS53SpiChannel *c)
 {
     return ((c->regs[SP_CONTROL] >> (c->index ? 16 : 13)) & 31) + 1;
 }
+static uint64_t ws53_spi_wire_elapsed(WS53SpiChannel *c, unsigned edges)
+{
+    /* Rational 32MHz half-periods, rounded at each absolute edge count.
+     * Do not accumulate a rounded half period at high bus frequencies. */
+    return ((uint64_t)c->regs[SP_BAUD] * edges * 1000 + 63) / 64;
+}
 static void ws53_spi_next(WS53SpiChannel *c)
 {
     if (!c->enabled || !c->tx_len || c->scheduled || !c->regs[SP_SELECT]) { return; }
+    if (c->owner->assume_wire) {
+        if (!c->wire_ready) { return; }
+        c->wire_active = true; c->wire_edge = 0;
+        c->wire_tx = c->tx[c->tx_head]; c->wire_rx = 0;
+        c->wire_sck = !!(c->regs[SP_CONTROL] & (1u << (c->index ? 7 : 4)));
+        if (!(c->regs[SP_CONTROL] & (1u << (c->index ? 6 : 3)))) {
+            c->wire_mosi = (c->wire_tx >> (ws53_spi_bits(c) - 1)) & 1;
+        }
+        ws53_spi_wire_refresh(c);
+        ws53_spi_schedule(c, false, ws53_spi_wire_elapsed(c, 1));
+        return;
+    }
     uint64_t clocks = (uint64_t)c->regs[SP_BAUD] * ws53_spi_bits(c);
     ws53_spi_schedule(c, false, (clocks * 1000 + 31) / 32);
 }
@@ -113,18 +150,45 @@ static void ws53_spi_tick(void *opaque)
     WS53SpiChannel *c = opaque; c->scheduled = false;
     if (c->enable_event) {
         c->enabled = c->regs[SP_ENABLE];
-        if (!c->enabled) { c->tx_len = c->rx_len = 0; }
+        if (!c->enabled) { c->tx_len = c->rx_len = 0; c->wire_active = false; }
+        ws53_spi_wire_refresh(c);
     } else {
+        if (c->owner->assume_wire && c->wire_active) {
+            unsigned bits = ws53_spi_bits(c), bit = c->wire_edge / 2;
+            bool leading = !(c->wire_edge & 1);
+            bool cpol = !!(c->regs[SP_CONTROL] & (1u << (c->index ? 7 : 4)));
+            bool cpha = !!(c->regs[SP_CONTROL] & (1u << (c->index ? 6 : 3)));
+            /* Data changes on the opposite edge from sampling. Route updates
+             * are synchronous IRQ callbacks, so a peer sees MOSI before SCK. */
+            if (leading && cpha) { c->wire_mosi = (c->wire_tx >> (bits - 1 - bit)) & 1; }
+            if (!leading && !cpha && bit + 1 < bits) {
+                c->wire_mosi = (c->wire_tx >> (bits - 2 - bit)) & 1;
+            }
+            c->wire_sck = leading ? !cpol : cpol;
+            ws53_spi_wire_refresh(c);
+            if (leading != cpha) { c->wire_rx = (c->wire_rx << 1) | c->wire_miso; }
+            c->wire_edge++;
+            if (c->wire_edge < bits * 2) {
+                uint64_t delta = ws53_spi_wire_elapsed(c, c->wire_edge + 1) -
+                                 ws53_spi_wire_elapsed(c, c->wire_edge);
+                ws53_spi_schedule(c, false, delta);
+                return;
+            }
+            c->wire_active = false;
+        }
         uint32_t word = c->tx[c->tx_head];
         c->tx_head = (c->tx_head + 1) % 8; c->tx_len--; c->frames++;
-        if (c->collision) {
-            c->latched |= SP_MULTI;
+        if (c->collision || c->inject_collision_status_only) {
+            /* Test-only status injection: real status/IRQ coupling is unknown. */
+            if (c->collision) { c->latched |= SP_MULTI; }
+            c->collision_status = true;
         } else if (c->rx_len == 8) {
             c->latched |= SP_RX_OVER;
         } else {
             uint32_t mask = ws53_spi_bits(c) == 8 ? 0xff : UINT32_MAX;
             /* Stateless full-duplex virtual peer; every MOSI word determines MISO. */
-            c->rx[(c->rx_head + c->rx_len) % 8] = (word ^ 0xa5a5a5a5u) & mask;
+            c->rx[(c->rx_head + c->rx_len) % 8] =
+                (c->owner->assume_wire ? c->wire_rx : word ^ 0xa5a5a5a5u) & mask;
             c->rx_len++;
         }
     }
@@ -182,14 +246,21 @@ static uint64_t ws53_spi_read(void *opaque, hwaddr off, unsigned size)
     case SP_RX_LEVEL: return c->rx_len;
     case SP_STATUS: {
         bool busy = c->tx_len || (c->enable_event && c->scheduled && c->enabled);
+        /* SDK WSR.DCFE/SR.DCOL are read-clear status, not TX FIFO overflow.
+         * Preserve the separate IRQ latch until its explicit acknowledgement:
+         * the SDK does not establish cross-register clearing by a status read.
+         * QSPI TXE denotes slave TX-empty at frame start. Both implemented
+         * profiles are master-only, so queue overflow must never invent TXE. */
+        bool collision = c->collision_status;
+        c->collision_status = false;
         if (c->index) {
             return busy | (c->tx_len < 8 ? 2 : 0) | (!c->tx_len ? 4 : 0) |
                 (c->rx_len ? 8 : 0) | (c->rx_len == 8 ? 16 : 0) |
-                (c->latched & SP_TX_OVER ? 32 : 0) | (c->latched & SP_MULTI ? 64 : 0);
+                (collision ? 64 : 0);
         }
         return (busy ? 0x8000 : 0) | (c->tx_len < 8 ? 0x800 : 0) |
             (!c->tx_len ? 0x1000 : 0) | (c->rx_len ? 16 : 0) |
-            (c->rx_len == 8 ? 32 : 0) | (!!(c->latched & (SP_MULTI | SP_TX_OVER)));
+            (c->rx_len == 8 ? 32 : 0) | collision;
     }
     case SP_CLEAR_TX: clear = SP_TX_OVER; break;
     case SP_CLEAR_OVER: clear = SP_RX_OVER; break;
@@ -251,10 +322,10 @@ static void ws53_spi_write(void *opaque, hwaddr off, uint64_t v, unsigned size)
     case SP_COUNT: case SP_ENHANCED: case SP_MICROWIRE:
         if (c->enabled || c->regs[SP_ENABLE] || v) { goto invalid; } break;
     case SP_SAMPLE: case SP_EDGE:
-        if (c->enabled || c->regs[SP_ENABLE] || v > 255) { goto invalid; } break;
+        if (c->enabled || c->regs[SP_ENABLE] || v > 255 || (s->assume_wire && v)) { goto invalid; } break;
     default: goto invalid;
     }
-    c->regs[r] = v; ws53_spi_irq(c); return;
+    c->regs[r] = v; ws53_spi_wire_refresh(c); ws53_spi_irq(c); return;
 invalid:
     qemu_log_mask(LOG_GUEST_ERROR, "ws53-spi%u: unimplemented write +0x%" HWADDR_PRIx " value=0x%" PRIx64 " size=%u\n", c->index, off, v, size);
 }
@@ -302,8 +373,20 @@ static void ws53_spi_global_gate(void *opaque, int n, int level)
 WS53_SPI_INPUT(clock)
 WS53_SPI_INPUT(stretch)
 WS53_SPI_INPUT(collision)
+WS53_SPI_INPUT(inject_collision_status_only)
 WS53_SPI_INPUT(disable_stall)
 #undef WS53_SPI_INPUT
+static void ws53_spi_wire_route(void *opaque, int n, int level)
+{
+    WS53SpiChannel *c = &WS53_SPI(opaque)->channel[n];
+    if (c->wire_ready == !!level) { return; }
+    ws53_spi_pause(c); c->wire_ready = level;
+    ws53_spi_resume(c); ws53_spi_next(c);
+}
+static void ws53_spi_miso(void *opaque, int n, int level)
+{
+    WS53_SPI(opaque)->channel[n].wire_miso = level;
+}
 static void ws53_spi_reset(void *opaque)
 {
     WS53SpiState *s = opaque;
@@ -313,19 +396,30 @@ static void ws53_spi_reset(void *opaque)
         memset(c->regs, 0, sizeof(c->regs)); c->latched = 0;
         c->tx_head = c->tx_len = c->rx_head = c->rx_len = 0;
         c->enabled = c->scheduled = c->enable_event = false; c->frames = 0;
+        c->collision_status = false;
+        c->wire_active = c->wire_ready = false; c->wire_sck = c->wire_mosi = false;
+        c->wire_edge = c->wire_tx = c->wire_rx = 0;
+        ws53_spi_wire_refresh(c);
         ws53_spi_irq(c);
     }
 }
 static void ws53_spi_realize(DeviceState *dev, Error **errp)
 {
     WS53SpiState *s = WS53_SPI(dev);
+    if (s->assume_wire && !s->assume_profile) {
+        error_setg(errp, "ws53-spi: wire profile requires assume-profile"); return;
+    }
     if (s->assume_profile) {
         qemu_log_mask(LOG_GUEST_ERROR, "ws53-spi: assumed profile 32MHz FIFO8 XOR-peer enable-crossing=1us\n");
+    }
+    if (s->assume_wire) {
+        qemu_log_mask(LOG_GUEST_ERROR, "ws53-spi: digital SCK/MOSI and routed MISO; analog/sample delay/native CS unmodeled\n");
     }
     qemu_register_reset(ws53_spi_reset, s);
 }
 static const Property ws53_spi_properties[] = {
     DEFINE_PROP_BOOL("assume-profile", WS53SpiState, assume_profile, false),
+    DEFINE_PROP_BOOL("assume-wire-profile", WS53SpiState, assume_wire, false),
 };
 static void ws53_spi_init(Object *obj)
 {
@@ -350,7 +444,12 @@ static void ws53_spi_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_clock, "clock", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_stretch, "stretch", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_collision, "collision", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_inject_collision_status_only, "inject-collision-status-only", 2);
     qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_disable_stall, "disable-stall", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_wire_route, "wire-route", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), ws53_spi_miso, "wire-miso", 2);
+    qdev_init_gpio_out_named(DEVICE(obj), s->wire_level, "wire-level", 4);
+    qdev_init_gpio_out_named(DEVICE(obj), s->wire_drive, "wire-drive", 2);
 }
 static void ws53_spi_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {

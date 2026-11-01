@@ -9,6 +9,7 @@
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
 #include "hw/sysbus.h"
@@ -20,7 +21,9 @@
 #include "chardev/char-fe.h"
 #include "system/system.h"
 #include "system/reset.h"
+#include "system/runstate.h"
 #include "exec/address-spaces.h"
+#include "exec/tb-flush.h"
 #include "elf.h"
 #include "hisi_riscv31.h"
 #include "ws53_uart.c.inc"
@@ -31,6 +34,7 @@
 #include "ws53_nmi.c.inc"
 #include "ws53_wdt.c.inc"
 #include "ws53_tcxo.c.inc"
+#include "ws53_ipc.c.inc"
 #include "ws53_rtc.c.inc"
 #include "ws53_pwm.c.inc"
 #include "ws53_i2c.c.inc"
@@ -38,12 +42,17 @@
 #include "ws53_spi.c.inc"
 #include "ws53_tsensor.c.inc"
 #include "ws53_trng.c.inc"
+#include "ws53_km.c.inc"
+#include "ws53_symc.c.inc"
+#include "ws53_hash.c.inc"
 #include "ws53_efuse.c.inc"
 #include "ws53_i2s.c.inc"
 #include "ws53_mclken0.c.inc"
 #include "ws53_adc.c.inc"
 #include "ws53_global_clken.c.inc"
 #include "ws53_mdma.c.inc"
+#include "ws53_sfc_command.c.inc"
+#include "ws53_sdio.c.inc"
 
 #define TYPE_WS53_MACHINE MACHINE_TYPE_NAME("ws53")
 OBJECT_DECLARE_SIMPLE_TYPE(WS53MachineState, WS53_MACHINE)
@@ -60,6 +69,13 @@ typedef struct WS53TimerChannel {
     int64_t start, paused_at, remaining_ns;
 } WS53TimerChannel;
 
+/* Deterministic functional experiment, not measured cache associativity. */
+typedef struct WS53InstructionLine {
+    uint32_t address;
+    uint8_t data[32];
+    bool valid;
+} WS53InstructionLine;
+
 struct WS53MachineState {
     MachineState parent_obj;
     RISCVCPU cpu;
@@ -71,9 +87,48 @@ struct WS53MachineState {
     WS53Mclken1State *mclken1;
     WS53TimerChannel timers[2];
     bool gpio_direct, flashboot_handoff;
+    bool cache_observed, cache_instruction;
+    uint32_t cache_icctl, cache_dcctl, cache_memattrl;
+    uint64_t cache_rejections, cache_epoch_rejections;
+    uint32_t cache_aprefi, cache_icinva;
+    WS53InstructionLine cache_lines[1024];
+    uint64_t cache_valid, cache_fetches, cache_hits, cache_fills;
+    uint64_t cache_prefetches, cache_invalidations, cache_fences, cache_debug_patch;
 };
 
 #include "ws53_flash_handoff.c.inc"
+#include "ws53_cache_state.c.inc"
+
+static riscv_csr_operations ws53_mcountinhibit_original;
+
+static RISCVException ws53_mcountinhibit_predicate(CPURISCVState *env, int csrno)
+{
+    Object *machine = qdev_get_machine();
+
+    /* A-board CPU reads of CSR 0x320 trap with cause 2 at the exact CSRR.
+     * Do not inherit this CSR merely because the generic CPU has counters.
+     * Treat every encoding as an unavailable CSR, before rd/counter updates.
+     * Writes are an absence-policy consequence, not a measured write result.
+     * The operation table is process-global: keep the upstream predicate and
+     * all read/write callbacks for every CPU other than this WS53 acore. */
+    if (object_dynamic_cast(machine, TYPE_WS53_MACHINE) &&
+        env == &WS53_MACHINE(machine)->cpu.env) {
+        return RISCV_EXCP_ILLEGAL_INST;
+    }
+    return ws53_mcountinhibit_original.predicate ?
+           ws53_mcountinhibit_original.predicate(env, csrno) :
+           RISCV_EXCP_ILLEGAL_INST;
+}
+
+static void ws53_counter_csr_init(void)
+{
+    riscv_csr_operations ops;
+
+    riscv_get_csr_ops(CSR_MCOUNTINHIBIT, &ws53_mcountinhibit_original);
+    ops = ws53_mcountinhibit_original;
+    ops.predicate = ws53_mcountinhibit_predicate;
+    riscv_set_csr_ops(CSR_MCOUNTINHIBIT, &ops);
+}
 
 static void ws53_timer_irq(WS53TimerChannel *c)
 {
@@ -214,6 +269,10 @@ static void ws53_reset(void *opaque)
 {
     WS53MachineState *s = opaque;
     cpu_reset(CPU(&s->cpu));
+    ws53_cache_state_reset(s);
+    if (s->cache_instruction) {
+        tb_flush(CPU(&s->cpu));
+    }
     if (s->flashboot_handoff) {
         ws53_flash_handoff_reset(s);
     }
@@ -235,6 +294,22 @@ static void ws53_init(MachineState *machine)
     MemoryRegion *sys = get_system_memory();
     uint64_t entry = 0x28000;
     ws63_register_custom_csrs();
+    ws53_counter_csr_init();
+    ws53_cache_state_init(s);
+    DeviceState *sfc = qdev_new(TYPE_WS53_SFC_COMMAND);
+    object_property_add_child(OBJECT(machine), "sfc-command", OBJECT(sfc));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(sfc), &error_fatal);
+    if (s->flashboot_handoff && WS53_SFC_COMMAND(sfc)->assume_profile) {
+        error_report("ws53: SFC synthetic command profile and flashboot-handoff are mutually exclusive");
+        exit(1);
+    }
+    sysbus_mmio_map(SYS_BUS_DEVICE(sfc), 0, 0x53000000);
+    /* SFC halfword/word observation is separate from QSPI clock at +0x574. */
+    sysbus_mmio_map(SYS_BUS_DEVICE(sfc), 2, 0x52000570);
+    if (WS53_SFC_COMMAND(sfc)->assume_profile) {
+        /* Explicit rejection window, never a second silently divergent NOR. */
+        sysbus_mmio_map(SYS_BUS_DEVICE(sfc), 1, 0x400000);
+    }
     ws63_make_ram(sys, &s->itcm, "ws53.acore.itcm", 0x20000, 0x10000);
     if (s->flashboot_handoff) {
         ws53_flash_handoff_init(s, sys);
@@ -250,6 +325,12 @@ static void ws53_init(MachineState *machine)
     ws63_intc_reassert_on_clear(intc, 58);
     object_property_add_child(OBJECT(machine), "intc", OBJECT(intc));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(intc), &error_fatal);
+    DeviceState *ipc = qdev_new(TYPE_WS53_IPC);
+    object_property_add_child(OBJECT(machine), "ipc", OBJECT(ipc));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(ipc), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(ipc), 0, 0x52000020);
+    sysbus_connect_irq(SYS_BUS_DEVICE(ipc), 0, qdev_get_gpio_in(intc, 26));
+    sysbus_connect_irq(SYS_BUS_DEVICE(ipc), 1, qdev_get_gpio_in(intc, 27));
     DeviceState *tsensor = qdev_new(TYPE_WS53_TSENSOR);
     object_property_add_child(OBJECT(machine), "tsensor", OBJECT(tsensor));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(tsensor), &error_fatal);
@@ -261,6 +342,22 @@ static void ws53_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(trng), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(trng), 0, 0x52024000);
     sysbus_mmio_map(SYS_BUS_DEVICE(trng), 1, 0x52001600);
+    DeviceState *km = qdev_new(TYPE_WS53_KM);
+    object_property_add_child(OBJECT(machine), "km", OBJECT(km));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(km), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(km), 0, 0x52022000);
+    sysbus_connect_irq(SYS_BUS_DEVICE(km), 0, qdev_get_gpio_in(intc, 61));
+    DeviceState *symc = qdev_new(TYPE_WS53_SYMC);
+    object_property_add_child(OBJECT(machine), "symc", OBJECT(symc));
+    WS53_SYMC(symc)->km = WS53_KM(km);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(symc), &error_fatal);
+    DeviceState *hash = qdev_new(TYPE_WS53_HASH);
+    object_property_add_child(OBJECT(machine), "hash", OBJECT(hash));
+    WS53_HASH(hash)->symc = WS53_SYMC(symc);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(hash), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(hash), 0, 0x52010000);
+    sysbus_connect_irq(SYS_BUS_DEVICE(symc), 0, qdev_get_gpio_in_named(hash, "symc", 0));
+    sysbus_connect_irq(SYS_BUS_DEVICE(hash), 0, qdev_get_gpio_in(intc, 59));
     DeviceState *efuse = qdev_new(TYPE_WS53_EFUSE);
     object_property_add_child(OBJECT(machine), "efuse", OBJECT(efuse));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(efuse), &error_fatal);
@@ -358,6 +455,10 @@ static void ws53_init(MachineState *machine)
         }
         sysbus_realize_and_unref(SYS_BUS_DEVICE(uart), &error_fatal);
         sysbus_mmio_map(SYS_BUS_DEVICE(uart), 0, bases[i]);
+        if (i == 1) {
+            qdev_connect_gpio_out_named(mclken1, "gate", 5,
+                                       qdev_get_gpio_in_named(uart, "clock", 0));
+        }
         sysbus_connect_irq(SYS_BUS_DEVICE(uart), 0,
             i == 2 ? qdev_get_gpio_in_named(uart_l0_route, "source", 0) :
                      qdev_get_gpio_in(intc, irqs[i]));
@@ -413,11 +514,37 @@ static void ws53_init(MachineState *machine)
     sysbus_mmio_map(SYS_BUS_DEVICE(mclken0), 0, 0x52000040);
     qdev_connect_gpio_out_named(mclken0, "gate", 0, qdev_get_gpio_in_named(pwm, "gate", 0));
     qdev_connect_gpio_out_named(mclken0, "gate", 1, qdev_get_gpio_in_named(i2s, "gate", 0));
+    DeviceState *sdio = qdev_new(TYPE_WS53_SDIO);
+    object_property_add_child(OBJECT(machine), "sdio", OBJECT(sdio));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(sdio), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(sdio), 0, 0x52060000);
+    sysbus_mmio_map(SYS_BUS_DEVICE(sdio), 1, 0x570000c8);
+    sysbus_connect_irq(SYS_BUS_DEVICE(sdio), 0, qdev_get_gpio_in(intc, 46));
+    qdev_connect_gpio_out_named(mclken0, "gate", 2, qdev_get_gpio_in_named(sdio, "gate", 0));
+    qdev_connect_gpio_out_named(mclken1, "gate", 4, qdev_get_gpio_in_named(sdio, "gate", 1));
     /* Do not route NMI through the ordinary local interrupt controller. CPU
      * NMI semantics are pending; the device diagnoses any asserted output. */
     DeviceState *pinctrl = qdev_new(TYPE_WS53_PINCTRL);
     object_property_add_child(OBJECT(machine), "pinctrl", OBJECT(pinctrl));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(pinctrl), &error_fatal);
+    for (unsigned bus = 0; bus < 2; bus++) {
+        for (unsigned signal = 0; signal < 2; signal++) {
+            qdev_connect_gpio_out_named(i2c, bus ? "wire1-low" : "wire0-low", signal,
+                qdev_get_gpio_in_named(pinctrl, "i2c-low", 2 * bus + signal));
+        }
+        qdev_connect_gpio_out_named(pinctrl, "i2c-route-ready", bus,
+            qdev_get_gpio_in_named(i2c, "wire-route", bus));
+        for (unsigned signal = 0; signal < 2; signal++) {
+            qdev_connect_gpio_out_named(spi, "wire-level", 2 * bus + signal,
+                qdev_get_gpio_in_named(pinctrl, "spi-level", 2 * bus + signal));
+        }
+        qdev_connect_gpio_out_named(spi, "wire-drive", bus,
+            qdev_get_gpio_in_named(pinctrl, "spi-drive", bus));
+        qdev_connect_gpio_out_named(pinctrl, "spi-route-ready", bus,
+            qdev_get_gpio_in_named(spi, "wire-route", bus));
+        qdev_connect_gpio_out_named(pinctrl, "spi-miso", bus,
+            qdev_get_gpio_in_named(spi, "wire-miso", bus));
+    }
     const unsigned uart_rx_peer_pads[] = { 36, 18, 34 };
     for (unsigned i = 0; i < 3; i++) {
         qdev_connect_gpio_out_named(uarts[i], "pad-tx-level", 0,
@@ -445,13 +572,23 @@ static void ws53_init(MachineState *machine)
     }
     const unsigned gpio_irqs[] = { 34, 33, 29 };
     const unsigned gpio_widths[] = { 23, 12, 3 };
+    DeviceState *agpio_clock = qdev_new(TYPE_WS53_AGPIO_CLOCK);
+    object_property_add_child(OBJECT(machine), "agpio-clock", OBJECT(agpio_clock));
+    qdev_prop_set_uint32(agpio_clock, "initial-value", s->flashboot_handoff ? 0 : 1);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(agpio_clock), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(agpio_clock), 0, 0x57030024);
     for (unsigned i = 0; i < 3; i++) {
         DeviceState *gpio = qdev_new(TYPE_WS53_GPIO);
         g_autofree char *name = g_strdup_printf("gpio%u", i);
         object_property_add_child(OBJECT(machine), name, OBJECT(gpio));
         qdev_prop_set_uint32(gpio, "width", gpio_widths[i]);
+        qdev_prop_set_bit(gpio, "require-clock", i == 1);
         sysbus_realize_and_unref(SYS_BUS_DEVICE(gpio), &error_fatal);
         sysbus_mmio_map(SYS_BUS_DEVICE(gpio), 0, gpio_bases[i]);
+        if (i == 1) {
+            sysbus_connect_irq(SYS_BUS_DEVICE(agpio_clock), 0,
+                qdev_get_gpio_in_named(gpio, "clock-access", 0));
+        }
         sysbus_connect_irq(SYS_BUS_DEVICE(gpio), 0, qdev_get_gpio_in(intc, gpio_irqs[i]));
         if (!s->gpio_direct) {
             for (unsigned j = 0; j < ARRAY_SIZE(ws53_pad_desc); j++) {
@@ -477,9 +614,15 @@ static void ws53_init(MachineState *machine)
         exit(1);
     }
     object_initialize_child(OBJECT(machine), "cpu", &s->cpu, machine->cpu_type);
+    /* BS21 ROM addresses overlap this machine's ITCM; retain real exceptions. */
+    s->cpu.hisi_legacy_rom_disabled = true;
     qdev_prop_set_uint64(DEVICE(&s->cpu), "resetvec", entry);
     s->cpu.env.mhartid = 0;
     qdev_realize(DEVICE(&s->cpu), NULL, &error_fatal);
+    if (s->cache_instruction) {
+        s->cpu.hisi_insn_fetch = ws53_icache_fetch;
+        s->cpu.hisi_fence_i = ws53_icache_fence;
+    }
     ws63_intc_set_cpu_env(intc, &s->cpu.env);
     qemu_register_reset(ws53_reset, s);
 }
@@ -528,6 +671,7 @@ static void ws53_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
     mc->max_cpus = 1;
     mc->default_cpu_type = TYPE_RISCV_CPU_WS63;
     mc->default_ram_size = 0;
+    ws53_cache_state_class_init(oc);
     object_class_property_add_bool(oc, "gpio-direct", ws53_get_gpio_direct, ws53_set_gpio_direct);
     object_class_property_set_description(oc, "gpio-direct",
         "Bypass pad routing for isolated GPIO register-contract tests only");
@@ -560,10 +704,12 @@ static void ws53_register_types(void)
     type_register_static(&ws53_uart_reset_type);
     type_register_static(&ws53_uart_l0_route_type);
     type_register_static(&ws53_gpio_type);
+    type_register_static(&ws53_agpio_clock_type);
     type_register_static(&ws53_pinctrl_type);
     type_register_static(&ws53_nmi_type);
     type_register_static(&ws53_wdt_type);
     type_register_static(&ws53_tcxo_type);
+    type_register_static(&ws53_ipc_type);
     type_register_static(&ws53_rtc_type);
     type_register_static(&ws53_pwm_type);
     type_register_static(&ws53_i2s_type);
@@ -576,7 +722,12 @@ static void ws53_register_types(void)
     type_register_static(&ws53_spi_type);
     type_register_static(&ws53_tsensor_type);
     type_register_static(&ws53_trng_type);
+    type_register_static(&ws53_hash_type);
+    type_register_static(&ws53_km_type);
+    type_register_static(&ws53_symc_type);
     type_register_static(&ws53_efuse_type);
+    type_register_static(&ws53_sfc_type);
+    type_register_static(&ws53_sdio_type);
     type_register_static(&ws53_type);
 }
 type_init(ws53_register_types)
