@@ -373,6 +373,81 @@ void ws63_register_custom_csrs(void)
 /* ============================================================================
  * WS63 UART — HiSilicon custom register layout (NOT 16550-compatible).
  * ========================================================================= */
+/* SYS_CTL1 software notification source. The TCXO region otherwise shadows
+ * these addresses, which cannot deliver the scheduler's deferred switch. */
+#define TYPE_WS63_SOFTINT "ws63-softint"
+OBJECT_DECLARE_SIMPLE_TYPE(WS63SoftIntState, WS63_SOFTINT)
+struct WS63SoftIntState {
+    SysBusDevice parent_obj;
+    MemoryRegion iomem;
+    qemu_irq irq[4];
+    uint32_t enabled, pending;
+};
+static void ws63_softint_update(WS63SoftIntState *s)
+{
+    for (unsigned i = 0; i < 4; i++) {
+        qemu_set_irq(s->irq[i], ((s->enabled & s->pending) >> i) & 1);
+    }
+}
+static uint64_t ws63_softint_read(void *opaque, hwaddr off, unsigned size)
+{
+    WS63SoftIntState *s = opaque;
+    switch (off) {
+    case 0: return s->enabled;
+    case 4: case 8: return 0; /* self-clearing commands */
+    case 12: return s->pending;
+    default: g_assert_not_reached();
+    }
+}
+static void ws63_softint_write(void *opaque, hwaddr off, uint64_t val,
+                              unsigned size)
+{
+    WS63SoftIntState *s = opaque;
+    val &= 0xf;
+    switch (off) {
+    case 0: s->enabled = val; break;
+    case 4: s->pending |= val; break;
+    case 8: s->pending &= ~val; break;
+    case 12:
+        qemu_log_mask(LOG_GUEST_ERROR, "ws63-softint: write to read-only status\n");
+        return;
+    default: g_assert_not_reached();
+    }
+    ws63_softint_update(s);
+}
+static const MemoryRegionOps ws63_softint_ops = {
+    .read = ws63_softint_read, .write = ws63_softint_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
+static void ws63_softint_reset(DeviceState *dev)
+{
+    WS63SoftIntState *s = WS63_SOFTINT(dev);
+    s->enabled = s->pending = 0;
+    ws63_softint_update(s);
+}
+static void ws63_softint_init(Object *obj)
+{
+    WS63SoftIntState *s = WS63_SOFTINT(obj);
+    memory_region_init_io(&s->iomem, obj, &ws63_softint_ops, s,
+                          TYPE_WS63_SOFTINT, 0x10);
+    sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
+    for (unsigned i = 0; i < 4; i++) {
+        sysbus_init_irq(SYS_BUS_DEVICE(s), &s->irq[i]);
+    }
+}
+static void ws63_softint_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
+{
+    device_class_set_legacy_reset(DEVICE_CLASS(oc), ws63_softint_reset);
+}
+static const TypeInfo ws63_softint_typeinfo = {
+    .name = TYPE_WS63_SOFTINT, .parent = TYPE_SYS_BUS_DEVICE,
+    .instance_size = sizeof(WS63SoftIntState),
+    .instance_init = ws63_softint_init,
+    .class_init = ws63_softint_class_init,
+};
+
 /* TYPE_WS63_UART defined in hisi_riscv31.h (shared with bs21.c). */
 OBJECT_DECLARE_SIMPLE_TYPE(WS63UartState, WS63_UART)
 
@@ -2736,6 +2811,7 @@ struct WS63MachineState {
     WS63GpioState gpio[3];
     WS63SysCtl0State sysctl0;
     WS63TcxoState tcxo;
+    WS63SoftIntState softint;
     WS63SfcState sfc;
     WS63PinmuxState pinmux;
     WS63NetMacState netmac;
@@ -2818,6 +2894,16 @@ static void ws63_machine_init(MachineState *machine)
     object_initialize_child(OBJECT(machine), "tcxo", &s->tcxo, TYPE_WS63_TCXO);
     sysbus_realize(SYS_BUS_DEVICE(&s->tcxo), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->tcxo), 0, WS63_TCXO_BASE);
+
+    /* PAC SYS_CTL1 offsets 0x150..0x15c, local SOFT_INT0..3 causes 36..39.
+     * Keep TCXO and other SYS_CTL1 addresses outside this small overlay intact. */
+    object_initialize_child(OBJECT(machine), "softint", &s->softint, TYPE_WS63_SOFTINT);
+    sysbus_realize(SYS_BUS_DEVICE(&s->softint), &error_fatal);
+    sysbus_mmio_map_overlap(SYS_BUS_DEVICE(&s->softint), 0, 0x44000150, 2);
+    for (unsigned i = 0; i < 4; i++) {
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->softint), i,
+                           qdev_get_gpio_in(DEVICE(&s->intc), 36 + i));
+    }
 
     /* SFC serial-flash controller (over the absorber) — flash identification. */
     object_initialize_child(OBJECT(machine), "sfc", &s->sfc, TYPE_WS63_SFC);
@@ -2955,6 +3041,7 @@ static void ws63_register_types(void)
     type_register_static(&ws63_gpio_typeinfo);
     type_register_static(&ws63_sysctl0_typeinfo);
     type_register_static(&ws63_tcxo_typeinfo);
+    type_register_static(&ws63_softint_typeinfo);
     type_register_static(&ws63_sfc_typeinfo);
     type_register_static(&ws63_pinmux_typeinfo);
     type_register_static(&ws63_netmac_typeinfo);
