@@ -473,7 +473,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(WS63UartState, WS63_UART)
 #define UART_RX_ENABLE     (1u << 2)
 #define UART_FIFO_ENABLE   (1u << 4)
 #define UART_RX_RESET      (1u << 6)
+#define UART_TX_RESET      (1u << 5)
 #define WS63_UART_RX_MAX    2048
+#define WS63_UART_TX_MAX    2048
 
 struct WS63UartState {
     SysBusDevice parent_obj;
@@ -485,6 +487,11 @@ struct WS63UartState {
     /* Synthetic capacity; default keeps the former one-byte model. Larger
      * test profiles do not assert the unmeasured physical FIFO depth. */
     uint32_t rx_fifo_size;
+    uint8_t tx_fifo[WS63_UART_TX_MAX];
+    unsigned tx_head, tx_count;
+    uint32_t tx_fifo_size;
+    /* Test-only transport stall: not a CTS, baud or serializer model. */
+    bool tx_stalled;
     uint32_t shadow[WS63_UART_MMIO_SIZE / 4];
 };
 
@@ -492,6 +499,33 @@ static unsigned ws63_uart_capacity(WS63UartState *s)
 {
     return (s->shadow[UART_FIFO_CTL / 4] & UART_FIFO_ENABLE) ?
            s->rx_fifo_size : 1;
+}
+
+static unsigned ws63_uart_tx_capacity(WS63UartState *s)
+{
+    return (s->shadow[UART_FIFO_CTL / 4] & UART_FIFO_ENABLE) ?
+           s->tx_fifo_size : 1;
+}
+
+static void ws63_uart_tx_drain(WS63UartState *s)
+{
+    while (!s->tx_stalled && s->tx_count) {
+        qemu_chr_fe_write_all(&s->chr, &s->tx_fifo[s->tx_head], 1);
+        s->tx_head = (s->tx_head + 1) % WS63_UART_TX_MAX;
+        s->tx_count--;
+    }
+}
+
+static bool ws63_uart_get_tx_stalled(Object *obj, Error **errp)
+{
+    return WS63_UART(obj)->tx_stalled;
+}
+
+static void ws63_uart_set_tx_stalled(Object *obj, bool value, Error **errp)
+{
+    WS63UartState *s = WS63_UART(obj);
+    s->tx_stalled = value;
+    ws63_uart_tx_drain(s);
 }
 
 static bool ws63_uart_rx_pending(WS63UartState *s)
@@ -518,7 +552,10 @@ static uint64_t ws63_uart_read(void *opaque, hwaddr off, unsigned size)
     WS63UartState *s = opaque;
     switch (off) {
     case UART_FIFO_STATUS: {
-        uint32_t v = FIFO_TX_EMPTY;
+        uint32_t v = s->tx_count ? 0 : FIFO_TX_EMPTY;
+        if (s->tx_count >= ws63_uart_tx_capacity(s)) {
+            v |= FIFO_TX_FULL;
+        }
         v |= s->rx_count ? FIFO_RX_FULL : FIFO_RX_EMPTY;
         return v;
     }
@@ -535,7 +572,9 @@ static uint64_t ws63_uart_read(void *opaque, hwaddr off, unsigned size)
         return b;
     }
     case UART_LINE_STATUS:
-        return LSR_TX_READY | (s->rx_count ? LSR_DATA_AVAIL : 0);
+        /* No separate shift register; empty FIFO is immediately drained. */
+        return (s->tx_count ? 0 : LSR_TX_READY) |
+               (s->rx_count ? LSR_DATA_AVAIL : 0);
     case UART_INTR_ID:
         return ws63_uart_rx_pending(s) ? 4 : 1;
     case UART_RX_FIFO_CNT:
@@ -552,16 +591,24 @@ static void ws63_uart_write(void *opaque, hwaddr off, uint64_t val,
 {
     WS63UartState *s = opaque;
     if (off == UART_DATA) {
-        uint8_t ch = val & 0xff;
-        qemu_chr_fe_write_all(&s->chr, &ch, 1);
+        if (s->tx_count >= ws63_uart_tx_capacity(s)) {
+            qemu_log_mask(LOG_GUEST_ERROR, "ws63-uart: write to full TX FIFO\n");
+            return;
+        }
+        s->tx_fifo[(s->tx_head + s->tx_count) % WS63_UART_TX_MAX] = val & 0xff;
+        s->tx_count++;
+        ws63_uart_tx_drain(s);
         return;
     }
     if (off == UART_FIFO_CTL) {
         if (val & UART_RX_RESET) {
             s->rx_head = s->rx_count = 0;
         }
-        /* Reset strobes are not persistent enables. TX has no timed FIFO yet. */
-        s->shadow[off / 4] = val & ~((1u << 5) | UART_RX_RESET);
+        if (val & UART_TX_RESET) {
+            s->tx_head = s->tx_count = 0;
+        }
+        /* Reset strobes are not persistent enables. */
+        s->shadow[off / 4] = val & ~(UART_TX_RESET | UART_RX_RESET);
         ws63_uart_update_irq(s);
         qemu_chr_fe_accept_input(&s->chr);
         return;
@@ -628,6 +675,12 @@ static void ws63_uart_event(void *opaque, QEMUChrEvent event)
 static void ws63_uart_realize(DeviceState *dev, Error **errp)
 {
     WS63UartState *s = WS63_UART(dev);
+    if (s->tx_fifo_size != 1 &&
+        (s->tx_fifo_size < 16 || s->tx_fifo_size > WS63_UART_TX_MAX ||
+         (s->tx_fifo_size & (s->tx_fifo_size - 1)) != 0)) {
+        error_setg(errp, "ws63-uart: tx-fifo-size must be 1 or a power of two from 16 to 2048");
+        return;
+    }
     if (s->rx_fifo_size != 1 &&
         (s->rx_fifo_size < 16 || s->rx_fifo_size > WS63_UART_RX_MAX ||
          (s->rx_fifo_size & (s->rx_fifo_size - 1)) != 0)) {
@@ -642,6 +695,9 @@ static void ws63_uart_reset(DeviceState *dev)
 {
     WS63UartState *s = WS63_UART(dev);
     s->rx_head = s->rx_count = 0;
+    s->tx_head = s->tx_count = 0;
+    /* Keep the explicit host fault setting across guest reset, like a stalled
+     * virtual peer. Only QMP releases it; reset discards queued guest bytes. */
     memset(s->shadow, 0, sizeof(s->shadow));
     ws63_uart_update_irq(s);
     qemu_chr_fe_accept_input(&s->chr);
@@ -649,6 +705,7 @@ static void ws63_uart_reset(DeviceState *dev)
 
 static const Property ws63_uart_properties[] = {
     DEFINE_PROP_UINT32("rx-fifo-size", WS63UartState, rx_fifo_size, 1),
+    DEFINE_PROP_UINT32("tx-fifo-size", WS63UartState, tx_fifo_size, 1),
     DEFINE_PROP_CHR("chardev", WS63UartState, chr),
 };
 
@@ -660,6 +717,8 @@ static void ws63_uart_instance_init(Object *obj)
                           TYPE_WS63_UART, WS63_UART_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    object_property_add_bool(obj, "tx-stalled", ws63_uart_get_tx_stalled,
+                             ws63_uart_set_tx_stalled);
 }
 
 static void ws63_uart_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
