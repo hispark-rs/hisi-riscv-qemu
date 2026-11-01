@@ -35,7 +35,7 @@
 #define UART_FIFO_STATUS 0x44
 #define FIFO_TX_EMPTY (1u << 1)
 #define FIFO_RX_EMPTY (1u << 3)
-#define LSR_TX_READY  (3u << 5)
+#define LSR_TX_READY  (3u << 6)
 
 /* Timer: per-channel block at base + 0x100*(ch+1). */
 #define T0           (TIMER_BASE + 0x100)

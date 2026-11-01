@@ -15,6 +15,7 @@
 - [参考](reference/index.md)
   - [内存映射与外设基址](reference/memory-map.md)
   - [机器模型](reference/machine-model.md)
+  - [UART RX 模型边界](reference/uart-rx.md)
   - [WS53 RAM 实验模型](reference/ws53-ram.md)
   - [WS53 FlashBoot 交接模型](reference/ws53-flash-handoff.md)
   - [WS53 温感控制域复位门禁](ws53-tsensor-control-domain.md)

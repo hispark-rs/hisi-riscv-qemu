@@ -82,6 +82,9 @@ jobs:
 
       - uses: astral-sh/setup-uv@v7
 
+      - name: WS63 and BS21 TCXO time and snapshot contracts
+        run: uv run --script scripts/ws63_tcxo_test.py --qemu ./qemu/build/qemu-system-riscv32
+
       - name: Shared priority/CSR reset contracts on WS63 and BS2X (TCG)
         run: |
           uv run --script scripts/hisi_priority_test.py --qemu ./qemu/build/qemu-system-riscv32 \

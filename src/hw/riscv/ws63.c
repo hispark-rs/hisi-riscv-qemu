@@ -376,6 +376,10 @@ void ws63_register_custom_csrs(void)
 /* TYPE_WS63_UART defined in hisi_riscv31.h (shared with bs21.c). */
 OBJECT_DECLARE_SIMPLE_TYPE(WS63UartState, WS63_UART)
 
+#define UART_INTR_ID        0x00
+#define UART_INTR_EN        0x18
+#define UART_FIFO_CTL       0x24
+#define UART_RX_FIFO_CNT    0x4C /* alias not yet qualified on WS63 silicon */
 #define UART_DATA           0x04
 #define UART_DIV_H          0x0C        /* baud divider: integer high byte */
 #define UART_DIV_L          0x10        /* baud divider: integer low byte  */
@@ -388,18 +392,51 @@ OBJECT_DECLARE_SIMPLE_TYPE(WS63UartState, WS63_UART)
 #define FIFO_TX_EMPTY       (1u << 1)
 #define FIFO_RX_FULL        (1u << 2)
 #define FIFO_RX_EMPTY       (1u << 3)
-#define LSR_DATA_AVAIL      (1u << 0)
-#define LSR_TX_READY        (3u << 5)
+/* WS63 v151 fields, not the conventional 16550 bit positions. */
+#define LSR_DATA_AVAIL      (1u << 5)
+#define LSR_TX_READY        (3u << 6)
+#define UART_RX_ENABLE     (1u << 2)
+#define UART_FIFO_ENABLE   (1u << 4)
+#define UART_RX_RESET      (1u << 6)
+#define WS63_UART_RX_MAX    2048
 
 struct WS63UartState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     CharBackend chr;
     qemu_irq irq;
-    uint8_t rx_byte;
-    bool rx_valid;
+    uint8_t rx_fifo[WS63_UART_RX_MAX];
+    unsigned rx_head, rx_count;
+    /* Synthetic capacity; default keeps the former one-byte model. Larger
+     * test profiles do not assert the unmeasured physical FIFO depth. */
+    uint32_t rx_fifo_size;
     uint32_t shadow[WS63_UART_MMIO_SIZE / 4];
 };
+
+static unsigned ws63_uart_capacity(WS63UartState *s)
+{
+    return (s->shadow[UART_FIFO_CTL / 4] & UART_FIFO_ENABLE) ?
+           s->rx_fifo_size : 1;
+}
+
+static bool ws63_uart_rx_pending(WS63UartState *s)
+{
+    unsigned capacity = ws63_uart_capacity(s), threshold = 1;
+    if (s->shadow[UART_FIFO_CTL / 4] & UART_FIFO_ENABLE) {
+        switch ((s->shadow[UART_FIFO_CTL / 4] >> 2) & 3) {
+        case 1: threshold = MAX(1, capacity / 4); break;
+        case 2: threshold = MAX(1, capacity / 2); break;
+        case 3: threshold = MAX(1, (int)capacity - 2); break;
+        }
+    }
+    return s->rx_count >= threshold &&
+           (s->shadow[UART_INTR_EN / 4] & UART_RX_ENABLE);
+}
+
+static void ws63_uart_update_irq(WS63UartState *s)
+{
+    qemu_set_irq(s->irq, ws63_uart_rx_pending(s));
+}
 
 static uint64_t ws63_uart_read(void *opaque, hwaddr off, unsigned size)
 {
@@ -407,17 +444,29 @@ static uint64_t ws63_uart_read(void *opaque, hwaddr off, unsigned size)
     switch (off) {
     case UART_FIFO_STATUS: {
         uint32_t v = FIFO_TX_EMPTY;
-        v |= s->rx_valid ? FIFO_RX_FULL : FIFO_RX_EMPTY;
+        v |= s->rx_count ? FIFO_RX_FULL : FIFO_RX_EMPTY;
         return v;
     }
     case UART_DATA: {
-        uint8_t b = s->rx_byte;
-        s->rx_valid = false;
-        qemu_set_irq(s->irq, 0);        /* RX consumed -> de-assert */
+        uint8_t b = 0;
+        if (s->rx_count) {
+            b = s->rx_fifo[s->rx_head];
+            s->rx_head = (s->rx_head + 1) % WS63_UART_RX_MAX;
+            s->rx_count--;
+        }
+        ws63_uart_update_irq(s);
+        /* A full frontend must tell the chardev when it can accept again. */
+        qemu_chr_fe_accept_input(&s->chr);
         return b;
     }
     case UART_LINE_STATUS:
-        return LSR_TX_READY | (s->rx_valid ? LSR_DATA_AVAIL : 0);
+        return LSR_TX_READY | (s->rx_count ? LSR_DATA_AVAIL : 0);
+    case UART_INTR_ID:
+        return ws63_uart_rx_pending(s) ? 4 : 1;
+    case UART_RX_FIFO_CNT:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "ws63-uart: receive-count alias is not qualified; use LINE_STATUS\n");
+        return 0;
     default:
         return s->shadow[(off / 4) % (WS63_UART_MMIO_SIZE / 4)];
     }
@@ -432,7 +481,21 @@ static void ws63_uart_write(void *opaque, hwaddr off, uint64_t val,
         qemu_chr_fe_write_all(&s->chr, &ch, 1);
         return;
     }
+    if (off == UART_FIFO_CTL) {
+        if (val & UART_RX_RESET) {
+            s->rx_head = s->rx_count = 0;
+        }
+        /* Reset strobes are not persistent enables. TX has no timed FIFO yet. */
+        s->shadow[off / 4] = val & ~((1u << 5) | UART_RX_RESET);
+        ws63_uart_update_irq(s);
+        qemu_chr_fe_accept_input(&s->chr);
+        return;
+    }
     s->shadow[(off / 4) % (WS63_UART_MMIO_SIZE / 4)] = (uint32_t)val;
+    if (off == UART_INTR_EN) {
+        ws63_uart_update_irq(s);
+        return;
+    }
     /*
      * The chardev passes bytes regardless of the programmed baud divider, so a
      * wrong-divider / wrong-clock config that is garbled on real silicon still
@@ -468,21 +531,19 @@ static const MemoryRegionOps ws63_uart_ops = {
 static int ws63_uart_can_rx(void *opaque)
 {
     WS63UartState *s = opaque;
-    return s->rx_valid ? 0 : 1;
+    return MAX(0, (int)ws63_uart_capacity(s) - (int)s->rx_count);
 }
 
 static void ws63_uart_rx(void *opaque, const uint8_t *buf, int size)
 {
     WS63UartState *s = opaque;
-    if (size > 0) {
-        s->rx_byte = buf[0];
-        s->rx_valid = true;
-        /* raise RX IRQ if the firmware enabled UART interrupts (INTR_EN @ 0x18);
-         * polled firmware leaves INTR_EN=0 and is unaffected. */
-        if (s->shadow[0x18 / 4]) {
-            qemu_set_irq(s->irq, 1);
-        }
+    unsigned available = MAX(0, (int)ws63_uart_capacity(s) - (int)s->rx_count);
+    /* The chardev obeys can_rx; guard the bound even for a malformed caller. */
+    for (unsigned i = 0; i < MIN((unsigned)MAX(size, 0), available); i++) {
+        s->rx_fifo[(s->rx_head + s->rx_count) % WS63_UART_RX_MAX] = buf[i];
+        s->rx_count++;
     }
+    ws63_uart_update_irq(s);
 }
 
 static void ws63_uart_event(void *opaque, QEMUChrEvent event)
@@ -492,11 +553,27 @@ static void ws63_uart_event(void *opaque, QEMUChrEvent event)
 static void ws63_uart_realize(DeviceState *dev, Error **errp)
 {
     WS63UartState *s = WS63_UART(dev);
+    if (s->rx_fifo_size != 1 &&
+        (s->rx_fifo_size < 16 || s->rx_fifo_size > WS63_UART_RX_MAX ||
+         (s->rx_fifo_size & (s->rx_fifo_size - 1)) != 0)) {
+        error_setg(errp, "ws63-uart: rx-fifo-size must be 1 or a power of two from 16 to 2048");
+        return;
+    }
     qemu_chr_fe_set_handlers(&s->chr, ws63_uart_can_rx, ws63_uart_rx,
                              ws63_uart_event, NULL, s, NULL, true);
 }
 
+static void ws63_uart_reset(DeviceState *dev)
+{
+    WS63UartState *s = WS63_UART(dev);
+    s->rx_head = s->rx_count = 0;
+    memset(s->shadow, 0, sizeof(s->shadow));
+    ws63_uart_update_irq(s);
+    qemu_chr_fe_accept_input(&s->chr);
+}
+
 static const Property ws63_uart_properties[] = {
+    DEFINE_PROP_UINT32("rx-fifo-size", WS63UartState, rx_fifo_size, 1),
     DEFINE_PROP_CHR("chardev", WS63UartState, chr),
 };
 
@@ -514,6 +591,7 @@ static void ws63_uart_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     dc->realize = ws63_uart_realize;
+    device_class_set_legacy_reset(dc, ws63_uart_reset);
     device_class_set_props(dc, ws63_uart_properties);
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
 }
@@ -1057,7 +1135,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(WS63TcxoState, WS63_TCXO)
 struct WS63TcxoState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
-    uint64_t count;     /* 64-bit free-running TCXO tick counter */
+    uint64_t epoch_count;
+    int64_t epoch_ns;
+    uint32_t control; /* EN bit2 and read-only VALID bit4; commands self-clear. */
     uint32_t count_off; /* offset of the TCXO_COUNT block within the region:
                          * 0x4C0 on WS63 (TCXO @0x44000000); 0x000 on BS21 where
                          * TCXO_COUNT_BASE_ADDR is the region base (0x57000200).
@@ -1068,7 +1148,7 @@ struct WS63TcxoState {
                          * count1[31:16] @+8, count2[47:32] @+0C, count3[63:48]
                          * @+10 (hal_tcxo_v150_regs_def.h). Set via
                          * ws63_tcxo_set_chunked16() before realize. */
-    uint64_t latched;   /* chunked16: count snapshot taken on the refresh write
+    uint64_t latched;   /* count snapshot taken on the refresh write
                          * (status bit0). The v150 read is refresh -> poll valid ->
                          * read count0..3, and the firmware reads the chunks
                          * high-to-low, so all four must come from one snapshot;
@@ -1089,43 +1169,25 @@ void ws63_tcxo_set_chunked16(DeviceState *dev, bool chunked16)
     WS63_TCXO(dev)->chunked16 = chunked16;
 }
 
-/*
- * Advance the 64-bit counter. Track the QEMU virtual clock at the nominal 24 MHz
- * for rough realism, but ALWAYS advance by at least a step on each sample: in TCG
- * without icount the virtual clock barely moves inside a tight MMIO-poll loop, so
- * a purely clock-derived counter would freeze and TCXO delay loops would never
- * terminate. The guaranteed step makes delays elapse after a bounded # of reads.
- */
+/* Virtual elapsed time, not number of MMIO reads. BS21 has a 32 MHz clock. */
 static uint64_t ws63_tcxo_tick(WS63TcxoState *s)
 {
-    uint64_t clk = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) * WS63_TCXO_HZ
-                 / 1000000000ULL;
-    s->count = (clk > s->count + 64) ? clk : s->count + 64;
-    return s->count;
+    uint64_t elapsed = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->epoch_ns;
+    uint64_t hz = s->chunked16 ? 32000000ULL : WS63_TCXO_HZ;
+    return s->epoch_count + ((s->control & 4) ?
+           muldiv64(elapsed, hz, 1000000000ULL) : 0);
 }
 
 static uint64_t ws63_tcxo_read(void *opaque, hwaddr off, unsigned size)
 {
     WS63TcxoState *s = opaque;
-    if (off == s->count_off) {              /* +0x00: status, bit4 = count valid */
-        return 0x10;
+    if (off == s->count_off) {
+        return s->control;
     }
-    if (s->chunked16) {
-        /* BS21 TCXO v150: count split into four 16-bit chunks, all read from the
-         * snapshot latched by the most recent refresh write (ws63_tcxo_write). */
-        if (off == s->count_off + 4) {       /* count0: count[15:0]  */
-            return (uint32_t)(s->latched & 0xffff);
-        } else if (off == s->count_off + 8) { /* count1: count[31:16] */
-            return (uint32_t)((s->latched >> 16) & 0xffff);
-        } else if (off == s->count_off + 0xc) { /* count2: count[47:32] */
-            return (uint32_t)((s->latched >> 32) & 0xffff);
-        } else if (off == s->count_off + 0x10) { /* count3: count[63:48] */
-            return (uint32_t)((s->latched >> 48) & 0xffff);
-        }
-    } else if (off == s->count_off + 4) {   /* +0x04: count[31:0] (advance here) */
-        return (uint32_t)ws63_tcxo_tick(s);
-    } else if (off == s->count_off + 8) {   /* +0x08: count[63:32] */
-        return (uint32_t)(s->count >> 32);
+    if (off > s->count_off && off <= s->count_off + (s->chunked16 ? 16 : 8)) {
+        unsigned word = (off - s->count_off) / 4 - 1;
+        unsigned width = s->chunked16 ? 16 : 32;
+        return (s->latched >> (word * width)) & (s->chunked16 ? 0xffff : 0xffffffff);
     }
     return s->shadow[(off / 4) % (WS63_TCXO_SIZE / 4)];
 }
@@ -1133,10 +1195,22 @@ static uint64_t ws63_tcxo_read(void *opaque, hwaddr off, unsigned size)
 static void ws63_tcxo_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
 {
     WS63TcxoState *s = opaque;
-    /* chunked16 (BS21 v150): a write to the status register with the refresh bit
-     * (bit0) set takes a fresh count snapshot for the count0..3 reads. */
-    if (s->chunked16 && off == s->count_off && (val & 0x1)) {
-        s->latched = ws63_tcxo_tick(s);
+    if (off == s->count_off) {
+        s->epoch_count = ws63_tcxo_tick(s);
+        s->epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        s->control = (s->control & 0x10) | (val & 4);
+        if (val & 2) {
+            s->epoch_count = 0;
+            s->control &= ~0x10;
+        }
+        if (val & 1) {
+            s->control &= ~0x10;
+            if (s->control & 4) {
+                s->latched = ws63_tcxo_tick(s);
+                s->control |= 0x10;
+            }
+        }
+        return;
     }
     s->shadow[(off / 4) % (WS63_TCXO_SIZE / 4)] = (uint32_t)val;
 }
@@ -1153,6 +1227,10 @@ static void ws63_tcxo_instance_init(Object *obj)
 {
     WS63TcxoState *s = WS63_TCXO(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+    /* Preserve the direct-kernel machine's inherited running clock. This is
+     * a boot-environment choice, not a claim about silicon POR state. */
+    s->control = 4;
+    s->epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->count_off = WS63_TCXO_COUNT_OFF;     /* WS63 default; bs21.c overrides to 0 */
     memory_region_init_io(&s->iomem, obj, &ws63_tcxo_ops, s,
                           TYPE_WS63_TCXO, WS63_TCXO_SIZE);

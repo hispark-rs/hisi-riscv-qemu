@@ -32,10 +32,10 @@ def connect(path):
 
 
 @contextmanager
-def running(qemu, direct_gpio=True, extra_args=(), *, serial_options=("-serial", "null")):
+def running(qemu, direct_gpio=True, extra_args=(), *, serial_options=("-serial", "null"), machine=None):
     with tempfile.TemporaryDirectory(prefix="ws53-gpio-") as tmp:
         qt, qm = Path(tmp) / "qtest", Path(tmp) / "qmp"
-        machine = "ws53,gpio-direct=on" if direct_gpio else "ws53"
+        machine = machine or ("ws53,gpio-direct=on" if direct_gpio else "ws53")
         proc = subprocess.Popen([qemu, "-M", machine, "-accel", "qtest", "-display", "none",
             "-monitor", "none", *serial_options, "-qtest-log", "/dev/null",
             "-qtest", f"unix:{qt},server=on,wait=off", "-qmp", f"unix:{qm},server=on,wait=off",
