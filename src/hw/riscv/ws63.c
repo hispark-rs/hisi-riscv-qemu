@@ -376,6 +376,10 @@ void ws63_register_custom_csrs(void)
 /* TYPE_WS63_UART defined in hisi_riscv31.h (shared with bs21.c). */
 OBJECT_DECLARE_SIMPLE_TYPE(WS63UartState, WS63_UART)
 
+#define UART_INTR_ID        0x00
+#define UART_INTR_EN        0x18
+#define UART_FIFO_CTL       0x24
+#define UART_RX_FIFO_CNT    0x4C /* alias not yet qualified on WS63 silicon */
 #define UART_DATA           0x04
 #define UART_DIV_H          0x0C        /* baud divider: integer high byte */
 #define UART_DIV_L          0x10        /* baud divider: integer low byte  */
@@ -388,18 +392,51 @@ OBJECT_DECLARE_SIMPLE_TYPE(WS63UartState, WS63_UART)
 #define FIFO_TX_EMPTY       (1u << 1)
 #define FIFO_RX_FULL        (1u << 2)
 #define FIFO_RX_EMPTY       (1u << 3)
-#define LSR_DATA_AVAIL      (1u << 0)
-#define LSR_TX_READY        (3u << 5)
+/* WS63 v151 fields, not the conventional 16550 bit positions. */
+#define LSR_DATA_AVAIL      (1u << 5)
+#define LSR_TX_READY        (3u << 6)
+#define UART_RX_ENABLE     (1u << 2)
+#define UART_FIFO_ENABLE   (1u << 4)
+#define UART_RX_RESET      (1u << 6)
+#define WS63_UART_RX_MAX    2048
 
 struct WS63UartState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     CharBackend chr;
     qemu_irq irq;
-    uint8_t rx_byte;
-    bool rx_valid;
+    uint8_t rx_fifo[WS63_UART_RX_MAX];
+    unsigned rx_head, rx_count;
+    /* Synthetic capacity; default keeps the former one-byte model. Larger
+     * test profiles do not assert the unmeasured physical FIFO depth. */
+    uint32_t rx_fifo_size;
     uint32_t shadow[WS63_UART_MMIO_SIZE / 4];
 };
+
+static unsigned ws63_uart_capacity(WS63UartState *s)
+{
+    return (s->shadow[UART_FIFO_CTL / 4] & UART_FIFO_ENABLE) ?
+           s->rx_fifo_size : 1;
+}
+
+static bool ws63_uart_rx_pending(WS63UartState *s)
+{
+    unsigned capacity = ws63_uart_capacity(s), threshold = 1;
+    if (s->shadow[UART_FIFO_CTL / 4] & UART_FIFO_ENABLE) {
+        switch ((s->shadow[UART_FIFO_CTL / 4] >> 2) & 3) {
+        case 1: threshold = MAX(1, capacity / 4); break;
+        case 2: threshold = MAX(1, capacity / 2); break;
+        case 3: threshold = MAX(1, (int)capacity - 2); break;
+        }
+    }
+    return s->rx_count >= threshold &&
+           (s->shadow[UART_INTR_EN / 4] & UART_RX_ENABLE);
+}
+
+static void ws63_uart_update_irq(WS63UartState *s)
+{
+    qemu_set_irq(s->irq, ws63_uart_rx_pending(s));
+}
 
 static uint64_t ws63_uart_read(void *opaque, hwaddr off, unsigned size)
 {
@@ -407,17 +444,29 @@ static uint64_t ws63_uart_read(void *opaque, hwaddr off, unsigned size)
     switch (off) {
     case UART_FIFO_STATUS: {
         uint32_t v = FIFO_TX_EMPTY;
-        v |= s->rx_valid ? FIFO_RX_FULL : FIFO_RX_EMPTY;
+        v |= s->rx_count ? FIFO_RX_FULL : FIFO_RX_EMPTY;
         return v;
     }
     case UART_DATA: {
-        uint8_t b = s->rx_byte;
-        s->rx_valid = false;
-        qemu_set_irq(s->irq, 0);        /* RX consumed -> de-assert */
+        uint8_t b = 0;
+        if (s->rx_count) {
+            b = s->rx_fifo[s->rx_head];
+            s->rx_head = (s->rx_head + 1) % WS63_UART_RX_MAX;
+            s->rx_count--;
+        }
+        ws63_uart_update_irq(s);
+        /* A full frontend must tell the chardev when it can accept again. */
+        qemu_chr_fe_accept_input(&s->chr);
         return b;
     }
     case UART_LINE_STATUS:
-        return LSR_TX_READY | (s->rx_valid ? LSR_DATA_AVAIL : 0);
+        return LSR_TX_READY | (s->rx_count ? LSR_DATA_AVAIL : 0);
+    case UART_INTR_ID:
+        return ws63_uart_rx_pending(s) ? 4 : 1;
+    case UART_RX_FIFO_CNT:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "ws63-uart: receive-count alias is not qualified; use LINE_STATUS\n");
+        return 0;
     default:
         return s->shadow[(off / 4) % (WS63_UART_MMIO_SIZE / 4)];
     }
@@ -432,7 +481,21 @@ static void ws63_uart_write(void *opaque, hwaddr off, uint64_t val,
         qemu_chr_fe_write_all(&s->chr, &ch, 1);
         return;
     }
+    if (off == UART_FIFO_CTL) {
+        if (val & UART_RX_RESET) {
+            s->rx_head = s->rx_count = 0;
+        }
+        /* Reset strobes are not persistent enables. TX has no timed FIFO yet. */
+        s->shadow[off / 4] = val & ~((1u << 5) | UART_RX_RESET);
+        ws63_uart_update_irq(s);
+        qemu_chr_fe_accept_input(&s->chr);
+        return;
+    }
     s->shadow[(off / 4) % (WS63_UART_MMIO_SIZE / 4)] = (uint32_t)val;
+    if (off == UART_INTR_EN) {
+        ws63_uart_update_irq(s);
+        return;
+    }
     /*
      * The chardev passes bytes regardless of the programmed baud divider, so a
      * wrong-divider / wrong-clock config that is garbled on real silicon still
@@ -468,21 +531,19 @@ static const MemoryRegionOps ws63_uart_ops = {
 static int ws63_uart_can_rx(void *opaque)
 {
     WS63UartState *s = opaque;
-    return s->rx_valid ? 0 : 1;
+    return MAX(0, (int)ws63_uart_capacity(s) - (int)s->rx_count);
 }
 
 static void ws63_uart_rx(void *opaque, const uint8_t *buf, int size)
 {
     WS63UartState *s = opaque;
-    if (size > 0) {
-        s->rx_byte = buf[0];
-        s->rx_valid = true;
-        /* raise RX IRQ if the firmware enabled UART interrupts (INTR_EN @ 0x18);
-         * polled firmware leaves INTR_EN=0 and is unaffected. */
-        if (s->shadow[0x18 / 4]) {
-            qemu_set_irq(s->irq, 1);
-        }
+    unsigned available = MAX(0, (int)ws63_uart_capacity(s) - (int)s->rx_count);
+    /* The chardev obeys can_rx; guard the bound even for a malformed caller. */
+    for (unsigned i = 0; i < MIN((unsigned)MAX(size, 0), available); i++) {
+        s->rx_fifo[(s->rx_head + s->rx_count) % WS63_UART_RX_MAX] = buf[i];
+        s->rx_count++;
     }
+    ws63_uart_update_irq(s);
 }
 
 static void ws63_uart_event(void *opaque, QEMUChrEvent event)
@@ -492,11 +553,27 @@ static void ws63_uart_event(void *opaque, QEMUChrEvent event)
 static void ws63_uart_realize(DeviceState *dev, Error **errp)
 {
     WS63UartState *s = WS63_UART(dev);
+    if (s->rx_fifo_size != 1 &&
+        (s->rx_fifo_size < 16 || s->rx_fifo_size > WS63_UART_RX_MAX ||
+         (s->rx_fifo_size & (s->rx_fifo_size - 1)) != 0)) {
+        error_setg(errp, "ws63-uart: rx-fifo-size must be 1 or a power of two from 16 to 2048");
+        return;
+    }
     qemu_chr_fe_set_handlers(&s->chr, ws63_uart_can_rx, ws63_uart_rx,
                              ws63_uart_event, NULL, s, NULL, true);
 }
 
+static void ws63_uart_reset(DeviceState *dev)
+{
+    WS63UartState *s = WS63_UART(dev);
+    s->rx_head = s->rx_count = 0;
+    memset(s->shadow, 0, sizeof(s->shadow));
+    ws63_uart_update_irq(s);
+    qemu_chr_fe_accept_input(&s->chr);
+}
+
 static const Property ws63_uart_properties[] = {
+    DEFINE_PROP_UINT32("rx-fifo-size", WS63UartState, rx_fifo_size, 1),
     DEFINE_PROP_CHR("chardev", WS63UartState, chr),
 };
 
@@ -514,6 +591,7 @@ static void ws63_uart_class_init(ObjectClass *oc, WS63_QOM_CLASS_DATA *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     dc->realize = ws63_uart_realize;
+    device_class_set_legacy_reset(dc, ws63_uart_reset);
     device_class_set_props(dc, ws63_uart_properties);
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
 }
